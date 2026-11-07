@@ -619,6 +619,77 @@ async function startServer() {
     });
   });
 
+  // =========================================================================
+  // المطلب 2: مسار معتمد لصرف الحوالات مع الحماية من الصرف المكرر والتحقق الخادمي
+  // =========================================================================
+  app.post(
+    '/api/remittances/payout',
+    requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        transferId,
+        transferNumber,
+        recipientIdType,
+        recipientIdNumber,
+        amount,
+        currency,
+        voucherNumber,
+        managerOverride,
+      } = req.body;
+
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (!transferNumber || !recipientIdNumber) {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة ورقم هوية المستفيد حقول إلزامية لإتمام عملية الصرف والتسليم.',
+        });
+      }
+
+      const payoutResult = remittanceRegistry.payoutRemittance({
+        transferId: transferId || transferNumber,
+        transferNumber,
+        recipientIdType: recipientIdType || 'national_id',
+        recipientIdNumber: String(recipientIdNumber).trim(),
+        tellerId: authenticatedUser.id,
+        tellerName: authenticatedUser.name,
+        tellerRole: authenticatedUser.role,
+        amount: Number(amount) || 0,
+        currency: currency || 'YER',
+        voucherNumber,
+        managerOverride: Boolean(managerOverride),
+      });
+
+      if (!payoutResult.success) {
+        return res.status(409).json({
+          success: false,
+          isDuplicate: remittanceRegistry.isRemittancePaid(transferNumber),
+          error: payoutResult.error,
+          record: payoutResult.record,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'تم اعتماد صرف الحوالة وتسليم النقدية وتوثيق العملية في سجل التدقيق بنجاح.',
+        record: payoutResult.record,
+      });
+    }
+  );
+
+  app.get('/api/remittances/payout-status/:transferNumber', requireAuth, (req: Request, res: Response) => {
+    const { transferNumber } = req.params;
+    const isPaid = remittanceRegistry.isRemittancePaid(transferNumber);
+    const record = remittanceRegistry.getPayoutRecord(transferNumber);
+
+    return res.status(200).json({
+      success: true,
+      isPaid,
+      record: record || null,
+    });
+  });
+
   // Public health check endpoint
   app.get('/api/health', (_req: Request, res: Response) => {
     return res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });

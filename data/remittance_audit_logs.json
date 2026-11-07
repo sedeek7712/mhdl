@@ -1,5 +1,38 @@
 [
   {
+    "id": "audit-pay-1794056827075-8it4",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد",
+    "details": "تم صرف الحوالة TR-TEST-1794056827074 بمبلغ 5000 SAR للمستفيد (إثبات هوية: national_id 04010099881) بواسطة الكاشير المعتمد (teller). سند الصرف: V-PAY-7075.",
+    "performedBy": "الكاشير المعتمد",
+    "userRole": "teller",
+    "timestamp": "2026-11-07 13:07",
+    "oldValue": "status: available",
+    "newValue": "status: paid"
+  },
+  {
+    "id": "audit-pay-1794056322881-yxfr",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد",
+    "details": "تم صرف الحوالة TR-TEST-1794056322880 بمبلغ 5000 SAR للمستفيد (إثبات هوية: national_id 04010099881) بواسطة الكاشير المعتمد (teller). سند الصرف: V-PAY-2880.",
+    "performedBy": "الكاشير المعتمد",
+    "userRole": "teller",
+    "timestamp": "2026-11-07 12:58",
+    "oldValue": "status: available",
+    "newValue": "status: paid"
+  },
+  {
+    "id": "audit-pay-1794056261599-yhih",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد",
+    "details": "تم صرف الحوالة TR-TEST-1794056261598 بمبلغ 5000 SAR للمستفيد (إثبات هوية: national_id 04010099881) بواسطة الكاشير المعتمد (teller). سند الصرف: V-PAY-1599.",
+    "performedBy": "الكاشير المعتمد",
+    "userRole": "teller",
+    "timestamp": "2026-11-07 12:57",
+    "oldValue": "status: available",
+    "newValue": "status: paid"
+  },
+  {
     "id": "audit-1794004537336-cba0",
     "category": "remittance_numbering",
     "action": "تعديل طريقة إصدار أرقام الحوالات",

@@ -775,6 +775,7 @@ export const OfficialVoucherModal: React.FC<OfficialVoucherModalProps> = ({
         voucher={voucher}
         isOpen={isWhatsAppOpen}
         onClose={() => setIsWhatsAppOpen(false)}
+        currentUser={currentUser}
         onUpdateVoucherStatus={onUpdateVoucherStatus}
       />
     </>

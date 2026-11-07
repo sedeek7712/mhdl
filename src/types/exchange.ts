@@ -105,7 +105,7 @@ export interface JournalEntry {
   time: string;
   descriptionAr: string;
   lines: JournalEntryLine[];
-  referenceType: 'exchange' | 'transfer_send' | 'transfer_payout' | 'transfer_reverse' | 'expense' | 'opening';
+  referenceType: 'exchange' | 'transfer_send' | 'transfer_payout' | 'transfer_reverse' | 'expense' | 'opening' | 'internal_transfer';
   referenceId: string;
   branchId: string;
   createdBy: string;

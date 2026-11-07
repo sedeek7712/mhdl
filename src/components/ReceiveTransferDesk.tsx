@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Account, CurrencyCode, Remittance, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { formatMoney, tafqeetArabic } from '../services/accountingEngine';
-import { ArrowDownLeft, CheckCircle2, DollarSign, IdCard, KeyRound, MessageCircle, Phone, Plus, Printer, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, UserCheck, Vault, X } from 'lucide-react';
+import { ArrowDownLeft, CheckCircle2, DollarSign, IdCard, KeyRound, Loader2, MessageCircle, Phone, Plus, Printer, Receipt, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, UserCheck, Vault, X } from 'lucide-react';
 import { useToast } from './ui/Toast';
 
 interface ReceiveTransferDeskProps {
@@ -131,8 +131,14 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
     ? cashierBalance >= selectedRemittance.amount || isManagerOverride
     : true;
 
-  const handleConfirmPayout = () => {
-    if (!selectedRemittance) return;
+  const [isSubmittingPayout, setIsSubmittingPayout] = useState(false);
+
+  const handleConfirmPayout = async () => {
+    if (!selectedRemittance || isSubmittingPayout) return;
+    if (selectedRemittance.status !== 'available') {
+      toast.error('الحوالة ليست متاحة للصرف', `حالة الحوالة الحالية: [${selectedRemittance.status === 'paid' ? 'تم صرفها مسبقاً' : 'ملغاة'}]. يمنع النظام التكرار.`);
+      return;
+    }
     if (!recipientIdNumber.trim()) {
       toast.warning('الرجاء إدخال رقم إثبات الهوية للمستفيد للتحقق قبل صرف الحوالة.');
       return;
@@ -146,15 +152,15 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
       return;
     }
 
-    onPayout(selectedRemittance.id, recipientIdType, recipientIdNumber.trim());
-    setSelectedRemittance({
-      ...selectedRemittance,
-      status: 'paid',
-    });
-    toast.success(
-      'تم اعتماد صرف الحوالة بنجاح',
-      `تم تسليم المبلغ وقيد العملية في الصندوق وإصدار سند الصرف المعتمد.`
-    );
+    setIsSubmittingPayout(true);
+    try {
+      await onPayout(selectedRemittance.id, recipientIdType, recipientIdNumber.trim());
+      setSelectedRemittance((prev) => prev ? { ...prev, status: 'paid' } : null);
+    } catch (err: any) {
+      toast.error('فشل صرف الحوالة', err.message || 'حدث خطأ أثناء الاتصال بالخادم.');
+    } finally {
+      setIsSubmittingPayout(false);
+    }
   };
 
   return (
@@ -397,20 +403,14 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
                       رقم الهوية المسجل: {selectedRemittance.recipientIdNumber || 'تم التحقق من أصل الهوية'}
                     </p>
                   </div>
-                  <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                  <div className="flex items-center justify-center pt-1">
                     <button
                       onClick={() => onOpenVoucher(selectedRemittance)}
-                      className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+                      className="min-h-[44px] px-5 py-2.5 bg-slate-800 hover:bg-slate-750 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 border border-slate-700 shadow-sm cursor-pointer transition-colors"
+                      title="عرض وطباعة سند الصرف الرسمي والإرسال عبر واتساب"
                     >
-                      <Printer className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>عرض وطباعة سند الصرف</span>
-                    </button>
-                    <button
-                      onClick={() => onOpenVoucher(selectedRemittance)}
-                      className="px-4 py-2 bg-[#00a884] hover:bg-[#02906f] text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-md shadow-emerald-950/40 cursor-pointer"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5" />
-                      <span>إرسال واتساب (السند + النص)</span>
+                      <Receipt className="w-4 h-4 text-emerald-400" />
+                      <span>عرض وطباعة سند الصرف الرسمي (مع واتساب)</span>
                     </button>
                   </div>
                 </div>
@@ -497,15 +497,24 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
                     </div>
                   )}
 
-                  {/* Confirm Payout Button */}
+                  {/* Confirm Payout Button with In-Flight Lock */}
                   <div className="pt-2">
                     <button
                       onClick={handleConfirmPayout}
-                      disabled={!recipientIdNumber.trim() || !hasVerifiedOriginalId || !hasLiquidity}
+                      disabled={!recipientIdNumber.trim() || !hasVerifiedOriginalId || !hasLiquidity || isSubmittingPayout}
                       className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 transition-all hover:scale-[1.01] cursor-pointer"
                     >
-                      <CheckCircle2 className="w-5 h-5" />
-                      <span>تأكيد صرف الحوالة وتسليم النقدية وإصدار السند فوراً</span>
+                      {isSubmittingPayout ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin text-white" />
+                          <span>جارٍ المصادقة وتوثيق القيد بالسيرفر...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-5 h-5" />
+                          <span>تأكيد صرف الحوالة وتسليم النقدية وإصدار السند فوراً</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>

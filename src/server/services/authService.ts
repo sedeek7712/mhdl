@@ -10,7 +10,7 @@ import { Request, Response, NextFunction } from 'express';
 export interface AuthenticatedUser {
   id: string;
   name: string;
-  role: 'owner' | 'general_manager' | 'accountant' | 'teller' | 'compliance_officer';
+  role: 'owner' | 'general_manager' | 'branch_manager' | 'teller' | 'auditor' | 'accountant' | 'compliance_officer';
   username: string;
   branchId: string;
   branchName: string;
@@ -138,14 +138,21 @@ export class AuthService {
   }
 
   /**
-   * مصادقة مستخدم بواسطة اسم المستخدم أو الدور
+   * مصادقة مستخدم بواسطة اسم المستخدم أو الدور مع التحقق الإلزامي من الـ PIN على الخادم
+   * يمنع الدخول بصلاحية المالك أو المدير العام دون التحقق الصارم من الرمز السري (FIND-002, FIND-010)
    */
-  public authenticateUser(roleOrUsername: string, _pin?: string): { token: string; user: AuthenticatedUser } | null {
+  public authenticateUser(roleOrUsername: string, pin?: string): { token: string; user: AuthenticatedUser } | null {
     const key = Object.keys(SYSTEM_USERS).find(
       (k) => k === roleOrUsername || SYSTEM_USERS[k].username === roleOrUsername
     );
     if (!key) return null;
     const user = SYSTEM_USERS[key];
+
+    // التحقق الصارم من الـ PIN على الخادم لجميع المستخدمين لمنع التصعيد غير المصرح به
+    if (!pin || pin.trim() !== user.pin) {
+      return null;
+    }
+
     const token = this.generateToken(user);
     return { token, user };
   }

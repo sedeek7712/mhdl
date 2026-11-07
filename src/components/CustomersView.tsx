@@ -9,7 +9,7 @@ interface CustomersViewProps {
   remittances: Remittance[];
   currentUser: UserProfile;
   onAddCustomer: (customer: CustomerKYC) => void;
-  onOpenA4Statement?: () => void;
+  onOpenA4Statement?: (customerId?: string) => void;
 }
 
 export const CustomersView: React.FC<CustomersViewProps> = ({
@@ -208,8 +208,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                 <div className="flex items-center gap-2">
                   {onOpenA4Statement && (
                     <button
-                      onClick={onOpenA4Statement}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm"
+                      onClick={() => onOpenA4Statement(selectedCustomer.id)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer"
                     >
                       <FileText className="w-3.5 h-3.5" />
                       <span>كشف حساب A4 رسمي</span>

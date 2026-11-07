@@ -1,0 +1,44 @@
+[
+  {
+    "transferId": "id-TR-TEST-1794056261598",
+    "transferNumber": "TR-TEST-1794056261598",
+    "recipientIdType": "national_id",
+    "recipientIdNumber": "04010099881",
+    "tellerId": "usr-003",
+    "tellerName": "الكاشير المعتمد",
+    "tellerRole": "teller",
+    "amount": 5000,
+    "currency": "SAR",
+    "paidAt": "2026-11-07 12:57",
+    "voucherNumber": "V-PAY-1599",
+    "managerOverride": false
+  },
+  {
+    "transferId": "id-TR-TEST-1794056322880",
+    "transferNumber": "TR-TEST-1794056322880",
+    "recipientIdType": "national_id",
+    "recipientIdNumber": "04010099881",
+    "tellerId": "usr-003",
+    "tellerName": "الكاشير المعتمد",
+    "tellerRole": "teller",
+    "amount": 5000,
+    "currency": "SAR",
+    "paidAt": "2026-11-07 12:58",
+    "voucherNumber": "V-PAY-2880",
+    "managerOverride": false
+  },
+  {
+    "transferId": "id-TR-TEST-1794056827074",
+    "transferNumber": "TR-TEST-1794056827074",
+    "recipientIdType": "national_id",
+    "recipientIdNumber": "04010099881",
+    "tellerId": "usr-003",
+    "tellerName": "الكاشير المعتمد",
+    "tellerRole": "teller",
+    "amount": 5000,
+    "currency": "SAR",
+    "paidAt": "2026-11-07 13:07",
+    "voucherNumber": "V-PAY-7075",
+    "managerOverride": false
+  }
+]

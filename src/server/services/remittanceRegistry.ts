@@ -14,6 +14,7 @@ const DATA_DIR = path.resolve(__dirname, '../../../data');
 const SETTINGS_FILE = path.resolve(DATA_DIR, 'remittance_settings.json');
 const NUMBERS_REGISTRY_FILE = path.resolve(DATA_DIR, 'remittance_numbers_registry.json');
 const AUDIT_LOGS_FILE = path.resolve(DATA_DIR, 'remittance_audit_logs.json');
+const PAYOUTS_REGISTRY_FILE = path.resolve(DATA_DIR, 'remittance_payouts_registry.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -44,10 +45,26 @@ export interface RemittanceAuditRecord {
   newValue?: string;
 }
 
+export interface RemittancePayoutRecord {
+  transferId: string;
+  transferNumber: string;
+  recipientIdType: string;
+  recipientIdNumber: string;
+  tellerId: string;
+  tellerName: string;
+  tellerRole: string;
+  amount: number;
+  currency: string;
+  paidAt: string;
+  voucherNumber: string;
+  managerOverride?: boolean;
+}
+
 class RemittanceRegistry {
   private settings: RemittanceSettingsRecord;
   private registeredNumbers: Map<string, { registeredAt: string; registeredBy: string; mode: string }> = new Map();
   private auditLogs: RemittanceAuditRecord[] = [];
+  private payouts: Map<string, RemittancePayoutRecord> = new Map();
 
   constructor() {
     this.settings = {
@@ -80,6 +97,14 @@ class RemittanceRegistry {
         }
       }
 
+      if (fs.existsSync(PAYOUTS_REGISTRY_FILE)) {
+        const raw = fs.readFileSync(PAYOUTS_REGISTRY_FILE, 'utf-8');
+        const list: RemittancePayoutRecord[] = JSON.parse(raw);
+        for (const item of list) {
+          this.payouts.set(item.transferNumber.trim().toUpperCase(), item);
+        }
+      }
+
       if (fs.existsSync(AUDIT_LOGS_FILE)) {
         const raw = fs.readFileSync(AUDIT_LOGS_FILE, 'utf-8');
         this.auditLogs = JSON.parse(raw);
@@ -101,6 +126,15 @@ class RemittanceRegistry {
       }
     } catch (err) {
       console.warn('[RemittanceRegistry] Error loading state from disk, using fallback defaults:', err);
+    }
+  }
+
+  private savePayoutsToDisk() {
+    try {
+      const list = Array.from(this.payouts.values());
+      fs.writeFileSync(PAYOUTS_REGISTRY_FILE, JSON.stringify(list, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[RemittanceRegistry] Failed to save payouts to disk:', err);
     }
   }
 
@@ -264,6 +298,118 @@ class RemittanceRegistry {
     this.saveNumbersToDisk();
 
     return { transferNumber: candidate, sequence: seq };
+  }
+
+  /**
+   * فحص ما إذا كانت الحوالة مصروفة مسبقاً في السجل المركزي
+   */
+  public isRemittancePaid(transferNumber: string): boolean {
+    if (!transferNumber) return false;
+    return this.payouts.has(transferNumber.trim().toUpperCase());
+  }
+
+  public getPayoutRecord(transferNumber: string): RemittancePayoutRecord | undefined {
+    if (!transferNumber) return undefined;
+    return this.payouts.get(transferNumber.trim().toUpperCase());
+  }
+
+  /**
+   * صرف الحوالة مع الحماية الصارمة من الصرف المكرر على مستوى الخادم
+   */
+  public payoutRemittance(params: {
+    transferId: string;
+    transferNumber: string;
+    recipientIdType: string;
+    recipientIdNumber: string;
+    tellerId: string;
+    tellerName: string;
+    tellerRole: string;
+    amount: number;
+    currency: string;
+    voucherNumber?: string;
+    managerOverride?: boolean;
+  }): { success: boolean; record?: RemittancePayoutRecord; error?: string } {
+    const cleanNum = params.transferNumber.trim().toUpperCase();
+
+    // Check duplicate payout (المطلب 2: منع الصرف المكرر)
+    if (this.payouts.has(cleanNum)) {
+      const existing = this.payouts.get(cleanNum)!;
+      return {
+        success: false,
+        record: existing,
+        error: `رفض النظام: الحوالة رقم ${cleanNum} تم صرفها مسبقاً بتاريخ ${existing.paidAt} بواسطة ${existing.tellerName}. يمنع صرف الحوالة مرتين منعاً باتاً.`,
+      };
+    }
+
+    // Role check: Teller, Branch Manager, General Manager, or Owner required
+    const allowedRoles = ['teller', 'branch_manager', 'general_manager', 'owner'];
+    if (!allowedRoles.includes(params.tellerRole)) {
+      return {
+        success: false,
+        error: `صلاحية غير كافية: دور [${params.tellerRole}] غير مخول بتنفيذ عمليات صرف الحوالات وتسليم النقدية.`,
+      };
+    }
+
+    if (!params.recipientIdNumber || !params.recipientIdNumber.trim()) {
+      return {
+        success: false,
+        error: 'رقم إثبات هوية المستفيد حقل إلزامي لصرف الحوالة وفقاً لمعايير الامتثال ومكافحة غسل الأموال (AML/KYC).',
+      };
+    }
+
+    const now = new Date();
+    const paidAtStr = now.toISOString().replace('T', ' ').substring(0, 16);
+    const voucherNum = params.voucherNumber || `V-PAY-${Date.now().toString().slice(-4)}`;
+
+    const payoutRecord: RemittancePayoutRecord = {
+      transferId: params.transferId,
+      transferNumber: cleanNum,
+      recipientIdType: params.recipientIdType,
+      recipientIdNumber: params.recipientIdNumber.trim(),
+      tellerId: params.tellerId,
+      tellerName: params.tellerName,
+      tellerRole: params.tellerRole,
+      amount: params.amount,
+      currency: params.currency,
+      paidAt: paidAtStr,
+      voucherNumber: voucherNum,
+      managerOverride: Boolean(params.managerOverride),
+    };
+
+    // Store in atomic payout map
+    this.payouts.set(cleanNum, payoutRecord);
+
+    // Also register number if not registered
+    if (!this.registeredNumbers.has(cleanNum)) {
+      this.registeredNumbers.set(cleanNum, {
+        registeredAt: now.toISOString(),
+        registeredBy: params.tellerName,
+        mode: 'incoming_payout',
+      });
+      this.saveNumbersToDisk();
+    }
+
+    // Audit log
+    const auditEntry: RemittanceAuditRecord = {
+      id: `audit-pay-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      category: 'financial',
+      action: 'صرف حوالة وتسليم نقدية للمستفيد',
+      details: `تم صرف الحوالة ${cleanNum} بمبلغ ${params.amount} ${params.currency} للمستفيد (إثبات هوية: ${params.recipientIdType} ${params.recipientIdNumber}) بواسطة ${params.tellerName} (${params.tellerRole}). سند الصرف: ${voucherNum}.${params.managerOverride ? ' [باعتماد تجاوز المدير]' : ''}`,
+      performedBy: params.tellerName,
+      userRole: params.tellerRole,
+      timestamp: paidAtStr,
+      oldValue: 'status: available',
+      newValue: 'status: paid',
+    };
+
+    this.auditLogs.unshift(auditEntry);
+    this.savePayoutsToDisk();
+    this.saveAuditLogsToDisk();
+
+    return {
+      success: true,
+      record: payoutRecord,
+    };
   }
 
   public getAuditLogs(): RemittanceAuditRecord[] {

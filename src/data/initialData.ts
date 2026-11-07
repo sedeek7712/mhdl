@@ -1,12 +1,12 @@
 import { Account, CashBoxShift, ExchangeRate, ExchangeRateAuditLog, JournalEntry, Remittance, RemittanceSettings, SystemAuditLog, UserProfile } from '../types/exchange';
 
 export const CURRENT_USER: UserProfile = {
-  id: 'usr-001',
-  name: 'عمرو النماري',
-  role: 'owner',
-  roleTitleAr: 'المالك والمشرف العام',
-  branchId: 'br-01',
-  branchName: 'المركز الرئيسي - صنعاء',
+  id: 'usr-003',
+  name: 'صديق علي الفتاحي',
+  role: 'teller',
+  roleTitleAr: 'الكاشير / الصراف المعتمد',
+  branchId: 'br-khadeer',
+  branchName: 'فرع خدير - الكاشير المعتمد',
 };
 
 export const AVAILABLE_ROLES: { role: UserProfile['role']; titleAr: string; desc: string }[] = [

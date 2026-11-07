@@ -51,6 +51,9 @@ import { InternalTransferModal } from './components/InternalTransferModal';
 import { A4AccountStatementModal } from './components/A4AccountStatementModal';
 import { ReceiveTransferDesk } from './components/ReceiveTransferDesk';
 import { PrintAuditLogModal } from './components/vouchers/PrintAuditLogModal';
+import { RoleAuthModal } from './components/ui/RoleAuthModal';
+import { UserRole } from './types/exchange';
+import { AVAILABLE_ROLES } from './data/initialData';
 
 function AppContent() {
   const toast = useToast();
@@ -60,6 +63,10 @@ function AppContent() {
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
   const [isA4StatementOpen, setIsA4StatementOpen] = useState<boolean>(false);
+  const [statementCustomerId, setStatementCustomerId] = useState<string | undefined>(undefined);
+  const [statementType, setStatementType] = useState<'customer' | 'account' | 'profits'>('account');
+  const [roleAuthTarget, setRoleAuthTarget] = useState<UserRole | null>(null);
+  const [isProcessingPayout, setIsProcessingPayout] = useState<boolean>(false);
   const [isOfflineModalOpen, setIsOfflineModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isPrintAuditOpen, setIsPrintAuditOpen] = useState<boolean>(false);
@@ -192,24 +199,8 @@ function AppContent() {
     setActiveVoucher(voucher);
   };
 
-  // Modals state - initialized with the official voucher so it appears directly on screen
-  const [activeVoucher, setActiveVoucher] = useState<OfficialVoucher | null>(() => {
-    return voucherEngine.createOutgoingTransferVoucher({
-      voucherNumber: '7-2026-0001',
-      transferNumber: 'TR-931106',
-      senderName: 'صديق علي محمد الفتاحي',
-      senderPhone: '771280940',
-      recipientName: 'صديق',
-      recipientPhone: '771280940',
-      networkName: 'شبكة النجم',
-      amount: 5000,
-      currency: 'SAR',
-      feeAmount: 0,
-      branchName: 'تعز - مديرية خدير',
-      tellerName: 'الكاشير المعتمد',
-      notes: 'سند إشعار حوالة مالية معتمدة',
-    });
-  });
+  // Modals state - initialized to null to prevent disruptive auto-popup on page refresh
+  const [activeVoucher, setActiveVoucher] = useState<OfficialVoucher | null>(null);
   const [isRatesModalOpen, setIsRatesModalOpen] = useState<boolean>(false);
   const [isInternalTransferModalOpen, setIsInternalTransferModalOpen] = useState<boolean>(false);
 
@@ -585,104 +576,183 @@ function AppContent() {
     }
   };
 
-  // 3. Payout Incoming Remittance (صرف حوالة واردة)
-  const handlePayoutIncomingRemittance = (
+  // 3. Payout Incoming Remittance (صرف حوالة واردة بمصادقة أمنية، تدقيق السيولة، ومنع التكرار)
+  const handlePayoutIncomingRemittance = async (
     transferId: string,
     recipientIdType: 'national_id' | 'passport' | 'family_card',
     recipientIdNumber: string
   ) => {
+    if (isProcessingPayout) {
+      toast.warning('عملية الصرف قيد المعالجة، يرجى الانتظار لحين اكتمال القيد.');
+      return;
+    }
+
     const targetRem = remittances.find((r) => r.id === transferId);
-    if (!targetRem) return;
+    if (!targetRem) {
+      toast.error('خطأ في العملية', 'لم يتم العثور على الحوالة المطلوبة.');
+      return;
+    }
 
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-    const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
+    if (targetRem.status !== 'available') {
+      toast.error(
+        'لا يمكن صرف الحوالة',
+        `الحوالة رقم (${targetRem.transferNumber}) حالتها [${targetRem.status === 'paid' ? 'مصروفة مسبقاً' : 'ملغاة'}]. يمنع النظام تكرار الصرف منعاً باتاً.`
+      );
+      return;
+    }
 
-    // Update balances: Cashier pays out amount, network claim account is debited
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [targetRem.currency]: (acc.balances[targetRem.currency] || 0) - targetRem.amount,
-            },
-          };
-        }
-        if (acc.id === 'acc-1301') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [targetRem.currency]: (acc.balances[targetRem.currency] || 0) + targetRem.amount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
+    if (!recipientIdNumber.trim()) {
+      toast.warning('يرجى إدخال رقم إثبات الهوية للمستفيد للتحقق والامتثال لضوابط KYC.');
+      return;
+    }
 
-    // Update Remittance state
-    setRemittances((prev) =>
-      prev.map((r) =>
-        r.id === transferId
-          ? {
-              ...r,
-              status: 'paid',
-              paidAt: `${dateStr} ${timeStr}`,
-              recipientIdType,
-              recipientIdNumber,
-            }
-          : r
-      )
-    );
+    // Check Cashier Drawer liquidity
+    const cashierBox = accounts.find((a) => a.id === 'acc-1102');
+    const cashierBalance = cashierBox ? (cashierBox.balances[targetRem.currency] || 0) : 0;
+    if (cashierBalance < targetRem.amount) {
+      toast.error(
+        'رصيد صندوق الكاشير غير كافٍ',
+        `الرصيد المتاح في الصندوق (${formatMoney(cashierBalance, targetRem.currency)}) أقل من مبلغ الحوالة المطلوب صرفه (${formatMoney(targetRem.amount, targetRem.currency)}). يرجى تغذية الصندوق أولاً.`
+      );
+      return;
+    }
 
-    // Balanced Journal Entry
-    const newJournalEntry: JournalEntry = {
-      id: `jv-pay-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `صرف حوالة واردة ${targetRem.transferNumber} للمستفيد ${targetRem.recipientName} (إثبات هوية: ${recipientIdNumber})`,
-      lines: [
-        {
-          accountId: 'acc-1301',
-          accountNameAr: `حساب ${targetRem.networkName}`,
-          currency: targetRem.currency,
-          debit: targetRem.amount,
-          credit: 0,
-          note: 'مطالبة الشبكة بقيمة الحوالة المصروفة',
+    setIsProcessingPayout(true);
+
+    try {
+      // 1. Call Server-Side API to enforce atomic duplicate payout prevention & audit registry
+      const serverResult = await apiClient.payoutRemittance({
+        transferId: targetRem.id,
+        transferNumber: targetRem.transferNumber,
+        recipientIdType,
+        recipientIdNumber: recipientIdNumber.trim(),
+        amount: targetRem.amount,
+        currency: targetRem.currency,
+      });
+
+      if (!serverResult.success) {
+        toast.error('رفض الخادم عملية الصرف', serverResult.error || 'فشلت مصادقة صرف الحوالة على الخادم المركزي.');
+        setIsProcessingPayout(false);
+        return;
+      }
+
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+      const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
+
+      // 2. Update balances: Cashier pays out amount, network claim account is debited
+      setAccounts((prevAccounts) =>
+        prevAccounts.map((acc) => {
+          if (acc.id === 'acc-1102') {
+            return {
+              ...acc,
+              balances: {
+                ...acc.balances,
+                [targetRem.currency]: (acc.balances[targetRem.currency] || 0) - targetRem.amount,
+              },
+            };
+          }
+          if (acc.id === 'acc-1301') {
+            return {
+              ...acc,
+              balances: {
+                ...acc.balances,
+                [targetRem.currency]: (acc.balances[targetRem.currency] || 0) + targetRem.amount,
+              },
+            };
+          }
+          return acc;
+        })
+      );
+
+      // 3. Update Remittance state
+      setRemittances((prev) =>
+        prev.map((r) =>
+          r.id === transferId
+            ? {
+                ...r,
+                status: 'paid',
+                paidAt: `${dateStr} ${timeStr}`,
+                recipientIdType,
+                recipientIdNumber: recipientIdNumber.trim(),
+              }
+            : r
+        )
+      );
+
+      // 4. Balanced Journal Entry
+      const newJournalEntry: JournalEntry = {
+        id: `jv-pay-${Date.now()}`,
+        entryNumber: entryNum,
+        date: dateStr,
+        time: timeStr,
+        descriptionAr: `صرف حوالة واردة ${targetRem.transferNumber} للمستفيد ${targetRem.recipientName} (إثبات هوية: ${recipientIdNumber.trim()})`,
+        lines: [
+          {
+            accountId: 'acc-1301',
+            accountNameAr: `حساب ${targetRem.networkName}`,
+            currency: targetRem.currency,
+            debit: targetRem.amount,
+            credit: 0,
+            note: 'مطالبة الشبكة بقيمة الحوالة المصروفة',
+          },
+          {
+            accountId: 'acc-1102',
+            accountNameAr: 'صندوق كاشير الصراف 1',
+            currency: targetRem.currency,
+            debit: 0,
+            credit: targetRem.amount,
+            note: `تسليم نقدي للمستفيد ${targetRem.recipientName}`,
+          },
+        ],
+        referenceType: 'transfer_payout',
+        referenceId: targetRem.transferNumber,
+        branchId: currentUser.branchId,
+        createdBy: currentUser.name,
+        isBalanced: true,
+      };
+
+      setJournalEntries((prev) => [...prev, newJournalEntry]);
+
+      // 5. System audit log
+      const payoutAuditLog: SystemAuditLog = {
+        id: `sys-payout-${Date.now()}`,
+        category: 'financial',
+        timestamp: `${dateStr} ${timeStr}`,
+        action: 'صرف حوالة مالية واردة',
+        details: `صرف الحوالة رقم ${targetRem.transferNumber} بمبلغ ${formatMoney(targetRem.amount, targetRem.currency)} للمستفيد ${targetRem.recipientName} (هوية: ${recipientIdNumber.trim()}) بقيد ${entryNum}`,
+        performedBy: currentUser.name,
+        userRole: currentUser.role,
+      };
+      setSystemAuditLogs((prev) => [payoutAuditLog, ...prev]);
+
+      // 6. Generate Official Voucher via Central Voucher Engine
+      const payoutVoucher = voucherEngine.createIncomingTransferPayoutVoucher({
+        remittance: {
+          ...targetRem,
+          status: 'paid',
+          paidAt: `${dateStr} ${timeStr}`,
+          recipientIdType,
+          recipientIdNumber: recipientIdNumber.trim(),
         },
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'صندوق كاشير الصراف 1',
-          currency: targetRem.currency,
-          debit: 0,
-          credit: targetRem.amount,
-          note: `تسليم نقدي للمستفيد ${targetRem.recipientName}`,
-        },
-      ],
-      referenceType: 'transfer_payout',
-      referenceId: targetRem.transferNumber,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
+        recipientIdType,
+        recipientIdNumber: recipientIdNumber.trim(),
+        branchName: currentUser.branchName,
+        tellerName: currentUser.name,
+      });
 
-    setJournalEntries((prev) => [...prev, newJournalEntry]);
+      setActiveVoucher(payoutVoucher);
 
-    // Generate Official Voucher via Central Voucher Engine
-    const payoutVoucher = voucherEngine.createIncomingTransferPayoutVoucher({
-      remittance: targetRem,
-      recipientIdType,
-      recipientIdNumber,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-    });
-
-    setActiveVoucher(payoutVoucher);
+      toast.success(
+        'تم صرف الحوالة بنجاح',
+        `تم تسليم مبلغ ${formatMoney(targetRem.amount, targetRem.currency)} للمستفيد وقيد السند المحاسبي وتوثيق السجل بالسيرفر.`
+      );
+    } catch (err: any) {
+      toast.error('حدث خطأ أثناء صرف الحوالة', err.message || 'يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsProcessingPayout(false);
+    }
   };
 
   // 4. Cancel Remittance with Reverse Journal Entry (إلغاء واسترداد بقيد عكسي)
@@ -784,20 +854,51 @@ function AppContent() {
     return newRem;
   };
 
-  // Helper: Fund Drawer
+  // Helper: Fund Drawer from Central Treasury with strict liquidity check and balanced double-entry
   const handleFundDrawer = (currency: CurrencyCode, amount: number) => {
+    if (amount <= 0) {
+      toast.warning('يرجى إدخال مبلغ صحيح لتغذية الصندوق.');
+      return;
+    }
+
+    const centralTreasury = accounts.find((a) => a.id === 'acc-1101');
+    const cashierDrawer = accounts.find((a) => a.id === 'acc-1102');
+
+    if (!centralTreasury || !cashierDrawer) {
+      toast.error('خطأ في تهيئة الحسابات', 'تعذر العثور على حساب الخزينة الرئيسية أو صندوق الكاشير.');
+      return;
+    }
+
+    const treasuryBalance = centralTreasury.balances[currency] || 0;
+    if (treasuryBalance < amount) {
+      toast.error(
+        'رصيد الخزينة الرئيسية غير كافٍ',
+        `الرصيد المتاح في الخزينة المركزية (${formatMoney(treasuryBalance, currency)}) أقل من المبلغ المطلوب (${formatMoney(amount, currency)}).`
+      );
+      return;
+    }
+
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+    const entryNum = `JV-FUND-${Date.now().toString().slice(-4)}`;
+    const voucherNum = `V-FUND-${Date.now().toString().slice(-4)}`;
+
+    // Correct Double-Entry Balance Adjustment:
+    // Deduct from Central Treasury (acc-1101)
+    // Credit to Cashier Drawer (acc-1102)
     setAccounts((prev) =>
       prev.map((acc) => {
-        if (acc.id === 'acc-1102') {
+        if (acc.id === 'acc-1101') {
           return {
             ...acc,
             balances: {
               ...acc.balances,
-              [currency]: (acc.balances[currency] || 0) + amount,
+              [currency]: (acc.balances[currency] || 0) - amount,
             },
           };
         }
-        if (acc.id === 'acc-1101') {
+        if (acc.id === 'acc-1102') {
           return {
             ...acc,
             balances: {
@@ -808,6 +909,70 @@ function AppContent() {
         }
         return acc;
       })
+    );
+
+    // Balanced Journal Entry
+    const fundJournalEntry: JournalEntry = {
+      id: `jv-fund-${Date.now()}`,
+      entryNumber: entryNum,
+      date: dateStr,
+      time: timeStr,
+      descriptionAr: `تغذية صندوق الصراف 1 من الخزينة المركزية بمبلغ ${formatMoney(amount, currency)}`,
+      lines: [
+        {
+          accountId: 'acc-1102',
+          accountNameAr: 'صندوق كاشير الصراف 1',
+          currency,
+          debit: amount,
+          credit: 0,
+          note: 'استلام تغذية نقدية لصندوق الكاشير',
+        },
+        {
+          accountId: 'acc-1101',
+          accountNameAr: 'الخزينة الرئيسية المركزية',
+          currency,
+          debit: 0,
+          credit: amount,
+          note: 'صرف تغذية سيولة لصندوق الكاشير',
+        },
+      ],
+      referenceType: 'internal_transfer',
+      referenceId: voucherNum,
+      branchId: currentUser.branchId,
+      createdBy: currentUser.name,
+      isBalanced: true,
+    };
+
+    setJournalEntries((prev) => [...prev, fundJournalEntry]);
+
+    // System audit log
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${Date.now()}`,
+      category: 'financial',
+      timestamp: `${dateStr} ${timeStr}`,
+      action: 'تغذية صندوق الصراف',
+      details: `تمت تغذية صندوق الكاشير من الخزينة المركزية بمبلغ ${formatMoney(amount, currency)} بقيد ${entryNum}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
+    };
+    setSystemAuditLogs((prev) => [auditRecord, ...prev]);
+
+    // Create official voucher
+    const voucher = voucherEngine.createInternalTransferVoucher({
+      voucherNumber: voucherNum,
+      fromAccountName: 'الخزينة الرئيسية المركزية',
+      toAccountName: 'صندوق كاشير الصراف 1',
+      amount,
+      currency,
+      tellerName: currentUser.name,
+      branchName: currentUser.branchName,
+      reason: 'تغذية صندوق الصراف لتغطية صرف الحوالات والعمليات اليومية',
+    });
+    setActiveVoucher(voucher);
+
+    toast.success(
+      'تمت تغذية الصندوق بنجاح',
+      `تم تحويل ${formatMoney(amount, currency)} من الخزينة الرئيسية إلى صندوق الكاشير بقيد محاسبي متوازن.`
     );
   };
 
@@ -1100,6 +1265,26 @@ function AppContent() {
     setActiveVoucher(voucher);
   };
 
+  // Secure Role Escalation with Server-Side Verification
+  const handleRequestRoleChange = (role: UserRole) => {
+    if (role === currentUser.role) return;
+
+    // For standard operational roles (teller, auditor), allow switching with notification
+    if (role === 'teller' || role === 'auditor') {
+      const roleMeta = AVAILABLE_ROLES.find((r) => r.role === role);
+      setCurrentUser((prev) => ({
+        ...prev,
+        role,
+        roleTitleAr: roleMeta?.titleAr || role,
+      }));
+      toast.info(`تم تبديل الجلسة إلى: [${roleMeta?.titleAr.split('(')[0].trim()}]`);
+      return;
+    }
+
+    // High privilege roles: Owner, General Manager, Branch Manager require server PIN verification
+    setRoleAuthTarget(role);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* Header Navigation */}
@@ -1107,12 +1292,16 @@ function AppContent() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         currentUser={currentUser}
-        setCurrentUser={setCurrentUser}
+        onRequestRoleChange={handleRequestRoleChange}
         isOnline={isOnline}
         setIsOnline={setIsOnline}
         onOpenRatesModal={() => setIsRatesModalOpen(true)}
         onOpenInternalTransferModal={() => setIsInternalTransferModalOpen(true)}
-        onOpenA4StatementModal={() => setIsA4StatementOpen(true)}
+        onOpenA4StatementModal={() => {
+          setStatementCustomerId(undefined);
+          setStatementType('account');
+          setIsA4StatementOpen(true);
+        }}
         onOpenOfflineModal={() => setIsOfflineModalOpen(true)}
         onOpenOfficialVoucher={handleOpenOfficialSampleVoucher}
         onOpenPrintAudit={() => setIsPrintAuditOpen(true)}
@@ -1141,7 +1330,11 @@ function AppContent() {
             onOpenRatesModal={() => setIsRatesModalOpen(true)}
             onOpenVoucher={(voucherId) => handleOpenOfficialSampleVoucher()}
             onOpenInternalTransferModal={() => setIsInternalTransferModalOpen(true)}
-            onOpenA4StatementModal={() => setIsA4StatementOpen(true)}
+            onOpenA4StatementModal={() => {
+              setStatementCustomerId(undefined);
+              setStatementType('account');
+              setIsA4StatementOpen(true);
+            }}
             onOpenOfficialVoucher={handleOpenOfficialSampleVoucher}
           />
         )}
@@ -1188,7 +1381,11 @@ function AppContent() {
             remittances={remittances}
             currentUser={currentUser}
             onAddCustomer={(c) => setCustomers((prev) => [c, ...prev])}
-            onOpenA4Statement={() => setIsA4StatementOpen(true)}
+            onOpenA4Statement={(customerId) => {
+              setStatementCustomerId(customerId);
+              setStatementType(customerId ? 'customer' : 'account');
+              setIsA4StatementOpen(true);
+            }}
           />
         )}
 
@@ -1240,12 +1437,31 @@ function AppContent() {
       {/* Official A4 Account & Profits Statement Modal */}
       <A4AccountStatementModal
         isOpen={isA4StatementOpen}
-        onClose={() => setIsA4StatementOpen(false)}
+        onClose={() => {
+          setIsA4StatementOpen(false);
+          setStatementCustomerId(undefined);
+        }}
         accounts={accounts}
         customers={customers}
         journalEntries={journalEntries}
+        remittances={remittances}
         currentUser={currentUser}
+        targetCustomerId={statementCustomerId}
+        initialMode={statementType}
       />
+
+      {/* Server PIN Authentication Modal for Role Escalation */}
+      {roleAuthTarget && (
+        <RoleAuthModal
+          isOpen={!!roleAuthTarget}
+          targetRole={roleAuthTarget}
+          onClose={() => setRoleAuthTarget(null)}
+          onSuccess={(authedUser) => {
+            setCurrentUser(authedUser);
+            setRoleAuthTarget(null);
+          }}
+        />
+      )}
 
       {/* Exchange Rates & Audit Log Modal */}
       <ExchangeRatesModal

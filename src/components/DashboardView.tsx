@@ -74,39 +74,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </p>
         </div>
 
-        {/* Action Buttons: Unified sizing and variants (UI-03, UI-09) */}
-        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-2.5 w-full md:w-auto">
-          {onOpenOfficialVoucher && (
-            <Button
-              onClick={onOpenOfficialVoucher}
-              variant="brand"
-              size="md"
-              icon={<Receipt className="w-4 h-4 text-amber-300" />}
-              className="col-span-2 sm:col-span-1"
-              title="عرض سند الحوالة الرسمي مع الشعار وأزرار الواتساب والطباعة"
-            >
-              نظام السندات
-            </Button>
-          )}
-
+        {/* Essential Daily Cashier Shortcuts (UI/UX Clean Architecture) */}
+        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
           <Button
             onClick={onOpenExchangeModal}
             variant="primary"
             size="md"
             icon={<ArrowLeftRight className="w-4 h-4" />}
+            className="flex-1 sm:flex-none justify-center"
           >
-            صرف عملة
+            صرافة عملة
           </Button>
 
           <Button
             onClick={() => onNavigate('receive_transfer')}
-            variant="secondary"
+            variant="brand"
             size="md"
             icon={<ArrowDownLeft className="w-4 h-4 text-emerald-400" />}
+            className="flex-1 sm:flex-none justify-center"
           >
             <span>صرف حوالة</span>
             {pendingRemittancesCount > 0 && (
-              <span className="mr-1.5 bg-emerald-500 text-slate-950 text-[10px] font-bold px-1.5 py-0.5 rounded-full font-mono">
+              <span className="mr-1.5 bg-emerald-400 text-slate-950 text-[10px] font-bold px-1.5 py-0.5 rounded-full font-mono">
                 {pendingRemittancesCount}
               </span>
             )}
@@ -114,44 +103,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           <Button
             onClick={() => onNavigate('remittance')}
-            variant="outline"
+            variant="secondary"
             size="md"
             icon={<Plus className="w-4 h-4 text-emerald-400" />}
+            className="flex-1 sm:flex-none justify-center"
           >
             إرسال حوالة
-          </Button>
-
-          {onOpenA4StatementModal && (
-            <Button
-              onClick={onOpenA4StatementModal}
-              variant="outline"
-              size="md"
-              icon={<FileSpreadsheet className="w-4 h-4 text-teal-400" />}
-              title="كشف الأرباح الشامل وكشف حساب الحركات بصيغة A4"
-            >
-              كشف A4
-            </Button>
-          )}
-
-          {onOpenInternalTransferModal && (
-            <Button
-              onClick={onOpenInternalTransferModal}
-              variant="outline"
-              size="md"
-              icon={<Vault className="w-4 h-4 text-emerald-400" />}
-              title="نقل سيولة وتغذية الصناديق"
-            >
-              تحويل داخلي
-            </Button>
-          )}
-
-          <Button
-            onClick={() => onNavigate('customers')}
-            variant="ghost"
-            size="md"
-            icon={<Users className="w-4 h-4 text-cyan-400" />}
-          >
-            العملاء KYC
           </Button>
         </div>
       </div>

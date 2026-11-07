@@ -14,6 +14,7 @@ import {
   MessageSquare,
   PenTool,
   Printer,
+  Receipt,
   RotateCcw,
   Search,
   Send,
@@ -173,16 +174,22 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
     setActiveTab('list');
   };
 
-  const handleConfirmPayout = () => {
-    if (!payoutModalTarget) return;
+  const [isSubmittingPayout, setIsSubmittingPayout] = useState(false);
+
+  const handleConfirmPayout = async () => {
+    if (!payoutModalTarget || isSubmittingPayout) return;
     if (!recipientIdNumber.trim()) {
       toast.warning('الرجاء إدخال رقم هوية المستفيد للتحقق قبل الصرف.');
       return;
     }
-    onPayoutIncomingRemittance(payoutModalTarget.id, recipientIdType, recipientIdNumber.trim());
-    toast.success('تم صرف الحوالة بنجاح للمستفيد');
-    setPayoutModalTarget(null);
-    setRecipientIdNumber('');
+    setIsSubmittingPayout(true);
+    try {
+      await onPayoutIncomingRemittance(payoutModalTarget.id, recipientIdType, recipientIdNumber.trim());
+      setPayoutModalTarget(null);
+      setRecipientIdNumber('');
+    } finally {
+      setIsSubmittingPayout(false);
+    }
   };
 
   const handleConfirmCancel = () => {
@@ -618,18 +625,11 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
                     <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80 flex-wrap">
                       <button
                         onClick={() => onOpenVoucher(rem)}
-                        className="flex-1 min-h-[44px] px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                        className="flex-1 min-h-[44px] px-3 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors border border-slate-700"
+                        title="عرض السند الرسمي للطباعة أو الإرسال عبر الواتساب"
                       >
-                        <Printer className="w-4 h-4 text-emerald-400" />
-                        <span>طباعة السند</span>
-                      </button>
-
-                      <button
-                        onClick={() => onOpenVoucher(rem)}
-                        className="flex-1 min-h-[44px] px-3 bg-[#00a884]/20 hover:bg-[#00a884]/30 border border-[#00a884]/40 text-[#25D366] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        <MessageCircle className="w-4 h-4" />
-                        <span>واتساب</span>
+                        <Receipt className="w-4 h-4 text-emerald-400" />
+                        <span>سند الحوالة (طباعة / واتساب)</span>
                       </button>
 
                       {rem.direction === 'incoming' && rem.status === 'available' ? (
@@ -771,22 +771,14 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
                             </button>
                           ) : null}
 
-                          {/* Print / View Voucher */}
+                          {/* Single Unified Voucher Action (Print & WhatsApp) */}
                           <button
                             onClick={() => onOpenVoucher(rem)}
-                            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors"
-                            title="عرض وطباعة السند المالي الرسمي"
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1 border border-slate-700 transition-colors"
+                            title="عرض السند الرسمي وخيارات الطباعة والإرسال عبر واتساب"
                           >
-                            <Printer className="w-3.5 h-3.5 text-emerald-400" />
-                          </button>
-
-                          {/* Instant WhatsApp Dispatch */}
-                          <button
-                            onClick={() => onOpenVoucher(rem)}
-                            className="p-1.5 bg-emerald-950/60 hover:bg-[#00a884] text-emerald-400 hover:text-white rounded-lg border border-emerald-800/40 transition-colors"
-                            title="إرسال سند الحوالة عبر WhatsApp (السند + النص)"
-                          >
-                            <MessageCircle className="w-3.5 h-3.5" />
+                            <Receipt className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>السند</span>
                           </button>
                         </div>
                       </td>

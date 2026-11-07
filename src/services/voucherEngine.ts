@@ -251,6 +251,54 @@ export class VoucherEngine {
   }
 
   /**
+   * 5. إنشاء سند تحويل مالي ومناقلة سيولة داخلية معتمد
+   */
+  public createInternalTransferVoucher(params: {
+    voucherNumber: string;
+    fromAccountName: string;
+    toAccountName: string;
+    amount: number;
+    currency: CurrencyCode;
+    tellerName: string;
+    branchName: string;
+    reason?: string;
+  }): OfficialVoucher {
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+
+    return {
+      id: `vouch-trf-${Date.now()}`,
+      voucherNumber: params.voucherNumber,
+      type: 'transfer_outgoing',
+      templateType: 'send',
+      date: dateStr,
+      time: timeStr,
+      branchName: params.branchName,
+      tellerName: params.tellerName,
+      partyName: params.toAccountName,
+      partyPhone: '771280940',
+      senderName: params.fromAccountName,
+      depositorName: params.fromAccountName,
+      recipientName: params.toAccountName,
+      amount: params.amount,
+      netAmount: params.amount,
+      currency: params.currency,
+      amountInWordsAr: tafqeetArabic(params.amount, params.currency),
+      commission: 0,
+      totalPaid: params.amount,
+      referenceNumber: params.voucherNumber,
+      generalNumber: `${params.voucherNumber}/1211005`,
+      accountNumber: '1102-TRF',
+      qrCodeData: params.voucherNumber,
+      notes: params.reason || `مناقلة سيولة نقدية وتغذية داخلية من ${params.fromAccountName} إلى ${params.toAccountName}`,
+      signatureStatus: 'pending_print',
+      dispatchStatus: 'not_sent',
+      lifecycleStatus: 'PENDING',
+    };
+  }
+
+  /**
    * 5. التأكد من اكتمال تحميل الخطوط العربية قبل توليد الصورة
    */
   public async ensureFontsLoaded(): Promise<boolean> {

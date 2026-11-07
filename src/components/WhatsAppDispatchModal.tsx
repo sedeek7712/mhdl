@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { OfficialVoucher, SUPPORTED_CURRENCIES } from '../types/exchange';
+import { OfficialVoucher, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { UnifiedVoucherDocument } from './UnifiedVoucherDocument';
 import { voucherEngine } from '../services/voucherEngine';
 import {
@@ -44,6 +44,7 @@ interface WhatsAppDispatchModalProps {
   voucher: OfficialVoucher | null;
   isOpen: boolean;
   onClose: () => void;
+  currentUser?: UserProfile;
   onUpdateVoucherStatus?: (
     voucherId: string,
     status: 'sent' | 'copied' | 'downloaded' | 'failed',
@@ -56,6 +57,7 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   voucher,
   isOpen,
   onClose,
+  currentUser,
   onUpdateVoucherStatus,
 }) => {
   const receiptCardRef = useRef<HTMLDivElement>(null);
@@ -75,6 +77,13 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
+  const [showOverridePrompt, setShowOverridePrompt] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+
+  const isAuthorizedForOverride =
+    currentUser?.role === 'owner' ||
+    currentUser?.role === 'general_manager' ||
+    currentUser?.role === 'branch_manager';
 
   // Central Dispatch Registry Record
   const [dispatchRecord, setDispatchRecord] = useState<any | null>(null);
@@ -416,22 +425,63 @@ export const WhatsAppDispatchModal: React.FC<WhatsAppDispatchModalProps> = ({
           </div>
         </div>
 
-        {/* Idempotency Warning Alert */}
+        {/* Idempotency Warning Alert & Administrative Override Guard */}
         {duplicateWarning && (
-          <div className="bg-amber-950/90 border-b border-amber-600 px-3.5 py-2 text-xs text-amber-200 space-y-1.5 animate-fadeIn">
+          <div className="bg-amber-950/90 border-b border-amber-600 px-3.5 py-2.5 text-xs text-amber-200 space-y-2 animate-fadeIn">
             <div className="flex items-center justify-between">
               <span className="font-bold flex items-center gap-1.5">
                 <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>حماية منع التكرار (Idempotency Active):</span>
+                <span>حماية منع التكرار (Idempotency Guard Active):</span>
               </span>
-              <button
-                onClick={() => handleDispatchProduction(true)}
-                className="px-2 py-0.5 bg-amber-800 hover:bg-amber-700 text-white rounded text-[11px] font-bold transition-all"
-              >
-                إعادة الإرسال الإجباري
-              </button>
+              {isAuthorizedForOverride && !showOverridePrompt && (
+                <button
+                  onClick={() => setShowOverridePrompt(true)}
+                  className="px-2.5 py-1 bg-amber-800 hover:bg-amber-700 text-white rounded-lg text-[11px] font-bold transition-all"
+                >
+                  طلب إعادة الإرسال الإجباري (صلاحية إدارية)
+                </button>
+              )}
             </div>
             <p className="text-[11px] leading-relaxed text-amber-300">{duplicateWarning}</p>
+
+            {!isAuthorizedForOverride && (
+              <p className="text-[10px] text-amber-400/90 font-medium bg-amber-900/40 p-2 rounded-lg border border-amber-700/50">
+                🔒 تم قفل إعادة الإرسال لحماية العميل من التكرار. يتطلب تجاوز الحماية صلاحية (مدير الفرع أو المشرف العام) مع تبرير إداري موثق.
+              </p>
+            )}
+
+            {isAuthorizedForOverride && showOverridePrompt && (
+              <div className="bg-slate-900/90 p-3 rounded-xl border border-amber-600/60 space-y-2 mt-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-300 text-[11px]">توثيق سبب إعادة الإرسال الإجباري (إلزامي):</span>
+                  <button
+                    onClick={() => setShowOverridePrompt(false)}
+                    className="text-slate-400 hover:text-white text-[10px]"
+                  >
+                    إلغاء
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="مثال: طلب العميل إعادة الإرسال إلى رقم بديل، أو عدم وصول الإشعار الأول..."
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    disabled={overrideReason.trim().length < 5}
+                    onClick={() => {
+                      setShowOverridePrompt(false);
+                      handleDispatchProduction(true);
+                    }}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-lg text-xs"
+                  >
+                    تأكيد إعادة الإرسال وتوثيق السبب في السجل
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

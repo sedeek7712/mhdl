@@ -101,6 +101,33 @@ class ApiClient {
 
     return fetch(input, modifiedInit);
   }
+
+  /**
+   * طلب صرف حوالة واردة عبر الخادم مع فحص منع الصرف المكرر والصلاحيات
+   */
+  public async payoutRemittance(payload: {
+    transferId: string;
+    transferNumber: string;
+    recipientIdType: string;
+    recipientIdNumber: string;
+    amount: number;
+    currency: string;
+    voucherNumber?: string;
+    managerOverride?: boolean;
+  }): Promise<{ success: boolean; isDuplicate?: boolean; record?: any; error?: string; message?: string }> {
+    try {
+      const res = await this.fetch('/api/remittances/payout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر الاتصال بالخادم لصرف الحوالة' };
+    }
+  }
 }
 
 export const apiClient = new ApiClient();
