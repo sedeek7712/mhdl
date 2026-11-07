@@ -1,0 +1,24 @@
+[
+  {
+    "id": "audit-1794004537336-cba0",
+    "category": "remittance_numbering",
+    "action": "تعديل طريقة إصدار أرقام الحوالات",
+    "details": "تحديث معلمات الترقيم بواسطة عمرو النماري (owner)",
+    "performedBy": "عمرو النماري",
+    "userRole": "owner",
+    "timestamp": "2026-11-06 22:35",
+    "oldValue": "automatic (Next: TR-931107)",
+    "newValue": "automatic (Next: TR-931107)"
+  },
+  {
+    "id": "audit-init-01",
+    "category": "remittance_numbering",
+    "action": "تهيئة سياسة ترقيم الحوالات",
+    "details": "اعتماد سياسة الترقيم التلقائي المركزي (TR-) كسياسة رسمية معتمدة لمنع تكرار الأرقام بين الفروع",
+    "performedBy": "عمرو النماري",
+    "userRole": "owner",
+    "timestamp": "2026-11-06 09:00",
+    "oldValue": "غير محدد",
+    "newValue": "automatic (TR-)"
+  }
+]

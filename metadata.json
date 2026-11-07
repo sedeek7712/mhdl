@@ -1,0 +1,6 @@
+{
+  "name": "نظام عمرو النماري للصرافة والحسابات | Amro Alnamari Exchange ERP",
+  "description": "نظام صرافة وحسابات متكامل ذو قيد مزدوج، إدارة العملات والحوالات، محرك السندات وإشعارات الواتساب، ومعمارية الكود النظيف Cross-Platform Flutter/Dart.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

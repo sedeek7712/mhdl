@@ -1,0 +1,102 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  * {
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+}
+
+/* Custom scrollbar for ERP tables and code views */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.4);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+/* ======================================================== */
+/* Print styles for official vouchers / نظام السندات والطباعة */
+/* ======================================================== */
+@media print {
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide all app chrome, navigation, headers, and modals */
+  .no-print,
+  nav,
+  header,
+  footer,
+  aside,
+  button:not(.printable-voucher-card button),
+  .no-print-area {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  /* Printable voucher card styling */
+  .printable-voucher-card {
+    box-shadow: none !important;
+    margin: 0 auto !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Default @page fallback */
+  @page {
+    margin: 6mm;
+  }
+}
+
+/* Paper-specific active print rules injected dynamically via body attribute */
+body[data-print-paper="a4"] {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+}
+
+body[data-print-paper="a5"] {
+  @page {
+    size: A5 portrait;
+    margin: 5mm;
+  }
+}
+
+body[data-print-paper="thermal_80mm"] {
+  @page {
+    size: 80mm auto;
+    margin: 2mm 3mm;
+  }
+}
+
+body[data-print-paper="thermal_58mm"] {
+  @page {
+    size: 58mm auto;
+    margin: 1.5mm 2mm;
+  }
+}
+

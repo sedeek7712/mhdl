@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <script>
+      (function() {
+        // AI Studio Environment Constraint: HMR is disabled. Ignore and silence WebSocket errors.
+        if (typeof window !== 'undefined') {
+          var OrigWebSocket = window.WebSocket;
+          if (OrigWebSocket) {
+            window.WebSocket = function(url, protocols) {
+              if (protocols === 'vite-hmr' || (typeof url === 'string' && (url.indexOf('token=') !== -1 || url.indexOf('vite') !== -1))) {
+                var dummy = new EventTarget();
+                dummy.readyState = 1;
+                dummy.url = url;
+                dummy.protocol = protocols || '';
+                dummy.send = function() {};
+                dummy.close = function() {};
+                setTimeout(function() {
+                  dummy.dispatchEvent(new Event('open'));
+                }, 0);
+                return dummy;
+              }
+              return new OrigWebSocket(url, protocols);
+            };
+            window.WebSocket.prototype = OrigWebSocket.prototype;
+            window.WebSocket.CONNECTING = 0;
+            window.WebSocket.OPEN = 1;
+            window.WebSocket.CLOSING = 2;
+            window.WebSocket.CLOSED = 3;
+          }
+
+          window.addEventListener('unhandledrejection', function(event) {
+            if (event.reason && (
+              String(event.reason.message || event.reason).indexOf('WebSocket') !== -1
+            )) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          });
+
+          window.addEventListener('error', function(event) {
+            if (
+              String(event.message || '').indexOf('WebSocket') !== -1 ||
+              String(event.filename || '').indexOf('@vite/client') !== -1
+            ) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          });
+
+          var origError = console.error;
+          console.error = function() {
+            var args = Array.prototype.slice.call(arguments);
+            var str = args.map(function(a) {
+              return typeof a === 'string' ? a : (a && a.message) || '';
+            }).join(' ');
+            if (
+              str.indexOf('WebSocket closed without opened') !== -1 ||
+              str.indexOf('[vite] failed to connect to websocket') !== -1
+            ) {
+              return;
+            }
+            origError.apply(console, args);
+          };
+        }
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>نظام عمرو النماري للصرافة والحسابات | Amro Alnamari Exchange ERP</title>
+    <meta name="description" content="نظام صرافة وحسابات متكامل ذو قيد مزدوج، إدارة العملات والحوالات، محرك السندات وإشعارات الواتساب، ومعمارية الكود النظيف Cross-Platform Flutter/Dart." />
+    <meta property="og:title" content="نظام عمرو النماري للصرافة والحسابات | Amro Alnamari Exchange ERP" />
+    <meta property="og:description" content="نظام صرافة وحسابات متكامل ذو قيد مزدوج، إدارة العملات والحوالات، محرك السندات وإشعارات الواتساب، ومعمارية الكود النظيف Cross-Platform Flutter/Dart." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="النماري ERP" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet" crossorigin="anonymous">
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased font-['Cairo',sans-serif] selection:bg-emerald-500/30 selection:text-emerald-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
