@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Account, CurrencyCode, Remittance, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { formatMoney, tafqeetArabic } from '../services/accountingEngine';
 import { ArrowDownLeft, CheckCircle2, DollarSign, IdCard, KeyRound, MessageCircle, Phone, Plus, Printer, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, UserCheck, Vault, X } from 'lucide-react';
+import { useToast } from './ui/Toast';
 
 interface ReceiveTransferDeskProps {
   remittances: Remittance[];
@@ -42,6 +43,7 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
   const [recipientActualName, setRecipientActualName] = useState('');
   const [hasVerifiedOriginalId, setHasVerifiedOriginalId] = useState(false);
   const [isManagerOverride, setIsManagerOverride] = useState(false);
+  const toast = useToast();
 
   // Incoming Remittance Quick Register Modal
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
@@ -115,8 +117,12 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
     if (match) {
       setSelectedRemittance(match);
       setRecipientActualName(match.recipientName);
+      toast.success('تم العثور على الحوالة بنجاح', `الحوالة رقم ${match.transferNumber} جاهزة للصرف.`);
     } else {
-      alert('لم يتم العثور على حوالة واردة مطابقة برقم البحث المُدخل. يمكنك النقر على «تسجيل وصول حوالة جديدة» أو «تحميل حوالة نموذجية».');
+      toast.warning(
+        'لم يتم العثور على حوالة مطابقة',
+        'تأكد من رقم الحوالة أو هاتف المستفيد، أو انقر على «تسجيل وصول حوالة جديدة».'
+      );
     }
   };
 
@@ -128,15 +134,15 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
   const handleConfirmPayout = () => {
     if (!selectedRemittance) return;
     if (!recipientIdNumber.trim()) {
-      alert('الرجاء إدخال رقم إثبات الهوية للمستفيد للتحقق قبل صرف الحوالة.');
+      toast.warning('الرجاء إدخال رقم إثبات الهوية للمستفيد للتحقق قبل صرف الحوالة.');
       return;
     }
     if (!hasVerifiedOriginalId) {
-      alert('يرجى تأكيد الاطلاع ومطابقة أصل الهوية الشخصية للمستفيد.');
+      toast.warning('يرجى تأكيد الاطلاع ومطابقة أصل الهوية الشخصية للمستفيد.');
       return;
     }
     if (!hasLiquidity && !isManagerOverride) {
-      alert('عذراً، رصيد الصندوق غير كافٍ. يمكنك تغذية الصندوق أو تفعيل خيار اعتماد المدير.');
+      toast.error('عذراً، رصيد الصندوق غير كافٍ', 'يمكنك تغذية الصندوق أو تفعيل خيار اعتماد المدير.');
       return;
     }
 
@@ -145,6 +151,10 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
       ...selectedRemittance,
       status: 'paid',
     });
+    toast.success(
+      'تم اعتماد صرف الحوالة بنجاح',
+      `تم تسليم المبلغ وقيد العملية في الصندوق وإصدار سند الصرف المعتمد.`
+    );
   };
 
   return (

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Account, CurrencyCode, ExchangeRate, JournalEntry, OfficialVoucher, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { formatMoney, tafqeetArabic } from '../services/accountingEngine';
 import { ArrowDownLeft, ArrowLeftRight, CheckCircle2, DollarSign, Printer, Send, ShieldAlert, Sparkles } from 'lucide-react';
+import { useToast } from './ui/Toast';
 
 interface ExchangeDeskViewProps {
   accounts: Account[];
@@ -38,6 +39,7 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
   const [customerName, setCustomerName] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
+  const toast = useToast();
 
   // Find cashier account for current teller
   const cashierAccount = accounts.find((a) => a.id === 'acc-1102') || accounts[0];
@@ -86,9 +88,15 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (sourceAmount <= 0) return;
+    if (sourceAmount <= 0) {
+      toast.warning('يرجى إدخال المبلغ المراد صرافته بشكل صحيح');
+      return;
+    }
     if (!hasSufficientLiquidity) {
-      alert(`عذراً، رصيد الصندوق غير كافٍ بالعملة المطلوبة (${formatMoney(targetLiquidity, targetCurrency)} متوفر فقط).`);
+      toast.error(
+        'رصيد الصندوق غير كافٍ',
+        `الرصيد المتاح حالياً بالعملة المطلوبة (${formatMoney(targetLiquidity, targetCurrency)}) غير كافٍ لتغطية العملية.`
+      );
       return;
     }
 
@@ -103,6 +111,11 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
       customerPhone: customerPhone.trim(),
       notes,
     });
+
+    toast.success(
+      'تم اعتماد وقيد عملية الصرافة بنجاح',
+      `تم صرف ${formatMoney(targetAmount, targetCurrency)} واستلام ${formatMoney(sourceAmount, sourceCurrency)}`
+    );
   };
 
   return (

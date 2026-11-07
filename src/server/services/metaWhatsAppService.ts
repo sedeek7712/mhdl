@@ -206,8 +206,12 @@ export class MetaWhatsAppService {
   public verifyWebhookSignature(rawBody: Buffer | string, signatureHeader?: string): boolean {
     const config = getMetaConfig();
     if (!config.appSecret) {
-      console.warn('[Meta Webhook] WHATSAPP_APP_SECRET is not configured; signature verification skipped in dev.');
-      return true; // في بيئة التطوير إذا لم يتم تحديد السر
+      if (process.env.NODE_ENV === 'production') {
+        console.error('[Meta Webhook CRITICAL] WHATSAPP_APP_SECRET is missing in production environment. Webhook signature verification failed.');
+        return false;
+      }
+      console.warn('[Meta Webhook SECURITY NOTICE] WHATSAPP_APP_SECRET is not configured; signature verification skipped in dev only.');
+      return true;
     }
 
     if (!signatureHeader) {

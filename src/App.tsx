@@ -32,6 +32,8 @@ import {
 import { formatMoney, tafqeetArabic, validateDoubleEntryBalance } from './services/accountingEngine';
 import { voucherEngine } from './services/voucherEngine';
 import { offlineStorage } from './services/offlineStorage';
+import { apiClient } from './services/apiClient';
+import { ToastProvider, useToast } from './components/ui/Toast';
 import { Header } from './components/Header';
 import { OfflineBanner } from './components/OfflineBanner';
 import { OfflineBackupModal } from './components/OfflineBackupModal';
@@ -50,7 +52,8 @@ import { A4AccountStatementModal } from './components/A4AccountStatementModal';
 import { ReceiveTransferDesk } from './components/ReceiveTransferDesk';
 import { PrintAuditLogModal } from './components/vouchers/PrintAuditLogModal';
 
-export default function App() {
+function AppContent() {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [currentUser, setCurrentUser] = useState<UserProfile>(CURRENT_USER);
   const [isOnline, setIsOnline] = useState<boolean>(() =>
@@ -113,33 +116,35 @@ export default function App() {
     offlineStorage.saveActiveShift(activeShift);
   }, [activeShift]);
 
-  // Try initial sync with backend API if available
+  // Authenticate session and sync with backend API
   useEffect(() => {
-    fetch('/api/remittances/settings')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && data.success && data.settings) {
-          setRemittanceSettings((prev) => ({
-            ...prev,
-            ...data.settings,
-          }));
-        }
-      })
-      .catch(() => {
-        // Fallback to local storage when backend is offline
-      });
+    apiClient.login(currentUser.role).then(() => {
+      apiClient.fetch('/api/remittances/settings')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.success && data.settings) {
+            setRemittanceSettings((prev) => ({
+              ...prev,
+              ...data.settings,
+            }));
+          }
+        })
+        .catch(() => {
+          // Fallback to local storage when backend is offline
+        });
 
-    fetch('/api/remittances/audit-logs')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && data.success && Array.isArray(data.logs) && data.logs.length > 0) {
-          setSystemAuditLogs(data.logs);
-        }
-      })
-      .catch(() => {
-        // Fallback to local storage
-      });
-  }, []);
+      apiClient.fetch('/api/remittances/audit-logs')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.success && Array.isArray(data.logs) && data.logs.length > 0) {
+            setSystemAuditLogs(data.logs);
+          }
+        })
+        .catch(() => {
+          // Fallback to local storage
+        });
+    });
+  }, [currentUser]);
 
   // Listen to browser network connectivity events
   useEffect(() => {
@@ -347,7 +352,7 @@ export default function App() {
 
     if (mode === 'manual') {
       if (!data.manualTransferNumber || !data.manualTransferNumber.trim()) {
-        alert('خطأ: رقم الحوالة إلزامي في وضع الترقيم اليدوي.');
+        toast.warning('رقم الحوالة إلزامي في وضع الترقيم اليدوي.');
         return;
       }
       const cleanManualNum = data.manualTransferNumber.trim().toUpperCase();
@@ -357,7 +362,8 @@ export default function App() {
         (r) => r.transferNumber.trim().toUpperCase() === cleanManualNum
       );
       if (isDuplicate) {
-        alert(
+        toast.error(
+          'رقم الحوالة مستخدم مسبقاً',
           `رفض النظام: رقم الحوالة (${cleanManualNum}) مستخدم مسبقاً في النظام ولا يمكن تكراره (UNIQUE Constraint).`
         );
         return;
@@ -386,12 +392,11 @@ export default function App() {
 
     // Register with backend server if online
     if (isOnline) {
-      fetch('/api/remittances/register-number', {
+      apiClient.fetch('/api/remittances/register-number', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           transferNumber: transferNum,
-          operatorName: currentUser.name,
           mode,
         }),
       }).catch((err) => console.warn('Could not register number with central server:', err));
@@ -533,7 +538,7 @@ export default function App() {
   // 2.1 Save Remittance Settings (التحكم في طريقة إصدار أرقام الحوالات وتوثيق التدقيق)
   const handleSaveRemittanceSettings = (newSettings: Partial<RemittanceSettings>, reason: string) => {
     if (currentUser.role !== 'owner' && currentUser.role !== 'general_manager') {
-      alert('عذراً، هذا الإجراء يتطلب صلاحية المالك أو المدير العام.');
+      toast.error('صلاحية غير كافية', 'عذراً، هذا الإجراء يتطلب صلاحية المالك أو المدير العام.');
       return;
     }
 
@@ -568,15 +573,13 @@ export default function App() {
     offlineStorage.saveSystemAuditLogs([auditEntry, ...systemAuditLogs]);
 
     if (isOnline) {
-      fetch('/api/remittances/settings', {
+      apiClient.fetch('/api/remittances/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           numberingMode: updated.numberingMode,
           prefix: updated.prefix,
           nextSequence: updated.nextSequence,
-          userRole: currentUser.role,
-          userName: currentUser.name,
         }),
       }).catch((err) => console.warn('Could not sync settings to backend:', err));
     }
@@ -1299,5 +1302,13 @@ export default function App() {
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }

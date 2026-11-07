@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Account, CurrencyCode, Remittance, RemittanceSettings, SUPPORTED_CURRENCIES, TransferStatus, UserProfile } from '../types/exchange';
 import { formatMoney } from '../services/accountingEngine';
+import { useToast } from './ui/Toast';
 import {
   AlertTriangle,
   ArrowDownLeft,
@@ -63,6 +64,7 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
   const [filterDirection, setFilterDirection] = useState<'all' | 'outgoing' | 'incoming'>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const toast = useToast();
 
   // Form states for new outgoing remittance
   const [senderName, setSenderName] = useState('');
@@ -134,19 +136,22 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
 
   const handleCreateOutgoing = (e: React.FormEvent) => {
     e.preventDefault();
-    if (amount <= 0) return;
+    if (amount <= 0) {
+      toast.warning('يرجى إدخال مبلغ الحوالة بشكل صحيح');
+      return;
+    }
 
     if (remittanceSettings.numberingMode === 'manual') {
       const trimmed = manualTransferNumber.trim();
       if (!trimmed) {
-        alert('يرجى إدخال رقم الحوالة (حقل إلزامي في وضع الترقيم اليدوي).');
+        toast.warning('يرجى إدخال رقم الحوالة (حقل إلزامي في وضع الترقيم اليدوي).');
         return;
       }
       const isDuplicate = remittances.some(
         (r) => r.transferNumber.trim().toUpperCase() === trimmed.toUpperCase()
       );
       if (isDuplicate) {
-        alert(`رفض النظام: رقم الحوالة (${trimmed}) مستخدم مسبقاً في النظام لمنع التكرار (UNIQUE Constraint).`);
+        toast.error('رقم الحوالة مستخدم مسبقاً', `رفض النظام: رقم الحوالة (${trimmed}) مستخدم مسبقاً لمنع التكرار.`);
         return;
       }
     }
@@ -163,6 +168,7 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
       notes,
       manualTransferNumber: remittanceSettings.numberingMode === 'manual' ? manualTransferNumber.trim().toUpperCase() : undefined,
     });
+    toast.success('تم إصدار الحوالة الصادرة بنجاح', 'تم قيد العملية في دفتر اليومية وفتح سند التحويل المعتمد.');
     setManualTransferNumber('');
     setActiveTab('list');
   };
@@ -170,10 +176,11 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
   const handleConfirmPayout = () => {
     if (!payoutModalTarget) return;
     if (!recipientIdNumber.trim()) {
-      alert('الرجاء إدخال رقم هوية المستفيد للتحقق قبل الصرف.');
+      toast.warning('الرجاء إدخال رقم هوية المستفيد للتحقق قبل الصرف.');
       return;
     }
     onPayoutIncomingRemittance(payoutModalTarget.id, recipientIdType, recipientIdNumber.trim());
+    toast.success('تم صرف الحوالة بنجاح للمستفيد');
     setPayoutModalTarget(null);
     setRecipientIdNumber('');
   };
@@ -181,10 +188,11 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
   const handleConfirmCancel = () => {
     if (!cancelModalTarget) return;
     if (!cancelReason.trim()) {
-      alert('الرجاء ذكر سبب الإلغاء لإنشاء القيد العكسي.');
+      toast.warning('الرجاء ذكر سبب الإلغاء لإنشاء القيد العكسي.');
       return;
     }
     onCancelRemittance(cancelModalTarget.id, cancelReason.trim());
+    toast.info('تم إلغاء الحوالة وقيد العكس المحاسبي');
     setCancelModalTarget(null);
     setCancelReason('');
   };

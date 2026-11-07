@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { RemittanceNumberingMode, RemittanceSettings, SystemAuditLog, UserProfile } from '../types/exchange';
+import { useToast } from './ui/Toast';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -46,16 +47,17 @@ export const RemittanceSettingsModal: React.FC<RemittanceSettingsModalProps> = (
   const [reason, setReason] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'settings' | 'audit_log'>('settings');
   const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
+  const toast = useToast();
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAuthorized) {
-      alert('عذراً، هذا الإجراء يتطلب صلاحية المالك أو المدير العام.');
+      toast.error('صلاحية غير كافية', 'عذراً، تعديل سياسة الترقيم يتطلب حصراً صلاحية المالك أو المدير العام.');
       return;
     }
 
     if (!reason.trim()) {
-      alert('يرجى كتابة سبب أو ملاحظة إدارية لاعتماد التغيير في سجل التدقيق المحاسبي.');
+      toast.warning('الملاحظة الإدارية مطلوبة', 'يرجى كتابة سبب التغيير لاعتماده وتوثيقه في سجل التدقيق المحاسبي.');
       return;
     }
 

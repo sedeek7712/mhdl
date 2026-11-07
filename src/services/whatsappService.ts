@@ -6,6 +6,7 @@
 import { toPng } from 'html-to-image';
 import { OfficialVoucher, SUPPORTED_CURRENCIES } from '../types/exchange';
 import { formatMoney } from './accountingEngine';
+import { apiClient } from './apiClient';
 
 export interface WhatsAppConfigStatus {
   success: boolean;
@@ -110,7 +111,7 @@ export async function generateVoucherImage(
  */
 export async function checkMetaConfigStatus(): Promise<WhatsAppConfigStatus> {
   try {
-    const res = await fetch('/api/whatsapp/config-status');
+    const res = await apiClient.fetch('/api/whatsapp/config-status');
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) {
       return await res.json();
@@ -209,7 +210,7 @@ export async function dispatchVoucherProduction(params: {
     notes: voucher.notes,
   };
 
-  const response = await fetch('/api/whatsapp/dispatch-voucher', {
+  const response = await apiClient.fetch('/api/whatsapp/dispatch-voucher', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -253,7 +254,7 @@ export async function dispatchVoucherProduction(params: {
  */
 export async function getVoucherDispatchStatus(voucherNumber: string): Promise<any> {
   try {
-    const res = await fetch(`/api/whatsapp/status/${encodeURIComponent(voucherNumber)}`);
+    const res = await apiClient.fetch(`/api/whatsapp/status/${encodeURIComponent(voucherNumber)}`);
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) {
       return await res.json();
@@ -269,7 +270,7 @@ export async function getVoucherDispatchStatus(voucherNumber: string): Promise<a
  */
 export async function runWhatsAppPipelineTest(testPhone = '967779077071'): Promise<any> {
   try {
-    const res = await fetch('/api/whatsapp/test-pipeline', {
+    const res = await apiClient.fetch('/api/whatsapp/test-pipeline', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: testPhone }),

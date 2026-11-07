@@ -9,6 +9,14 @@ import { metaWhatsAppService, getMetaConfig, isValidMetaToken } from './src/serv
 import { dispatchRegistry } from './src/server/services/dispatchRegistry.js';
 import { remittanceRegistry } from './src/server/services/remittanceRegistry.js';
 import { WhatsAppVoucherSnapshot } from './src/server/types/whatsapp.js';
+import {
+  requireAuth,
+  requireRoles,
+  createRateLimiter,
+  authService,
+  SYSTEM_USERS,
+  AuthenticatedUser,
+} from './src/server/services/authService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,22 +25,63 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // JSON Body parser with raw body buffer capture for Webhook HMAC signature verification
+  // Rate limiters for protection against DoS and resource exhaustion (FIND-004, FIND-005, FIND-007)
+  const dispatchRateLimiter = createRateLimiter(20, 60); // 20 image uploads / min
+  const sequenceRateLimiter = createRateLimiter(30, 60); // 30 sequence generations / min
+  const registerRateLimiter = createRateLimiter(30, 60); // 30 manual reservations / min
+
+  // FIND-007: Reduced JSON limit from 25mb to 4mb to prevent memory exhaustion
   app.use(
     express.json({
-      limit: '25mb',
+      limit: '4mb',
       verify: (req: any, _res, buf) => {
         req.rawBody = buf;
       },
     })
   );
-  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '4mb' }));
 
-  // CORS middleware for authorized origins
+  // =========================================================================
+  // FIND-001: Strict CORS Policy with Whitelist & Origin Validation
+  // =========================================================================
+  const configuredOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim().toLowerCase())
+    : null;
+
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    const host = req.headers.host;
+
+    if (origin) {
+      let isAllowed = false;
+      const lowerOrigin = origin.toLowerCase();
+
+      if (configuredOrigins) {
+        isAllowed = configuredOrigins.includes(lowerOrigin);
+      } else {
+        // Safe default: allow same host, loopback/localhost, and official cloud run domains
+        const originHost = lowerOrigin.replace(/^https?:\/\//, '').split('/')[0];
+        if (host && originHost === host.toLowerCase()) {
+          isAllowed = true;
+        } else if (
+          originHost.startsWith('localhost') ||
+          originHost.startsWith('127.0.0.1') ||
+          originHost.endsWith('.run.app') ||
+          originHost.endsWith('.googleusercontent.com')
+        ) {
+          isAllowed = true;
+        }
+      }
+
+      if (isAllowed) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+      }
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hub-Signature-256');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hub-Signature-256, X-API-Token');
+
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
     }
@@ -40,12 +89,78 @@ async function startServer() {
   });
 
   // =========================================================================
-  // 1. Meta Configuration Status & Health Check
+  // Authentication & Session Endpoints (FIND-002, FIND-010)
   // =========================================================================
-  app.get('/api/whatsapp/config-status', (req: Request, res: Response) => {
+  app.post('/api/auth/login', (req: Request, res: Response) => {
+    const { roleOrUsername, pin } = req.body;
+    if (!roleOrUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'اسم المستخدم أو الدور مطلوب لتسجيل الدخول',
+      });
+    }
+
+    const authResult = authService.authenticateUser(roleOrUsername, pin);
+    if (!authResult) {
+      return res.status(401).json({
+        success: false,
+        error: 'بيانات الاعتماد غير صحيحة أو المستخدم غير موجود',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      token: authResult.token,
+      user: authResult.user,
+    });
+  });
+
+  app.get('/api/auth/session', requireAuth, (req: any, res: Response) => {
+    return res.status(200).json({
+      success: true,
+      user: req.user,
+    });
+  });
+
+  app.get('/api/auth/users', (_req: Request, res: Response) => {
+    const users = Object.values(SYSTEM_USERS).map(({ id, name, role, username, branchName }) => ({
+      id,
+      name,
+      role,
+      username,
+      branchName,
+    }));
+    return res.status(200).json({ success: true, users });
+  });
+
+  // =========================================================================
+  // FIND-008: Sanitized Meta Configuration Status (No reconnaissance leakage)
+  // =========================================================================
+  app.get('/api/whatsapp/config-status', (req: any, res: Response) => {
     const config = getMetaConfig();
     const isConfigured = Boolean(isValidMetaToken(config.token) && config.phoneNumberId);
 
+    // Check if requester has admin/owner authorization
+    const authHeader = req.headers.authorization;
+    let isAdmin = false;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const payload = authService.verifyToken(authHeader.substring(7));
+      if (payload && (payload.role === 'owner' || payload.role === 'general_manager')) {
+        isAdmin = true;
+      }
+    }
+
+    if (!isAdmin) {
+      // Sanitized public status without reconnaissance details (no webhookUrl, no secret presence flags)
+      return res.status(200).json({
+        success: true,
+        provider: 'Meta WhatsApp Business Cloud API',
+        apiVersion: config.apiVersion,
+        isConfigured,
+      });
+    }
+
+    // Detailed diagnostic info for authenticated administrators only
     return res.status(200).json({
       success: true,
       provider: 'Meta WhatsApp Business Cloud API',
@@ -56,198 +171,223 @@ async function startServer() {
       hasAppSecret: Boolean(config.appSecret),
       hasWebhookVerifyToken: Boolean(config.webhookVerifyToken),
       webhookUrl: `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`,
-      notes: isConfigured
-        ? 'بيانات Meta WhatsApp Cloud API مهيأة وجاهزة للإرسال الحي المباشر.'
-        : 'بيانات Meta WhatsApp Cloud API (WHATSAPP_TOKEN أو WHATSAPP_PHONE_NUMBER_ID) غير مهيأة بعد في متغيرات البيئة.',
     });
   });
 
   // =========================================================================
-  // 2. Production WhatsApp Voucher Dispatch (Direct Meta Binary Upload & Idempotency)
+  // FIND-002 & FIND-007: Hardened WhatsApp Voucher Dispatch
   // =========================================================================
-  app.post('/api/whatsapp/dispatch-voucher', async (req: Request, res: Response) => {
-    try {
-      const {
-        voucherNumber,
-        transactionId,
-        voucherType,
-        recipientPhone,
-        caption,
-        imageData,
-        employeeId,
-        employeeName,
-        snapshot,
-        forceRetry = false,
-      } = req.body;
+  app.post(
+    '/api/whatsapp/dispatch-voucher',
+    requireAuth,
+    dispatchRateLimiter,
+    async (req: any, res: Response) => {
+      try {
+        const {
+          voucherNumber,
+          transactionId,
+          voucherType,
+          recipientPhone,
+          caption,
+          imageData,
+          snapshot,
+          forceRetry = false,
+        } = req.body;
 
-      if (!voucherNumber || !recipientPhone) {
-        return res.status(400).json({
-          success: false,
-          error: 'رقم السند ورقم هاتف المستلم حقول إلزامية',
-        });
-      }
-
-      if (!imageData || typeof imageData !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: 'صورة السند (imageData base64) مطلوبة لإنشاء السجل الرقمي المعتمد',
-        });
-      }
-
-      // Step 1: Idempotency Check (منع التكرار)
-      const idempotency = dispatchRegistry.checkIdempotency(voucherNumber, forceRetry);
-      if (!idempotency.canSend) {
-        console.warn(`[WhatsApp Dispatch] Blocked duplicate send for ${voucherNumber}: ${idempotency.reason}`);
-        return res.status(409).json({
-          success: false,
-          isDuplicate: true,
-          error: idempotency.reason,
-          record: idempotency.existingRecord,
-        });
-      }
-
-      // Step 2: Extract & Validate Binary Image Buffer
-      const matches = imageData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-      let buffer: Buffer;
-      let mimeType = 'image/png';
-
-      if (matches && matches.length === 3) {
-        mimeType = matches[1];
-        buffer = Buffer.from(matches[2], 'base64');
-      } else {
-        buffer = Buffer.from(imageData, 'base64');
-      }
-
-      if (buffer.length < 500) {
-        return res.status(400).json({
-          success: false,
-          error: 'ملف صورة السند تالف أو فارغ (أقل من 500 بايت)',
-        });
-      }
-
-      // Step 3: Digital Fingerprint (SHA-256) & Permanent Archive Storage
-      const sha256 = dispatchRegistry.calculateSha256(buffer);
-      const storageKey = dispatchRegistry.archiveVoucherImage(buffer, voucherNumber, sha256);
-
-      const voucherSnapshot: WhatsAppVoucherSnapshot = snapshot || {
-        voucherNumber,
-        transactionId: transactionId || voucherNumber,
-        type: voucherType || 'exchange',
-        date: new Date().toISOString().split('T')[0],
-        time: new Date().toTimeString().split(' ')[0],
-        partyName: 'عميل',
-        partyPhone: recipientPhone,
-        amount: 0,
-        currency: 'YER',
-        amountInWordsAr: '',
-        branchName: 'الفرع الرئيسي',
-        tellerName: employeeName || 'الصراف',
-        referenceNumber: voucherNumber,
-      };
-
-      // Step 4: Create or update dispatch record in registry (Status: UPLOADING)
-      const record = dispatchRegistry.createOrUpdateAttempt({
-        voucherNumber,
-        transactionId: transactionId || voucherNumber,
-        voucherType: voucherType || 'exchange',
-        recipientPhone,
-        caption: caption || `سند مالي رسمي معتمد - شركة عمرو النماري للصرافة رقم ${voucherNumber}`,
-        sha256,
-        fileSizeBytes: buffer.length,
-        storageKey,
-        employeeId,
-        employeeName,
-        snapshot: voucherSnapshot,
-      });
-
-      // Step 5: Check Meta Cloud API Configuration (Live vs Sandbox)
-      const config = getMetaConfig();
-      const isLiveConfigured = Boolean(isValidMetaToken(config.token) && config.phoneNumberId);
-
-      let metaMediaId = '';
-      let whatsappMessageId = '';
-
-      if (isLiveConfigured) {
-        // Attempt LIVE PRODUCTION MODE with Meta Cloud API
-        try {
-          const uploadRes = await metaWhatsAppService.uploadMediaDirectly(
-            buffer,
-            mimeType,
-            `voucher_${voucherNumber}.png`
-          );
-          metaMediaId = uploadRes.mediaId;
-          dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
-
-          const sendRes = await metaWhatsAppService.sendImageMessageByMediaId({
-            recipientPhone,
-            mediaId: metaMediaId,
-            caption: record.caption,
+        if (!voucherNumber || !recipientPhone) {
+          return res.status(400).json({
+            success: false,
+            error: 'رقم السند ورقم هاتف المستلم حقول إلزامية',
           });
-          whatsappMessageId = sendRes.messageId;
-          // ملاحظة: نسجل حالة SENT فقط (التسليم الفعلي DELIVERED يأتي حصراً من Webhook)
-          dispatchRegistry.recordSent(record.id, whatsappMessageId);
-
-          return res.status(200).json({
-            success: true,
-            mode: 'live',
-            message: 'تم قبول إرسال صورة السند بنجاح من Meta WhatsApp Cloud API (حي)',
-            whatsappMessageId,
-            metaMediaId,
-            status: 'SENT',
-            record: dispatchRegistry.getByVoucherNumber(voucherNumber),
-          });
-        } catch (apiErr: any) {
-          const errMsg = String(apiErr?.message || '');
-          console.warn('[WhatsApp Dispatch Meta API Notice]:', errMsg);
-          console.info(
-            '[WhatsApp Dispatch] Gracefully routing dispatch to Enterprise Sandbox simulation with full SHA-256 digital archive.'
-          );
-          // Fall through to enterprise sandbox simulation below
         }
-      }
 
-      // ENTERPRISE SANDBOX SIMULATOR MODE
-      // يتم استخدام هذا النمط تلقائياً في بيئة التطوير والاختبار، أو عند عدم صلاحية مفاتيح Meta
-      metaMediaId = `meta_media_sandbox_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
+        if (!imageData || typeof imageData !== 'string') {
+          return res.status(400).json({
+            success: false,
+            error: 'صورة السند (imageData base64) مطلوبة لإنشاء السجل الرقمي المعتمد',
+          });
+        }
 
-      whatsappMessageId = `wamid.HBgM${Date.now()}AN_SANDBOX_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-      dispatchRegistry.recordSent(record.id, whatsappMessageId);
+        // Step 1: Idempotency Check (منع التكرار)
+        const idempotency = dispatchRegistry.checkIdempotency(voucherNumber, forceRetry);
+        if (!idempotency.canSend) {
+          console.warn(`[WhatsApp Dispatch] Blocked duplicate send for ${voucherNumber}: ${idempotency.reason}`);
+          return res.status(409).json({
+            success: false,
+            isDuplicate: true,
+            error: idempotency.reason,
+            record: idempotency.existingRecord,
+          });
+        }
 
-      // محاكاة وصول إشعار التسليم الحقيقي من Webhook بعد 1.5 ثانية
-      setTimeout(() => {
-        dispatchRegistry.recordWebhookEvent(whatsappMessageId, 'delivered', {
-          id: whatsappMessageId,
-          status: 'delivered',
-          timestamp: String(Math.floor(Date.now() / 1000)),
-          recipient_id: recipientPhone,
+        // Step 2: Extract & Validate Binary Image Buffer (FIND-007)
+        const matches = imageData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        let buffer: Buffer;
+        let mimeType = 'image/png';
+
+        if (matches && matches.length === 3) {
+          mimeType = matches[1];
+          buffer = Buffer.from(matches[2], 'base64');
+        } else {
+          buffer = Buffer.from(imageData, 'base64');
+        }
+
+        // FIND-007 Buffer size limits: minimum 500 bytes, maximum 2.5MB
+        if (buffer.length < 500) {
+          return res.status(400).json({
+            success: false,
+            error: 'ملف صورة السند تالف أو فارغ (أقل من 500 بايت)',
+          });
+        }
+
+        if (buffer.length > 2.5 * 1024 * 1024) {
+          return res.status(413).json({
+            success: false,
+            error: 'حجم ملف صورة السند يتجاوز الحد الأقصى المسموح (2.5 ميغابايت)',
+          });
+        }
+
+        // FIND-007 Magic Bytes Validation (PNG: 89 50 4E 47 0D 0A 1A 0A, JPEG: FF D8 FF)
+        const isPng =
+          buffer.length >= 8 &&
+          buffer[0] === 0x89 &&
+          buffer[1] === 0x50 &&
+          buffer[2] === 0x4e &&
+          buffer[3] === 0x47 &&
+          buffer[4] === 0x0d &&
+          buffer[5] === 0x0a &&
+          buffer[6] === 0x1a &&
+          buffer[7] === 0x0a;
+
+        const isJpeg =
+          buffer.length >= 3 &&
+          buffer[0] === 0xff &&
+          buffer[1] === 0xd8 &&
+          buffer[2] === 0xff;
+
+        if (!isPng && !isJpeg) {
+          return res.status(400).json({
+            success: false,
+            error: 'نوع الملف غير صالح أمنياً: يجب أن تكون الصورة ملف PNG أو JPEG أصلي ومعتمد.',
+          });
+        }
+
+        // Step 3: Digital Fingerprint (SHA-256) & Permanent Archive Storage
+        const sha256 = dispatchRegistry.calculateSha256(buffer);
+        const storageKey = dispatchRegistry.archiveVoucherImage(buffer, voucherNumber, sha256);
+
+        // Bind teller to authenticated session (FIND-002/003)
+        const authenticatedUser = req.user as AuthenticatedUser;
+
+        const voucherSnapshot: WhatsAppVoucherSnapshot = snapshot || {
+          voucherNumber,
+          transactionId: transactionId || voucherNumber,
+          type: voucherType || 'exchange',
+          date: new Date().toISOString().split('T')[0],
+          time: new Date().toTimeString().split(' ')[0],
+          partyName: 'عميل',
+          partyPhone: recipientPhone,
+          amount: 0,
+          currency: 'YER',
+          amountInWordsAr: '',
+          branchName: authenticatedUser.branchName || 'الفرع الرئيسي',
+          tellerName: authenticatedUser.name || 'الصراف المعتمد',
+          referenceNumber: voucherNumber,
+        };
+
+        // Step 4: Create or update dispatch record in registry
+        const record = dispatchRegistry.createOrUpdateAttempt({
+          voucherNumber,
+          transactionId: transactionId || voucherNumber,
+          voucherType: voucherType || 'exchange',
+          recipientPhone,
+          caption: caption || `سند مالي رسمي معتمد - شركة عمرو النماري للصرافة رقم ${voucherNumber}`,
+          sha256,
+          fileSizeBytes: buffer.length,
+          storageKey,
+          employeeId: authenticatedUser.id,
+          employeeName: authenticatedUser.name,
+          snapshot: voucherSnapshot,
         });
-      }, 1500);
 
-      return res.status(200).json({
-        success: true,
-        mode: 'sandbox',
-        message: 'تم اعتماد وإرسال صورة السند بنجاح (نمط المحاكاة المؤسسي - Sandbox)',
-        whatsappMessageId,
-        metaMediaId,
-        status: 'SENT',
-        record: dispatchRegistry.getByVoucherNumber(voucherNumber),
-        notice: 'تم حفظ الأرشيف الرقمي وبصمة SHA-256 بنجاح، وستتحول الحالة إلى DELIVERED عبر Webhook تلقائياً.',
-      });
-    } catch (err: any) {
-      console.error('[WhatsApp Dispatch Root Error]:', err);
-      return res.status(500).json({
-        success: false,
-        error: `خطأ داخلي في الخادم: ${err.message || 'خطأ غير متوقع'}`,
-      });
+        // Step 5: Check Meta Cloud API Configuration
+        const config = getMetaConfig();
+        const isLiveConfigured = Boolean(isValidMetaToken(config.token) && config.phoneNumberId);
+
+        let metaMediaId = '';
+        let whatsappMessageId = '';
+
+        if (isLiveConfigured) {
+          try {
+            const uploadRes = await metaWhatsAppService.uploadMediaDirectly(
+              buffer,
+              mimeType,
+              `voucher_${voucherNumber}.png`
+            );
+            metaMediaId = uploadRes.mediaId;
+            dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
+
+            const sendRes = await metaWhatsAppService.sendImageMessageByMediaId({
+              recipientPhone,
+              mediaId: metaMediaId,
+              caption: record.caption,
+            });
+            whatsappMessageId = sendRes.messageId;
+            dispatchRegistry.recordSent(record.id, whatsappMessageId);
+
+            return res.status(200).json({
+              success: true,
+              mode: 'live',
+              message: 'تم قبول إرسال صورة السند بنجاح من Meta WhatsApp Cloud API (حي)',
+              whatsappMessageId,
+              metaMediaId,
+              status: 'SENT',
+              record: dispatchRegistry.getByVoucherNumber(voucherNumber),
+            });
+          } catch (apiErr: any) {
+            console.warn('[WhatsApp Dispatch Meta API Notice]:', apiErr?.message);
+          }
+        }
+
+        // ENTERPRISE SANDBOX SIMULATOR MODE
+        metaMediaId = `meta_media_sandbox_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
+
+        whatsappMessageId = `wamid.HBgM${Date.now()}AN_SANDBOX_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        dispatchRegistry.recordSent(record.id, whatsappMessageId);
+
+        setTimeout(() => {
+          dispatchRegistry.recordWebhookEvent(whatsappMessageId, 'delivered', {
+            id: whatsappMessageId,
+            status: 'delivered',
+            timestamp: String(Math.floor(Date.now() / 1000)),
+            recipient_id: recipientPhone,
+          });
+        }, 1500);
+
+        return res.status(200).json({
+          success: true,
+          mode: 'sandbox',
+          message: 'تم اعتماد وإرسال صورة السند بنجاح (نمط المحاكاة المؤسسي - Sandbox)',
+          whatsappMessageId,
+          metaMediaId,
+          status: 'SENT',
+          record: dispatchRegistry.getByVoucherNumber(voucherNumber),
+          notice: 'تم حفظ الأرشيف الرقمي وبصمة SHA-256 بنجاح، وستتحول الحالة إلى DELIVERED عبر Webhook تلقائياً.',
+        });
+      } catch (err: any) {
+        console.error('[WhatsApp Dispatch Root Error]:', err);
+        return res.status(500).json({
+          success: false,
+          error: `خطأ داخلي في الخادم: ${err.message || 'خطأ غير متوقع'}`,
+        });
+      }
     }
-  });
+  );
 
   // =========================================================================
-  // 3. Meta Webhooks Integration (Verification & Delivery Events)
+  // 3. Meta Webhooks Integration (FIND-006: HMAC Verification Enforced)
   // =========================================================================
-
-  // A. Webhook Challenge Verification (GET)
   app.get('/api/whatsapp/webhook', (req: Request, res: Response) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -264,12 +404,10 @@ async function startServer() {
     }
   });
 
-  // B. Webhook Events Receiver (POST)
   app.post('/api/whatsapp/webhook', (req: any, res: Response) => {
     try {
       const signature = req.headers['x-hub-signature-256'] as string | undefined;
 
-      // Verify HMAC-SHA256 signature using App Secret
       const isValidSig = metaWhatsAppService.verifyWebhookSignature(req.rawBody || JSON.stringify(req.body), signature);
       if (!isValidSig) {
         console.error('[Meta Webhook] Invalid X-Hub-Signature-256! Rejected unauthorized webhook payload.');
@@ -277,7 +415,6 @@ async function startServer() {
       }
 
       const body = req.body;
-
       if (body.object === 'whatsapp_business_account') {
         const entries = body.entry || [];
         for (const entry of entries) {
@@ -287,9 +424,7 @@ async function startServer() {
             if (value && value.statuses) {
               for (const statusObj of value.statuses) {
                 const messageId = statusObj.id;
-                const statusType = statusObj.status; // 'sent' | 'delivered' | 'read' | 'failed'
-
-                console.log(`[Meta Webhook] Status update received for ${messageId} -> ${statusType}`);
+                const statusType = statusObj.status;
                 dispatchRegistry.recordWebhookEvent(messageId, statusType, statusObj);
               }
             }
@@ -306,9 +441,9 @@ async function startServer() {
   });
 
   // =========================================================================
-  // 4. Central Dispatch Registry Queries & Auditing
+  // FIND-002: Authenticated WhatsApp Registry Logs & Auditing
   // =========================================================================
-  app.get('/api/whatsapp/status/:voucherNumber', (req: Request, res: Response) => {
+  app.get('/api/whatsapp/status/:voucherNumber', requireAuth, (req: Request, res: Response) => {
     const voucherNumber = req.params.voucherNumber;
     const record = dispatchRegistry.getByVoucherNumber(voucherNumber);
 
@@ -325,7 +460,7 @@ async function startServer() {
     });
   });
 
-  app.get('/api/whatsapp/logs', (_req: Request, res: Response) => {
+  app.get('/api/whatsapp/logs', requireAuth, (_req: Request, res: Response) => {
     const records = dispatchRegistry.getAllRecords();
     return res.status(200).json({
       success: true,
@@ -333,16 +468,11 @@ async function startServer() {
     });
   });
 
-  // =========================================================================
-  // 5. Production Diagnostic & Pipeline Test Simulator
-  // =========================================================================
-  app.post('/api/whatsapp/test-pipeline', async (req: Request, res: Response) => {
+  app.post('/api/whatsapp/test-pipeline', requireAuth, requireRoles(['owner', 'general_manager']), async (req: Request, res: Response) => {
     try {
       const config = getMetaConfig();
       const testVoucherNum = `V-TEST-${Date.now().toString().slice(-4)}`;
-      const testPhone = req.body.phone || '967779077071';
 
-      // 1x1 base64 valid image
       const testImageBuffer = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAlgAAAH0CAYAAABz0Gz9AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAedEVYdFNvZnR3YXJlAFBhaW50Lk5FVCB2My41LjEw/prh9AAAIABJREFUeF7t3QeYXFW5/vHpmV3Z3m1v2U12k91kkw1JCCWEEEgjhN4VEbGLilfBiihFBFGq9Cq9qCAWFAuCvQAWsKAgVXrvy/N933kyu5ts7pbdpNzf8zwzZ+acOf/zPnPee867/n6jYkIIYfyZ5d8B8b9o7r//fvz73/+G27/9Hfg/3z/E91n+HRAvY/oX4t/53d/V/0b1j+Kffv4dEP+L/g+q4q6+1i/m7wAAAABJRU5ErkJggg==',
         'base64'
@@ -375,11 +505,11 @@ async function startServer() {
   });
 
   // =========================================================================
-  // 6. Remittance Numbering Settings & Central Validation API
+  // FIND-002 & FIND-003: Remittance Numbering Policy with Server-Enforced RBAC
   // =========================================================================
 
-  // Get current remittance settings (mode, prefix, next sequence, etc.)
-  app.get('/api/remittances/settings', (_req: Request, res: Response) => {
+  // Get current remittance settings (Authenticated)
+  app.get('/api/remittances/settings', requireAuth, (_req: Request, res: Response) => {
     const settings = remittanceRegistry.getSettings();
     return res.status(200).json({
       success: true,
@@ -387,36 +517,43 @@ async function startServer() {
     });
   });
 
-  // Update remittance numbering mode (restricted to owner and general_manager)
-  app.post('/api/remittances/settings', (req: Request, res: Response) => {
-    const { numberingMode, prefix, nextSequence, userRole, userName } = req.body;
+  // FIND-003: Strictly enforce RBAC on server side using req.user, ignoring any client userRole
+  app.post(
+    '/api/remittances/settings',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const { numberingMode, prefix, nextSequence } = req.body;
+      const authenticatedUser = req.user as AuthenticatedUser;
 
-    const result = remittanceRegistry.updateSettings(
-      {
-        ...(numberingMode ? { numberingMode } : {}),
-        ...(prefix ? { prefix } : {}),
-        ...(typeof nextSequence === 'number' ? { nextSequence } : {}),
-      },
-      userRole,
-      userName
-    );
+      // Role and username come EXCLUSIVELY from authenticated session
+      const result = remittanceRegistry.updateSettings(
+        {
+          ...(numberingMode ? { numberingMode } : {}),
+          ...(prefix ? { prefix } : {}),
+          ...(typeof nextSequence === 'number' ? { nextSequence } : {}),
+        },
+        authenticatedUser.role,
+        authenticatedUser.name
+      );
 
-    if (!result.success) {
-      return res.status(403).json({
-        success: false,
-        error: result.error,
+      if (!result.success) {
+        return res.status(403).json({
+          success: false,
+          error: result.error,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        settings: result.settings,
+        message: 'تم تحديث سياسة ترقيم الحوالات بنجاح وتوثيقها في سجل التدقيق.',
       });
     }
+  );
 
-    return res.status(200).json({
-      success: true,
-      settings: result.settings,
-      message: 'تم تحديث سياسة ترقيم الحوالات بنجاح وتوثيقها في سجل التدقيق.',
-    });
-  });
-
-  // Validate manual transfer number uniqueness
-  app.post('/api/remittances/validate-number', (req: Request, res: Response) => {
+  // Validate manual transfer number uniqueness (Authenticated)
+  app.post('/api/remittances/validate-number', requireAuth, (req: Request, res: Response) => {
     const { transferNumber } = req.body;
     const validation = remittanceRegistry.validateTransferNumber(transferNumber);
 
@@ -427,43 +564,64 @@ async function startServer() {
     });
   });
 
-  // Generate next atomic sequence number (automatic mode)
-  app.post('/api/remittances/next-sequence', (req: Request, res: Response) => {
-    const { operatorName } = req.body;
-    const nextItem = remittanceRegistry.getNextAtomicSequence(operatorName || 'النظام');
+  // FIND-004: Generate next sequence protected with Rate Limiting & Authentication
+  app.post(
+    '/api/remittances/next-sequence',
+    requireAuth,
+    sequenceRateLimiter,
+    (req: any, res: Response) => {
+      const authenticatedUser = req.user as AuthenticatedUser;
+      const nextItem = remittanceRegistry.getNextAtomicSequence(authenticatedUser.name || 'النظام');
 
-    return res.status(200).json({
-      success: true,
-      transferNumber: nextItem.transferNumber,
-      sequence: nextItem.sequence,
-    });
-  });
-
-  // Register used number in central registry (UNIQUE constraint enforcement)
-  app.post('/api/remittances/register-number', (req: Request, res: Response) => {
-    const { transferNumber, operatorName, mode } = req.body;
-    const result = remittanceRegistry.registerTransferNumber(transferNumber, operatorName, mode || 'manual');
-
-    if (!result.success) {
-      return res.status(409).json({
-        success: false,
-        error: result.error,
+      return res.status(200).json({
+        success: true,
+        transferNumber: nextItem.transferNumber,
+        sequence: nextItem.sequence,
       });
     }
+  );
 
-    return res.status(200).json({
-      success: true,
-      message: 'تم تسجيل وحجز رقم الحوالة في السجل المركزي بنجاح.',
-    });
-  });
+  // FIND-005: Register number in central registry protected with Rate Limiting & Authentication
+  app.post(
+    '/api/remittances/register-number',
+    requireAuth,
+    registerRateLimiter,
+    (req: any, res: Response) => {
+      const { transferNumber, mode } = req.body;
+      const authenticatedUser = req.user as AuthenticatedUser;
 
-  // Retrieve remittance audit logs
-  app.get('/api/remittances/audit-logs', (_req: Request, res: Response) => {
+      const result = remittanceRegistry.registerTransferNumber(
+        transferNumber,
+        authenticatedUser.name,
+        mode || 'manual'
+      );
+
+      if (!result.success) {
+        return res.status(409).json({
+          success: false,
+          error: result.error,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'تم تسجيل وحجز رقم الحوالة في السجل المركزي بنجاح.',
+      });
+    }
+  );
+
+  // Retrieve remittance audit logs (Authenticated)
+  app.get('/api/remittances/audit-logs', requireAuth, (_req: Request, res: Response) => {
     const logs = remittanceRegistry.getAuditLogs();
     return res.status(200).json({
       success: true,
       logs,
     });
+  });
+
+  // Public health check endpoint
+  app.get('/api/health', (_req: Request, res: Response) => {
+    return res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
   });
 
   const httpServer = http.createServer(app);
@@ -487,7 +645,7 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Amro Alnamari Production Server] Running on http://0.0.0.0:${PORT}`);
+    console.log(`[Amro Alnamari Production Server] Running securely on http://0.0.0.0:${PORT}`);
   });
 }
 

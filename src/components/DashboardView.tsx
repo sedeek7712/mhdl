@@ -2,6 +2,7 @@ import React from 'react';
 import { Account, CashBoxShift, CurrencyCode, ExchangeRate, JournalEntry, Remittance, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { formatMoney } from '../services/accountingEngine';
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, CheckCircle2, Clock, DollarSign, FileSpreadsheet, Layers, Plus, Receipt, ShieldCheck, TrendingUp, Users, Vault, Wallet } from 'lucide-react';
+import { Button } from './ui/Button';
 
 interface DashboardViewProps {
   accounts: Account[];
@@ -73,77 +74,85 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </p>
         </div>
 
-        {/* Action Buttons: Responsive Grid on Mobile, Flex on Desktop */}
+        {/* Action Buttons: Unified sizing and variants (UI-03, UI-09) */}
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-2.5 w-full md:w-auto">
           {onOpenOfficialVoucher && (
-            <button
+            <Button
               onClick={onOpenOfficialVoucher}
-              className="col-span-2 sm:col-span-1 px-3.5 py-2.5 bg-gradient-to-r from-[#800000] to-[#990000] hover:from-[#660000] hover:to-[#800000] text-white border border-amber-500/40 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-red-950/40 transition-all hover:scale-[1.02] cursor-pointer min-h-[44px]"
-              title="عرض سند الحوالة الرسمي مع الشعار الذهبي وأزرار الواتساب والطباعة فوراً"
+              variant="brand"
+              size="md"
+              icon={<Receipt className="w-4 h-4 text-amber-300" />}
+              className="col-span-2 sm:col-span-1"
+              title="عرض سند الحوالة الرسمي مع الشعار وأزرار الواتساب والطباعة"
             >
-              <Receipt className="w-4 h-4 text-amber-300 shrink-0" />
-              <span>نظام السندات والطباعة</span>
-            </button>
+              نظام السندات
+            </Button>
           )}
 
-          <button
+          <Button
             onClick={onOpenExchangeModal}
-            className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all hover:scale-[1.02] min-h-[44px]"
+            variant="primary"
+            size="md"
+            icon={<ArrowLeftRight className="w-4 h-4" />}
           >
-            <ArrowLeftRight className="w-4 h-4 shrink-0" />
-            <span>صرف عملة</span>
-          </button>
-          
-          <button
-            onClick={() => onNavigate('remittance')}
-            className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all min-h-[44px]"
-          >
-            <Plus className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>إرسال حوالة</span>
-          </button>
+            صرف عملة
+          </Button>
 
-          <button
+          <Button
             onClick={() => onNavigate('receive_transfer')}
-            className="px-3.5 py-2.5 bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/50 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all shadow-sm min-h-[44px]"
+            variant="secondary"
+            size="md"
+            icon={<ArrowDownLeft className="w-4 h-4 text-emerald-400" />}
           >
-            <ArrowDownLeft className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>صرف حوالة</span>
             {pendingRemittancesCount > 0 && (
-              <span className="bg-emerald-500 text-slate-950 text-[10px] font-bold px-1.5 py-0.2 rounded-full font-mono">
+              <span className="mr-1.5 bg-emerald-500 text-slate-950 text-[10px] font-bold px-1.5 py-0.5 rounded-full font-mono">
                 {pendingRemittancesCount}
               </span>
             )}
-          </button>
+          </Button>
+
+          <Button
+            onClick={() => onNavigate('remittance')}
+            variant="outline"
+            size="md"
+            icon={<Plus className="w-4 h-4 text-emerald-400" />}
+          >
+            إرسال حوالة
+          </Button>
 
           {onOpenA4StatementModal && (
-            <button
+            <Button
               onClick={onOpenA4StatementModal}
-              className="px-3.5 py-2.5 bg-teal-950/70 hover:bg-teal-900 text-teal-300 border border-teal-700/50 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all min-h-[44px]"
-              title="كشف الأرباح الشامل وكشف حساب الحركات بصيغة A4 وواتساب"
+              variant="outline"
+              size="md"
+              icon={<FileSpreadsheet className="w-4 h-4 text-teal-400" />}
+              title="كشف الأرباح الشامل وكشف حساب الحركات بصيغة A4"
             >
-              <FileSpreadsheet className="w-4 h-4 text-teal-400 shrink-0" />
-              <span>كشف A4</span>
-            </button>
+              كشف A4
+            </Button>
           )}
 
-          {onOpenInternalTransferModal ? (
-            <button
+          {onOpenInternalTransferModal && (
+            <Button
               onClick={onOpenInternalTransferModal}
-              className="px-3 py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all min-h-[44px]"
-              title="نقل سيولة وتغذية الصناديق (البند 3.3)"
+              variant="outline"
+              size="md"
+              icon={<Vault className="w-4 h-4 text-emerald-400" />}
+              title="نقل سيولة وتغذية الصناديق"
             >
-              <Vault className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>تحويل داخلي</span>
-            </button>
-          ) : null}
+              تحويل داخلي
+            </Button>
+          )}
 
-          <button
+          <Button
             onClick={() => onNavigate('customers')}
-            className="px-3 py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all min-h-[44px]"
+            variant="ghost"
+            size="md"
+            icon={<Users className="w-4 h-4 text-cyan-400" />}
           >
-            <Users className="w-4 h-4 text-cyan-400 shrink-0" />
-            <span>العملاء KYC</span>
-          </button>
+            العملاء KYC
+          </Button>
         </div>
       </div>
 

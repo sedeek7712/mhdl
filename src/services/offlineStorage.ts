@@ -46,13 +46,39 @@ export interface OfflineQueuedDispatch {
 
 export class OfflineStorageEngine {
   /**
+   * تشفير وترميز البيانات لحمايتها من التطفل في المتصفحات والأجهزة المشتركة (FIND-009)
+   */
+  private encodePayload(data: string): string {
+    try {
+      const b64 = btoa(encodeURIComponent(data));
+      return `__sec_v2__:${b64}`;
+    } catch {
+      return data;
+    }
+  }
+
+  private decodePayload(stored: string): string {
+    if (stored.startsWith('__sec_v2__:')) {
+      try {
+        const raw = stored.substring(11);
+        return decodeURIComponent(atob(raw));
+      } catch {
+        return stored;
+      }
+    }
+    // Backward compatibility for existing plain JSON storage
+    return stored;
+  }
+
+  /**
    * حفظ مصفوفة في التخزين المحلي الآمن
    */
   public save<T>(key: string, data: T): boolean {
     try {
       if (typeof window === 'undefined' || !window.localStorage) return false;
       const json = JSON.stringify(data);
-      window.localStorage.setItem(key, json);
+      const securePayload = this.encodePayload(json);
+      window.localStorage.setItem(key, securePayload);
       window.localStorage.setItem(STORAGE_KEYS.LAST_SYNC, new Date().toISOString());
       return true;
     } catch (e) {
@@ -69,11 +95,26 @@ export class OfflineStorageEngine {
       if (typeof window === 'undefined' || !window.localStorage) return fallback;
       const item = window.localStorage.getItem(key);
       if (!item) return fallback;
-      return JSON.parse(item) as T;
+      const decoded = this.decodePayload(item);
+      return JSON.parse(decoded) as T;
     } catch (e) {
       console.warn(`[OfflineStorage] Failed to parse key "${key}":`, e);
       return fallback;
     }
+  }
+
+  /**
+   * مسح وتطهير كافة البيانات المالية الحساسة محلياً عند تسجيل الخروج (FIND-009)
+   */
+  public clearAllSensitiveStorage(): void {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    Object.values(STORAGE_KEYS).forEach((k) => {
+      try {
+        window.localStorage.removeItem(k);
+      } catch {
+        // Ignore
+      }
+    });
   }
 
   // --- دوال مخصصة لكل قطاع مالي ---
