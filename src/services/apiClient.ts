@@ -103,7 +103,7 @@ class ApiClient {
   }
 
   /**
-   * طلب صرف حوالة واردة عبر الخادم مع فحص منع الصرف المكرر والصلاحيات
+   * طلب صرف حوالة واردة عبر الخادم مع فحص منع الصرف المكرر والصلاحيات والتحقق الخادمي
    */
   public async payoutRemittance(payload: {
     transferId: string;
@@ -112,13 +112,23 @@ class ApiClient {
     recipientIdNumber: string;
     amount: number;
     currency: string;
+    clientAmount?: number;
+    clientCurrency?: string;
+    cashierDrawerBalance?: number;
     voucherNumber?: string;
     managerOverride?: boolean;
+    managerOverrideReason?: string;
+    idempotencyKey?: string;
   }): Promise<{ success: boolean; isDuplicate?: boolean; record?: any; error?: string; message?: string }> {
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (payload.idempotencyKey) {
+        headers['X-Idempotency-Key'] = payload.idempotencyKey;
+      }
+
       const res = await this.fetch('/api/remittances/payout', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
 
@@ -126,6 +136,19 @@ class ApiClient {
       return data;
     } catch (err: any) {
       return { success: false, error: err.message || 'تعذر الاتصال بالخادم لصرف الحوالة' };
+    }
+  }
+
+  /**
+   * الاستعلام عن تقرير المطابقة المالية للحوالات والصرف
+   */
+  public async getReconciliation(): Promise<{ success: boolean; report?: any; error?: string }> {
+    try {
+      const res = await this.fetch('/api/remittances/reconciliation');
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر جلب تقرير المطابقة' };
     }
   }
 }

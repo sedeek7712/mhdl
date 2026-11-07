@@ -100,11 +100,12 @@ async function startServer() {
       });
     }
 
-    const authResult = authService.authenticateUser(roleOrUsername, pin);
-    if (!authResult) {
-      return res.status(401).json({
+    const clientIp = (req.ip || req.socket.remoteAddress || '127.0.0.1').toString();
+    const authResult = authService.authenticateUser(roleOrUsername, pin, clientIp);
+    if (!authResult.success) {
+      return res.status(authResult.locked ? 429 : 401).json({
         success: false,
-        error: 'بيانات الاعتماد غير صحيحة أو المستخدم غير موجود',
+        error: authResult.error || 'بيانات الاعتماد غير صحيحة أو المستخدم غير موجود',
       });
     }
 
@@ -119,6 +120,14 @@ async function startServer() {
     return res.status(200).json({
       success: true,
       user: req.user,
+    });
+  });
+
+  app.get('/api/auth/security-logs', requireAuth, requireRoles(['owner', 'general_manager', 'auditor']), (_req: Request, res: Response) => {
+    const logs = authService.getSecurityLogs();
+    return res.status(200).json({
+      success: true,
+      logs,
     });
   });
 
@@ -634,8 +643,13 @@ async function startServer() {
         recipientIdNumber,
         amount,
         currency,
+        clientAmount,
+        clientCurrency,
+        cashierDrawerBalance,
         voucherNumber,
         managerOverride,
+        managerOverrideReason,
+        idempotencyKey,
       } = req.body;
 
       const authenticatedUser = req.user as AuthenticatedUser;
@@ -647,7 +661,10 @@ async function startServer() {
         });
       }
 
+      const effectiveIdempotencyKey = idempotencyKey || (req.headers['x-idempotency-key'] as string);
+
       const payoutResult = remittanceRegistry.payoutRemittance({
+        idempotencyKey: effectiveIdempotencyKey,
         transferId: transferId || transferNumber,
         transferNumber,
         recipientIdType: recipientIdType || 'national_id',
@@ -655,10 +672,15 @@ async function startServer() {
         tellerId: authenticatedUser.id,
         tellerName: authenticatedUser.name,
         tellerRole: authenticatedUser.role,
-        amount: Number(amount) || 0,
-        currency: currency || 'YER',
+        tellerBranch: authenticatedUser.branchName,
+        amount: Number(amount) || Number(clientAmount) || 0,
+        currency: currency || clientCurrency || 'YER',
+        clientAmount: typeof clientAmount === 'number' ? clientAmount : (typeof amount === 'number' ? amount : undefined),
+        clientCurrency: clientCurrency || currency,
+        cashierDrawerBalance: typeof cashierDrawerBalance === 'number' ? cashierDrawerBalance : undefined,
         voucherNumber,
         managerOverride: Boolean(managerOverride),
+        managerOverrideReason: managerOverrideReason || (managerOverride ? 'موافقة استثنائية من المدير المباشر' : undefined),
       });
 
       if (!payoutResult.success) {
@@ -674,6 +696,7 @@ async function startServer() {
         success: true,
         message: 'تم اعتماد صرف الحوالة وتسليم النقدية وتوثيق العملية في سجل التدقيق بنجاح.',
         record: payoutResult.record,
+        masterRemittance: payoutResult.masterRemittance,
       });
     }
   );
@@ -689,6 +712,93 @@ async function startServer() {
       record: record || null,
     });
   });
+
+  // Master Remittances List (Authorized roles)
+  app.get('/api/remittances/master-list', requireAuth, (_req: Request, res: Response) => {
+    const masterList = remittanceRegistry.getAllMasterRemittances();
+    return res.status(200).json({
+      success: true,
+      remittances: masterList,
+    });
+  });
+
+  // Register new master remittance (outgoing or incoming from teller desk)
+  app.post(
+    '/api/remittances/register-master',
+    requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        transferNumber,
+        senderName,
+        senderPhone,
+        recipientName,
+        recipientPhone,
+        networkName,
+        amount,
+        currency,
+        direction,
+        status,
+        feeAmount,
+        notes,
+      } = req.body;
+
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (!transferNumber || !recipientName || !amount || !currency) {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة، اسم المستفيد، المبلغ والعملة حقول إلزامية لتسجيل الحوالة في النظام المركزي.',
+        });
+      }
+
+      const regResult = remittanceRegistry.registerMasterRemittance({
+        id: `rem-master-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        transferNumber: transferNumber.trim().toUpperCase(),
+        direction: direction || 'incoming',
+        status: status || 'available',
+        senderName: senderName || 'غير محدد',
+        senderPhone: senderPhone || '',
+        recipientName: recipientName.trim(),
+        recipientPhone: recipientPhone || '',
+        networkName: networkName || 'شبكة النجم للحوالات',
+        amount: Number(amount),
+        currency: currency.trim(),
+        feeAmount: Number(feeAmount) || 0,
+        totalPaid: Number(amount) + (Number(feeAmount) || 0),
+        branchName: authenticatedUser.branchName || 'الفرع الرئيسي',
+        tellerName: authenticatedUser.name,
+        createdAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
+        notes: notes || 'مسجلة ومعتمدة مركزياً من نقطة الصرافة المعتمدة',
+      });
+
+      if (!regResult.success) {
+        return res.status(409).json({
+          success: false,
+          error: regResult.error,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'تم تسجيل الحوالة بنجاح في السجل المركزي المعتمد.',
+      });
+    }
+  );
+
+  // Financial Reconciliation Endpoint
+  app.get(
+    '/api/remittances/reconciliation',
+    requireAuth,
+    requireRoles(['owner', 'general_manager', 'auditor']),
+    (_req: Request, res: Response) => {
+      const report = remittanceRegistry.reconcilePayouts();
+      return res.status(200).json({
+        success: true,
+        report,
+      });
+    }
+  );
 
   // Public health check endpoint
   app.get('/api/health', (_req: Request, res: Response) => {

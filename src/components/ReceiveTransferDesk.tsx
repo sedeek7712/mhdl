@@ -60,27 +60,6 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
   // Cashier Drawer Account
   const cashierBox = accounts.find((a) => a.id === 'acc-1102') || accounts[1];
 
-  // Quick Action: Load Sample Incoming Remittance for Instant Payout Testing
-  const handleLoadSampleIncoming = () => {
-    if (onCreateIncomingRemittance) {
-      const rem = onCreateIncomingRemittance({
-        transferNumber: 'TR-931106',
-        networkName: 'شبكة النجم',
-        senderName: 'محمد قاسم النماري',
-        senderPhone: '770000111',
-        recipientName: 'صديق علي محمد الفتاحي',
-        recipientPhone: '771280940',
-        amount: 5000,
-        currency: 'SAR',
-        notes: 'حوالة واردة من الفرع الرئيسي - تعز',
-      });
-      setSelectedRemittance(rem);
-      setRecipientActualName(rem.recipientName);
-      setRecipientIdNumber('04010029381');
-      setHasVerifiedOriginalId(true);
-    }
-  };
-
   const handleRegisterIncoming = (e: React.FormEvent) => {
     e.preventDefault();
     if (!onCreateIncomingRemittance) return;
@@ -192,15 +171,6 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
             <span>تسجيل حوالة واردة</span>
           </button>
 
-          <button
-            onClick={handleLoadSampleIncoming}
-            className="min-h-[44px] px-3.5 py-2.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-amber-950/30 transition-all cursor-pointer"
-            title="تحميل حوالة واردة نموذجية لاختبار دورة الصرف فوراً"
-          >
-            <Sparkles className="w-4 h-4 text-amber-200 shrink-0" />
-            <span>⚡ حوالة تجريبية (5000 ريال)</span>
-          </button>
-
           <div className="flex items-center justify-center gap-2 bg-slate-850 border border-slate-800 px-3.5 py-2 min-h-[44px] rounded-xl text-xs">
             <Vault className="w-4 h-4 text-emerald-400 shrink-0" />
             <span className="text-slate-400">الصندوق:</span>
@@ -281,25 +251,15 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
 
             {remittances.filter((r) => r.direction === 'incoming' && r.status === 'available').length === 0 ? (
               <div className="p-4 bg-slate-850/60 border border-dashed border-slate-800 rounded-xl text-center space-y-2.5">
-                <p className="text-[11px] text-slate-400">لا توجد حوالات واردة بانتظار الصرف حالياً.</p>
-                <div className="flex flex-col gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleLoadSampleIncoming}
-                    className="w-full py-2 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>⚡ تحميل حوالة نموذجية (صرف فوري)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsRegisterModalOpen(true)}
-                    className="w-full py-1.5 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>تسجيل حوالة واردة يدوياً</span>
-                  </button>
-                </div>
+                <p className="text-[11px] text-slate-400">لا توجد حوالات واردة بانتظار الصرف حالياً في هذا الصندوق.</p>
+                <button
+                  type="button"
+                  onClick={() => setIsRegisterModalOpen(true)}
+                  className="w-full py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>تسجيل استلام حوالة واردة جديدة</span>
+                </button>
               </div>
             ) : (
               <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
@@ -526,16 +486,16 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
               <div>
                 <h3 className="text-base font-bold text-slate-200">نافذة صرف الحوالات المصرفية</h3>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
-                  يمكنك الاستعلام برقم الحوالة من صندوق البحث، أو النقر على الزر التجريبي لتحميل حوالة جاهزة للصرف فوراً:
+                  يمكنك الاستعلام برقم الحوالة أو هاتف المستفيد من صندوق البحث، أو تسجيل وصول حوالة جديدة للصرف الفوري:
                 </p>
               </div>
               <button
                 type="button"
-                onClick={handleLoadSampleIncoming}
-                className="px-5 py-2.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-md transition-all cursor-pointer"
+                onClick={() => setIsRegisterModalOpen(true)}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-md transition-all cursor-pointer"
               >
-                <Sparkles className="w-4 h-4" />
-                <span>⚡ تجربة صرف حوالة فورية (5,000 ريال سعودي)</span>
+                <Plus className="w-4 h-4" />
+                <span>تسجيل وصول حوالة واردة جديدة</span>
               </button>
             </div>
           )}

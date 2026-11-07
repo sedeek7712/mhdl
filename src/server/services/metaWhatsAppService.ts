@@ -229,7 +229,14 @@ export class MetaWhatsAppService {
     const hmac = crypto.createHmac('sha256', config.appSecret);
     const calculatedHash = hmac.update(rawBody).digest('hex');
 
-    return crypto.timingSafeEqual(Buffer.from(calculatedHash, 'hex'), Buffer.from(expectedHash, 'hex'));
+    const calcBuf = Buffer.from(calculatedHash, 'hex');
+    const expBuf = Buffer.from(expectedHash, 'hex');
+
+    if (calcBuf.length !== expBuf.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(calcBuf, expBuf);
   }
 }
 

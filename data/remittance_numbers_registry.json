@@ -10,23 +10,5 @@
     "registeredAt": "2026-11-07T03:26:26.833Z",
     "registeredBy": "صديق علي الفتاحي",
     "mode": "automatic"
-  },
-  {
-    "number": "TR-TEST-1794056261598",
-    "registeredAt": "2026-11-07T12:57:41.598Z",
-    "registeredBy": "الكاشير المعتمد",
-    "mode": "incoming_payout"
-  },
-  {
-    "number": "TR-TEST-1794056322880",
-    "registeredAt": "2026-11-07T12:58:42.880Z",
-    "registeredBy": "الكاشير المعتمد",
-    "mode": "incoming_payout"
-  },
-  {
-    "number": "TR-TEST-1794056827074",
-    "registeredAt": "2026-11-07T13:07:07.075Z",
-    "registeredBy": "الكاشير المعتمد",
-    "mode": "incoming_payout"
   }
 ]

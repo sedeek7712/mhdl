@@ -170,8 +170,9 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
               />
               <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
             </div>
-            <p className="text-[10px] text-slate-500 mt-1">
-              أمثلة رموز النظام: المالك (1234) · المدير العام (2345) · الكاشير (3456) · المحاسب (4567)
+            <p className="text-[10px] text-slate-500 mt-1.5 flex items-center gap-1.5">
+              <Shield className="w-3 h-3 text-slate-400 shrink-0" />
+              <span>أدخل رمز المرور السري المخصص لحسابك لدى إدارة الرقابة والأنظمة المالية. العمليات تخضع للتدقيق الآلي.</span>
             </p>
           </div>
 

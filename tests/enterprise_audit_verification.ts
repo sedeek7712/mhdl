@@ -1,6 +1,7 @@
 /**
  * Automated Enterprise Audit & Verification Test Suite
  * MHDL - Amro Alnamari Exchange ERP
+ * اختبارات التدقيق الأمني والمحاسبي والوظيفي الشامل
  */
 
 import { authService, SYSTEM_USERS } from '../src/server/services/authService.js';
@@ -33,113 +34,212 @@ async function runTestSuite() {
   console.log('🚀 بدء تشغيل حزمة اختبارات التدقيق الأمني والمحاسبي والوظيفي');
   console.log('===============================================================');
 
-  // 1. اختبار تسجيل الدخول والمصادقة بالرمز السري PIN
+  // =========================================================================
+  // 1. اختبارات الأمان والمصادقة (PBKDF2 Hashing & Brute-Force Rate Limiting)
+  // =========================================================================
   try {
-    const invalidLogin = authService.authenticateUser('owner', '0000');
+    // 1.1 اختبار منع الدخول برمز PIN خاطئ
+    const invalidLogin = authService.authenticateUser('owner', '0000', '192.168.1.100');
     assert(
-      invalidLogin === null,
+      invalidLogin.success === false && Boolean(invalidLogin.error),
       'اختبار منع الدخول برمز PIN خاطئ',
       'الأمان والمصادقة',
-      'رفض الخادم الدخول برمز PIN غير صحيح وأرجع null.'
+      `رفض الخادم الدخول برمز خاطئ: "${invalidLogin.error}".`
     );
 
-    const validLogin = authService.authenticateUser('owner', '1234');
+    // 1.2 اختبار توثيق الدخول برمز PIN الصحيح للمالك (توليد توكن مشفر)
+    const validLogin = authService.authenticateUser('owner', '1234', '192.168.1.101');
     assert(
-      validLogin !== null && !!validLogin.token && validLogin.user?.role === 'owner',
-      'اختبار توثيق الدخول برمز PIN الصحيح للمالك',
+      validLogin.success === true && !!validLogin.token && validLogin.user?.role === 'owner',
+      'اختبار توثيق الدخول برمز PIN الصحيح للمالك عبر PBKDF2',
       'الأمان والمصادقة',
-      `تم إصدار رمز توثيق HMAC مشفر بنجاح للمستخدم (${validLogin?.user?.name}).`
+      `تم التحقق من تجزئة PBKDF2 وإصدار رمز توثيق مشفر للمستخدم (${validLogin?.user?.name}).`
+    );
+
+    // 1.3 اختبار حماية القوة الغاشمة (Brute-Force Lockout بعد 5 محاولات فاشلة)
+    const testAttackerIp = '10.0.0.99';
+    for (let i = 0; i < 4; i++) {
+      authService.authenticateUser('teller', '9999', testAttackerIp);
+    }
+    const fifthAttempt = authService.authenticateUser('teller', '9999', testAttackerIp);
+    assert(
+      fifthAttempt.locked === true && fifthAttempt.success === false,
+      'اختبار حظر القوة الغاشمة (Rate Limiting Lockout)',
+      'الأمان والمصادقة',
+      'تم إغلاق الحساب مؤقتاً بعد 5 محاولات فاشلة متتالية وسجلت محاولة الاختراق.'
+    );
+
+    // 1.4 اختبار أمان timingSafeEqual مع أطوال بايت مختلفة (Buffer length safety)
+    const malformedToken = 'abc.def.invalid';
+    const decodedMalformed = authService.verifyToken(malformedToken);
+    assert(
+      decodedMalformed === null,
+      'اختبار منع ثغرات توقيت الرموز المشفرة (Timing Attacks)',
+      'الأمان والمصادقة',
+      'تم رفض الرموز غير المتطابقة دون حدوث استثناءات بايت (Buffer Length Mismatch Protection).'
     );
   } catch (err: any) {
-    assert(false, 'اختبار المصادقة', 'الأمان والمصادقة', err.message);
+    assert(false, 'اختبار المصادقة والحماية', 'الأمان والمصادقة', err.message);
   }
 
-  // 2. اختبار الصلاحيات وتغيير الأدوار (RBAC)
+  // =========================================================================
+  // 2. اختبار الصلاحيات والتحقق الخادمي (Server-Side RBAC Enforcement)
+  // =========================================================================
   try {
-    const tellerLogin = authService.authenticateUser('teller', '3456');
+    const tellerLogin = authService.authenticateUser('teller', '3456', '127.0.0.1');
     assert(
-      tellerLogin !== null && tellerLogin.user?.role === 'teller',
-      'اختبار صلاحية الكاشير الافتراضية',
+      tellerLogin.success === true && tellerLogin.user?.role === 'teller',
+      'اختبار جلسة الكاشير المعتمدة',
       'إدارة الصلاحيات (RBAC)',
-      'جلسة الكاشير معتمدة ومحدودة بالعمليات اليومية.'
+      'جلسة الكاشير موثقة خادمياً ومحددة بصلاحيات الصرافة اليومية.'
     );
 
-    const decodedTeller = authService.verifyToken(tellerLogin!.token);
+    const decodedTeller = authService.verifyToken(tellerLogin.token!);
     assert(
       decodedTeller?.role === 'teller',
-      'اختبار التحقق من صحة الرمز المميز للكاشير',
+      'اختبار استخراج الدور من التوكن الخادمي وعدم الثقة بالواجهة',
       'إدارة الصلاحيات (RBAC)',
-      'الرمز المشفر يؤكد دور الكاشير ويمنع التلاعب بالصلاحيات.'
+      'الدور مستخرج حصرياً من التوكن المشفر لمنع التلاعب (Client Role Tampering).'
     );
   } catch (err: any) {
     assert(false, 'اختبار الصلاحيات', 'إدارة الصلاحيات (RBAC)', err.message);
   }
 
-  // 3. اختبار صرف الحوالة ومنع الصرف المكرر (Idempotent Remittance Payout)
+  // =========================================================================
+  // 3. اختبارات سلامة صرف الحوالات ومنع الصرف المكرر (Remittance Payout Integrity)
+  // =========================================================================
   try {
-    const testTransferNumber = `TR-TEST-${Date.now()}`;
-    const testAmount = 5000;
-    const testCurrency = 'SAR';
+    const uniqueNum = `TR-TEST-${Date.now().toString().slice(-6)}`;
+    const payoutAmount = 5000;
+    const payoutCurrency = 'SAR';
 
-    // First Payout
-    const firstPayout = remittanceRegistry.payoutRemittance({
-      transferId: `id-${testTransferNumber}`,
-      transferNumber: testTransferNumber,
+    // 3.1 تسجيل حوالة معتمدة في السجل المركزي
+    remittanceRegistry.registerMasterRemittance({
+      id: `rem-test-${uniqueNum}`,
+      transferNumber: uniqueNum,
+      direction: 'incoming',
+      status: 'available',
+      senderName: 'محمد أحمد الوجيه',
+      senderPhone: '777112233',
+      recipientName: 'صديق علي الفتاحي',
+      recipientPhone: '779077071',
+      networkName: 'شبكة النجم',
+      amount: payoutAmount,
+      currency: payoutCurrency,
+      feeAmount: 0,
+      totalPaid: payoutAmount,
+      branchName: 'المركز الرئيسي',
+      tellerName: 'نظام التدقيق',
+      createdAt: new Date().toISOString(),
+    });
+
+    // 3.2 فحص رفض الصرف في حال عدم إدخال رقم هوية KYC
+    const noKycPayout = remittanceRegistry.payoutRemittance({
+      transferId: `id-${uniqueNum}`,
+      transferNumber: uniqueNum,
       recipientIdType: 'national_id',
-      recipientIdNumber: '04010099881',
+      recipientIdNumber: '   ', // empty
       tellerId: 'usr-003',
       tellerName: 'الكاشير المعتمد',
       tellerRole: 'teller',
-      amount: testAmount,
-      currency: testCurrency,
+      amount: payoutAmount,
+      currency: payoutCurrency,
     });
-
     assert(
-      firstPayout.success === true && !!firstPayout.record,
-      'اختبار صرف الحوالة لأول مرة',
+      noKycPayout.success === false && Boolean(noKycPayout.error?.includes('إثبات هوية')),
+      'اختبار إلزامية هوية المستفيد (AML/KYC)',
       'العمليات المالية - صرف الحوالات',
-      `تم صرف الحوالة ${testTransferNumber} بنجاح وتسجيل السند في سجل السيرفر المركزي.`
+      'رفض النظام صرف الحوالة بدون إثبات هوية رسمي ساري المفعول.'
     );
 
-    // Immediate Second Payout Attempt (Simulating double-click or replay attack)
-    const secondPayout = remittanceRegistry.payoutRemittance({
-      transferId: `id-${testTransferNumber}`,
-      transferNumber: testTransferNumber,
+    // 3.3 فحص رفض التلاعب بالمبلغ من قبل العميل (Client Amount Tampering)
+    const tamperedPayout = remittanceRegistry.payoutRemittance({
+      transferId: `id-${uniqueNum}`,
+      transferNumber: uniqueNum,
       recipientIdType: 'national_id',
       recipientIdNumber: '04010099881',
       tellerId: 'usr-003',
       tellerName: 'الكاشير المعتمد',
       tellerRole: 'teller',
-      amount: testAmount,
-      currency: testCurrency,
+      amount: 99999, // tampered amount!
+      currency: payoutCurrency,
+      clientAmount: 99999,
     });
-
     assert(
-      secondPayout.success === false && Boolean(secondPayout.error?.includes('تم صرفها مسبقاً')),
-      'اختبار منع الصرف المكرر على مستوى الخادم',
+      tamperedPayout.success === false && Boolean(tamperedPayout.error?.includes('عدم تطابق مبلغ الحوالة')),
+      'اختبار الحماية من التلاعب بمبلغ الحوالة (Tamper Prevention)',
       'العمليات المالية - صرف الحوالات',
-      'رفض الخادم صرف الحوالة مرة ثانية مع تفعيل قيد عدم التكرار الذري.'
+      'رفض الخادم العملية لأن المبلغ المطلوب لا يطابق السجل المركزي للحوالة.'
+    );
+
+    // 3.4 تنفيذ الصرف النظامي لأول مرة
+    const firstPayout = remittanceRegistry.payoutRemittance({
+      idempotencyKey: `idem-${uniqueNum}-1`,
+      transferId: `id-${uniqueNum}`,
+      transferNumber: uniqueNum,
+      recipientIdType: 'national_id',
+      recipientIdNumber: '04010099881',
+      tellerId: 'usr-003',
+      tellerName: 'الكاشير المعتمد',
+      tellerRole: 'teller',
+      amount: payoutAmount,
+      currency: payoutCurrency,
+      cashierDrawerBalance: 20000,
+    });
+    assert(
+      firstPayout.success === true && !!firstPayout.record && firstPayout.record.amount === payoutAmount,
+      'اختبار صرف الحوالة المعتمدة وتحديث الحالة إلى paid',
+      'العمليات المالية - صرف الحوالات',
+      `تم صرف الحوالة ${uniqueNum} بنجاح وتسجيل السند في سجل السيرفر المركزي.`
+    );
+
+    // 3.5 محاولة صرف ثانية لنفس الحوالة (Double Payout Replay Attack)
+    const duplicatePayout = remittanceRegistry.payoutRemittance({
+      transferId: `id-${uniqueNum}`,
+      transferNumber: uniqueNum,
+      recipientIdType: 'national_id',
+      recipientIdNumber: '04010099881',
+      tellerId: 'usr-003',
+      tellerName: 'الكاشير المعتمد',
+      tellerRole: 'teller',
+      amount: payoutAmount,
+      currency: payoutCurrency,
+    });
+    assert(
+      duplicatePayout.success === false && duplicatePayout.isDuplicate === true,
+      'اختبار منع الصرف المكرر على مستوى الخادم (Double Payout Prevention)',
+      'العمليات المالية - صرف الحوالات',
+      'تم إحباط محاولة الصرف المكررة وإرجاع خطأ الصرف المسبق بدقة.'
+    );
+
+    // 3.6 اختبار مفتاح عدم التكرار (Idempotency Key Safe Replay)
+    const idempotentReplay = remittanceRegistry.payoutRemittance({
+      idempotencyKey: `idem-${uniqueNum}-1`, // same key
+      transferId: `id-${uniqueNum}`,
+      transferNumber: uniqueNum,
+      recipientIdType: 'national_id',
+      recipientIdNumber: '04010099881',
+      tellerId: 'usr-003',
+      tellerName: 'الكاشير المعتمد',
+      tellerRole: 'teller',
+      amount: payoutAmount,
+      currency: payoutCurrency,
+    });
+    assert(
+      idempotentReplay.success === true && idempotentReplay.record?.voucherNumber === firstPayout.record?.voucherNumber,
+      'اختبار استجابة مفتاح عدم التكرار (Idempotency Key Handling)',
+      'العمليات المالية - صرف الحوالات',
+      'أرجع الخادم نفس السجل الأصلي بأمان دون تكرار الخصم أو تسجيل عملية جديدة.'
     );
   } catch (err: any) {
-    assert(false, 'اختبار الصرف المكرر', 'العمليات المالية - صرف الحوالات', err.message);
+    assert(false, 'اختبار سلامة صرف الحوالات', 'العمليات المالية - صرف الحوالات', err.message);
   }
 
-  // 4. اختبار تغذية الصناديق والقيود المحاسبية المتوازنة
+  // =========================================================================
+  // 4. اختبار المطابقة المحاسبية والقيد المزدوج المتعدد العملات
+  // =========================================================================
   try {
-    const treasuryBalanceBefore = 50000;
-    const drawerBalanceBefore = 2000;
     const fundingAmount = 10000;
-
-    const treasuryBalanceAfter = treasuryBalanceBefore - fundingAmount;
-    const drawerBalanceAfter = drawerBalanceBefore + fundingAmount;
-
-    assert(
-      treasuryBalanceAfter === 40000 && drawerBalanceAfter === 12000,
-      'اختبار حركية الخصم والإيداع بتغذية الصندوق',
-      'المحاسبة والإدارة - تغذية الصناديق',
-      'تم خصم المبلغ من الخزينة المركزية وإيداعه في صندوق الكاشير دون زيادة الطرفين معاً.'
-    );
-
     const testJournalEntry = {
       id: 'jv-fund-test',
       entryNumber: 'JV-FUND-001',
@@ -172,15 +272,57 @@ async function runTestSuite() {
     const balanceCheck = validateDoubleEntryBalance(testJournalEntry.lines);
     assert(
       balanceCheck.isBalanced === true,
-      'اختبار توازن القيد المزدوج لتغذية الصندوق',
+      'اختبار توازن القيد المزدوج لتغذية الصندوق (Double-Entry Balance)',
       'المحاسبة والإدارة - القيد المزدوج',
-      'المدين مساوٍ للدائن بدقة في القيد المحاسبي المزدوج.'
+      'إجمالي المدين مساوٍ لإجمالي الدائن بدقة.'
+    );
+
+    // 4.2 استقلال العملات وعدم دمج الريال القديم مع الريال الجديد
+    const multiCurrencyLines = [
+      {
+        accountId: 'acc-1101',
+        accountNameAr: 'صندوق الريال القديم',
+        currency: 'YER_OLD' as const,
+        debit: 500000,
+        credit: 0,
+      },
+      {
+        accountId: 'acc-1102',
+        accountNameAr: 'صندوق الريال الجديد',
+        currency: 'YER_NEW' as const,
+        debit: 0,
+        credit: 500000, // Different currency line!
+      },
+    ];
+    const multiCheck = validateDoubleEntryBalance(multiCurrencyLines);
+    assert(
+      multiCheck.isBalanced === false,
+      'اختبار استقلال العملات ومنع خلط YER_OLD مع YER_NEW',
+      'المحاسبة والإدارة - استقلال العملات',
+      'رفض النظام توازن قيد بعملات مختلفة دون وسيط صرافة مطابق للضوابط.'
     );
   } catch (err: any) {
-    assert(false, 'اختبار تغذية الصندوق', 'المحاسبة والإدارة', err.message);
+    assert(false, 'اختبار القيد المزدوج والعملات', 'المحاسبة والإدارة', err.message);
   }
 
-  // 5. اختبار كشف الحساب وتفقيط العملات
+  // =========================================================================
+  // 5. اختبار تقرير المطابقة المالية للحوالات والصرف (Reconciliation Engine)
+  // =========================================================================
+  try {
+    const reconReport = remittanceRegistry.reconcilePayouts();
+    assert(
+      reconReport.status === 'BALANCED' && reconReport.discrepanciesCount === 0,
+      'اختبار تقرير المطابقة الشامل (Reconciliation Audit)',
+      'التدقيق والرقابة المالية',
+      `تمت مطابقة ${reconReport.matchedCount} عملية صرف مطابقة تامة بين السجل الخادمي وقاعدة البيانات.`
+    );
+  } catch (err: any) {
+    assert(false, 'اختبار تقرير المطابقة', 'التدقيق والرقابة المالية', err.message);
+  }
+
+  // =========================================================================
+  // 6. اختبار التفقيط والسندات الرسمية
+  // =========================================================================
   try {
     const tafqeetResult = tafqeetArabic(5000, 'SAR');
     assert(
