@@ -12,6 +12,7 @@ import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../ut
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../../data');
+const LEDGER_FILE = path.resolve(DATA_DIR, 'ledger.json');
 const ACCOUNTS_FILE = path.resolve(DATA_DIR, 'accounts_ledger.json');
 const JOURNAL_FILE = path.resolve(DATA_DIR, 'journal_entries.json');
 
@@ -24,6 +25,7 @@ export interface ServerAccount {
   type: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
   category: 'cash_box' | 'bank' | 'network' | 'customer' | 'remittance' | 'operational';
   balances: Record<CurrencyCode, number>;
+  initialBalances?: Record<CurrencyCode, number>;
 }
 
 export interface ServerJournalLine {
@@ -49,6 +51,46 @@ export interface ServerJournalEntry {
   isBalanced: boolean;
 }
 
+export interface ServerLedgerState {
+  version: number;
+  lastUpdated: string;
+  accounts: ServerAccount[];
+  journalEntries: ServerJournalEntry[];
+}
+
+export const DEFAULT_INITIAL_BALANCES: Record<string, Record<CurrencyCode, number>> = {
+  'acc-1101': {
+    YER_OLD: 25000000,
+    YER_NEW: 50000000,
+    SAR: 150000,
+    USD: 40000,
+  },
+  'acc-1102': {
+    YER_OLD: 5000000,
+    YER_NEW: 10000000,
+    SAR: 50000,
+    USD: 10000,
+  },
+  'acc-1201': {
+    YER_OLD: 0,
+    YER_NEW: 0,
+    SAR: 0,
+    USD: 0,
+  },
+  'acc-1301': {
+    YER_OLD: 0,
+    YER_NEW: 0,
+    SAR: 0,
+    USD: 0,
+  },
+  'acc-1302': {
+    YER_OLD: 0,
+    YER_NEW: 0,
+    SAR: 0,
+    USD: 0,
+  },
+};
+
 const DEFAULT_ACCOUNTS: ServerAccount[] = [
   {
     id: 'acc-1101',
@@ -62,6 +104,7 @@ const DEFAULT_ACCOUNTS: ServerAccount[] = [
       SAR: 150000,
       USD: 40000,
     },
+    initialBalances: { ...DEFAULT_INITIAL_BALANCES['acc-1101'] },
   },
   {
     id: 'acc-1102',
@@ -75,6 +118,7 @@ const DEFAULT_ACCOUNTS: ServerAccount[] = [
       SAR: 50000,
       USD: 10000,
     },
+    initialBalances: { ...DEFAULT_INITIAL_BALANCES['acc-1102'] },
   },
   {
     id: 'acc-1201',
@@ -88,6 +132,7 @@ const DEFAULT_ACCOUNTS: ServerAccount[] = [
       SAR: 0,
       USD: 0,
     },
+    initialBalances: { ...DEFAULT_INITIAL_BALANCES['acc-1201'] },
   },
   {
     id: 'acc-1301',
@@ -101,6 +146,7 @@ const DEFAULT_ACCOUNTS: ServerAccount[] = [
       SAR: 0,
       USD: 0,
     },
+    initialBalances: { ...DEFAULT_INITIAL_BALANCES['acc-1301'] },
   },
   {
     id: 'acc-1302',
@@ -114,6 +160,7 @@ const DEFAULT_ACCOUNTS: ServerAccount[] = [
       SAR: 0,
       USD: 0,
     },
+    initialBalances: { ...DEFAULT_INITIAL_BALANCES['acc-1302'] },
   },
 ];
 
@@ -125,14 +172,137 @@ class ServerAccountingEngine {
     this.loadState();
   }
 
-  private loadState(): void {
-    const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, DEFAULT_ACCOUNTS, { failOnCorruption: true });
-    this.accounts.clear();
-    for (const acc of loadedAccounts) {
-      this.accounts.set(acc.id, acc);
+  /**
+   * N5: فحص تطابق مجموع القيود لكل حساب وعملة مع الرصيد
+   */
+  public verifyLedgerIntegrity(
+    accountsToCheck?: ServerAccount[],
+    entriesToCheck?: ServerJournalEntry[]
+  ): { isValid: boolean; error?: string; discrepancies?: string[] } {
+    const accounts = accountsToCheck || Array.from(this.accounts.values());
+    const entries = entriesToCheck || this.journalEntries;
+    const discrepancies: string[] = [];
+
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+
+    for (const acc of accounts) {
+      for (const cur of currencies) {
+        const initial = acc.initialBalances?.[cur] ?? DEFAULT_INITIAL_BALANCES[acc.id]?.[cur] ?? 0;
+        let totalDebit = 0;
+        let totalCredit = 0;
+
+        for (const entry of entries) {
+          for (const line of entry.lines) {
+            if (line.accountId === acc.id && line.currency === cur) {
+              totalDebit += line.debit || 0;
+              totalCredit += line.credit || 0;
+            }
+          }
+        }
+
+        // للأصول (Assets): الرصيد المتوقع = الرصيد الافتتاحي + مجموع المدين - مجموع الدائن
+        const netChange = totalDebit - totalCredit;
+        const expectedBalance = initial + netChange;
+        const actualBalance = acc.balances[cur] ?? 0;
+
+        if (Math.abs(expectedBalance - actualBalance) > 0.001) {
+          discrepancies.push(
+            `الحساب [${acc.nameAr} (${acc.code}) - ${cur}]: الرصيد الفعلي (${actualBalance}) لا يطابق مجموع القيود (${expectedBalance})، الفارق: ${actualBalance - expectedBalance}`
+          );
+        }
+      }
     }
 
-    this.journalEntries = safeReadJson<ServerJournalEntry[]>(JOURNAL_FILE, [], { failOnCorruption: true });
+    if (discrepancies.length > 0) {
+      return {
+        isValid: false,
+        error: `خطأ حرج في تطابق دفتر الأستاذ (N5): تم اكتشاف ${discrepancies.length} عدم تطابق بين أرصدة الحسابات والقيود المحاسبية. ${discrepancies.join(' | ')}`,
+        discrepancies,
+      };
+    }
+
+    return { isValid: true };
+  }
+
+  /**
+   * N5: ترحيل غير مدمّر وقراءة دفتر الأستاذ الذري الموحد من ledger.json
+   */
+  private loadState(): void {
+    // ترحيل أوتوماتيكي غير مدمّر من الملفين القديمين إذا لم يكن ledger.json موجوداً بعد
+    if (!fs.existsSync(LEDGER_FILE)) {
+      let migratedAccounts: ServerAccount[] = DEFAULT_ACCOUNTS;
+      let migratedEntries: ServerJournalEntry[] = [];
+
+      if (fs.existsSync(ACCOUNTS_FILE)) {
+        migratedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, DEFAULT_ACCOUNTS, { failOnCorruption: true });
+      }
+      if (fs.existsSync(JOURNAL_FILE)) {
+        migratedEntries = safeReadJson<ServerJournalEntry[]>(JOURNAL_FILE, [], { failOnCorruption: true });
+      }
+
+      for (const acc of migratedAccounts) {
+        if (!acc.initialBalances) {
+          acc.initialBalances = { ...(DEFAULT_INITIAL_BALANCES[acc.id] || acc.balances) };
+        }
+      }
+
+      const initialLedgerState: ServerLedgerState = {
+        version: 1,
+        lastUpdated: getYemenDateTimeString(),
+        accounts: migratedAccounts,
+        journalEntries: migratedEntries,
+      };
+
+      // حفظ أولي ذري في ledger.json مع إبقاء الملفين القديمين دون حذف
+      safeAtomicWriteJson(LEDGER_FILE, initialLedgerState);
+    }
+
+    const ledgerState = safeReadJson<ServerLedgerState>(
+      LEDGER_FILE,
+      {
+        version: 1,
+        lastUpdated: getYemenDateTimeString(),
+        accounts: DEFAULT_ACCOUNTS,
+        journalEntries: [],
+      },
+      { failOnCorruption: true }
+    );
+
+    this.accounts.clear();
+    for (const acc of ledgerState.accounts) {
+      if (!acc.initialBalances) {
+        acc.initialBalances = { ...(DEFAULT_INITIAL_BALANCES[acc.id] || acc.balances) };
+      }
+      this.accounts.set(acc.id, acc);
+    }
+    this.journalEntries = ledgerState.journalEntries;
+
+    // فحص التطابق عند التحميل: مجموع القيود لكل حساب وعملة = الرصيد
+    const integrity = this.verifyLedgerIntegrity();
+    if (!integrity.isValid) {
+      console.error('[AccountingEngine FATAL] Ledger integrity check failed:', integrity.error);
+      throw new Error(integrity.error);
+    }
+  }
+
+  private saveLedgerStateToDisk(): void {
+    const state: ServerLedgerState = {
+      version: 1,
+      lastUpdated: getYemenDateTimeString(),
+      accounts: Array.from(this.accounts.values()),
+      journalEntries: this.journalEntries,
+    };
+
+    // كتابة ذرية في ملف واحد ledger.json يضم الحسابات والقيود معاً
+    safeAtomicWriteJson(LEDGER_FILE, state);
+
+    // مرآة توافقية للملفات القديمة
+    try {
+      safeAtomicWriteJson(ACCOUNTS_FILE, state.accounts);
+      safeAtomicWriteJson(JOURNAL_FILE, state.journalEntries);
+    } catch {
+      // Ignore legacy mirroring errors
+    }
   }
 
   public getAccounts(): ServerAccount[] {
@@ -256,10 +426,9 @@ class ServerAccountingEngine {
 
     this.journalEntries.unshift(newJournalEntry);
 
-    // الحفظ الذري على القرص للدفاتر المحاسبية
+    // N5: الحفظ الذري الموحد لدفتر الأستاذ في ملف واحد (ledger.json)
     try {
-      safeAtomicWriteJson(ACCOUNTS_FILE, Array.from(this.accounts.values()));
-      safeAtomicWriteJson(JOURNAL_FILE, this.journalEntries);
+      this.saveLedgerStateToDisk();
     } catch (err: any) {
       // التراجع في الذاكرة إن فشل الحفظ
       cashier.balances[params.currency] += params.amount;
@@ -349,8 +518,7 @@ class ServerAccountingEngine {
     this.journalEntries.unshift(newJournalEntry);
 
     try {
-      safeAtomicWriteJson(ACCOUNTS_FILE, Array.from(this.accounts.values()));
-      safeAtomicWriteJson(JOURNAL_FILE, this.journalEntries);
+      this.saveLedgerStateToDisk();
     } catch (err: any) {
       fromAcc.balances[params.currency] += params.amount;
       toAcc.balances[params.currency] -= params.amount;

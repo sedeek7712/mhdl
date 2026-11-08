@@ -376,6 +376,60 @@ async function runTestSuite() {
       assert(false, 'N2: اختبار حماية البيانات من التلف', 'حماية الملفات وتلف البيانات (N2)', err.message);
     }
 
+    // =========================================================================
+    // 3.3 N5: اختبار دفتر الأستاذ في ملف واحد ذري (ledger.json) وفحص تطابق الأرصدة والقيود
+    // =========================================================================
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const ledgerPath = path.resolve(process.cwd(), 'data', 'ledger.json');
+      const accountsPath = path.resolve(process.cwd(), 'data', 'accounts_ledger.json');
+      const journalPath = path.resolve(process.cwd(), 'data', 'journal_entries.json');
+
+      // 1. فحص وجود دالة فحص التطابق وتحققها من البيانات الفعلية الحالية
+      const verifyIntegrityMethod = (serverAccountingEngine as any).verifyLedgerIntegrity;
+      const hasMethod = typeof verifyIntegrityMethod === 'function';
+
+      let currentDataIntegrityPasses = false;
+      if (hasMethod) {
+        const integrityResult = (serverAccountingEngine as any).verifyLedgerIntegrity();
+        currentDataIntegrityPasses = integrityResult.isValid === true;
+      }
+
+      // 2. اختبار إحباط وكشف التعديل اليدوي على الرصيد دون قيد محاسبي
+      let tamperingDetected = false;
+      if (hasMethod) {
+        // نأخذ نسخة معدلة برصيد ملعوب فيه (+1000 SAR دون قيد)
+        const accountsCopy = serverAccountingEngine.getAccounts();
+        const testAccount = accountsCopy.find((a) => a.id === 'acc-1102');
+        if (testAccount) {
+          testAccount.balances.SAR += 1000; // تعديل رصيد دون قيد!
+          const tamperedResult = (serverAccountingEngine as any).verifyLedgerIntegrity(
+            accountsCopy,
+            serverAccountingEngine.getJournalEntries()
+          );
+          if (tamperedResult.isValid === false && Boolean(tamperedResult.error?.includes('عدم تطابق'))) {
+            tamperingDetected = true;
+          }
+        }
+      }
+
+      // 3. التحقق من أن ledger.json تم إنشاؤه ذرياً والملفات القديمة ما زالت موجودة دون حذف
+      const ledgerFileExists = fs.existsSync(ledgerPath);
+      const oldFilesPreserved = fs.existsSync(accountsPath) && fs.existsSync(journalPath);
+
+      const n5Success = hasMethod && currentDataIntegrityPasses && tamperingDetected && ledgerFileExists && oldFilesPreserved;
+
+      assert(
+        n5Success,
+        'N5: اختبار دفتر الأستاذ الذري الموحد (ledger.json) وفحص تطابق القيود والأرصدة',
+        'دفتر الأستاذ الذري الموحد (N5)',
+        `النتيجة: وجود فحص التطابق (${hasMethod})، تطابق البيانات الحالية (${currentDataIntegrityPasses})، كشف التلاعب بالرصيد دون قيد (${tamperingDetected})، وجود ledger.json (${ledgerFileExists})، إبقاء الملفات القديمة دون حذف (${oldFilesPreserved}).`
+      );
+    } catch (err: any) {
+      assert(false, 'N5: اختبار دفتر الأستاذ الذري الموحد', 'دفتر الأستاذ الذري الموحد (N5)', err.message);
+    }
+
   // =========================================================================
   // 4. H2: اختبار إحباط إعادة استخدام مفتاح عدم التكرار لحوالة أخرى (Cross-Transfer Idempotency Attack)
   // =========================================================================
