@@ -58,6 +58,30 @@ export interface ServerLedgerState {
   journalEntries: ServerJournalEntry[];
 }
 
+/**
+ * R1: اشتقاق الأرصدة الافتتاحية عند الترحيل من الملفات القديمة:
+ * الافتتاحي = الرصيد الحالي − صافي (مدين − دائن) لكل القيود، فلا نفترض القيم الافتراضية.
+ */
+export function computeInitialBalances(
+  account: { id: string; balances: Record<string, number> },
+  entries: ServerJournalEntry[]
+): Record<CurrencyCode, number> {
+  const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+  const initial = {} as Record<CurrencyCode, number>;
+  for (const cur of currencies) {
+    let net = 0;
+    for (const entry of entries) {
+      for (const line of entry.lines) {
+        if (line.accountId === account.id && line.currency === cur) {
+          net += (line.debit || 0) - (line.credit || 0);
+        }
+      }
+    }
+    initial[cur] = Number(((account.balances[cur] ?? 0) - net).toFixed(4));
+  }
+  return initial;
+}
+
 export const DEFAULT_INITIAL_BALANCES: Record<string, Record<CurrencyCode, number>> = {
   'acc-1101': {
     YER_OLD: 25000000,
@@ -242,7 +266,13 @@ class ServerAccountingEngine {
 
       for (const acc of migratedAccounts) {
         if (!acc.initialBalances) {
-          acc.initialBalances = { ...(DEFAULT_INITIAL_BALANCES[acc.id] || acc.balances) };
+          // R1: لا نفترض القيم الافتراضية؛ نشتق الافتتاحي من الرصيد الفعلي وصافي القيود
+          acc.initialBalances = computeInitialBalances(acc, migratedEntries);
+          const def = DEFAULT_INITIAL_BALANCES[acc.id];
+          const differs = def && (Object.keys(acc.initialBalances) as CurrencyCode[]).some((c) => Math.abs((def[c] ?? 0) - acc.initialBalances![c]) > 0.001);
+          if (differs) {
+            console.warn(`[AccountingEngine MIGRATION] الحساب ${acc.id}: الرصيد الافتتاحي المشتق يختلف عن الافتراضي:`, acc.initialBalances);
+          }
         }
       }
 
@@ -296,13 +326,8 @@ class ServerAccountingEngine {
     // كتابة ذرية في ملف واحد ledger.json يضم الحسابات والقيود معاً
     safeAtomicWriteJson(LEDGER_FILE, state);
 
-    // مرآة توافقية للملفات القديمة
-    try {
-      safeAtomicWriteJson(ACCOUNTS_FILE, state.accounts);
-      safeAtomicWriteJson(JOURNAL_FILE, state.journalEntries);
-    } catch {
-      // Ignore legacy mirroring errors
-    }
+    // R2: لا كتابة إلى الملفين القديمين (accounts_ledger.json / journal_entries.json) بعد الترحيل؛
+    // ledger.json هو المصدر الوحيد، والملفان القديمان للقراءة عند الترحيل فقط ولا يُحذفان.
   }
 
   public getAccounts(): ServerAccount[] {

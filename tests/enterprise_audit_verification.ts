@@ -567,6 +567,74 @@ async function runTestSuite() {
     assert(false, 'اختبار التفقيط', 'التقارير المحاسبية والسندات', err.message);
   }
 
+  // =========================================================================
+  // 3-D. اختبارات المرحلة 1-ب (R1 ترحيل بأرصدة غير افتراضية / R2 إيقاف المرآة / R3 COMMIT_PENDING_RECOVERY)
+  // =========================================================================
+  try {
+    const { computeInitialBalances } = await import('../src/server/services/serverAccountingEngine.js');
+    const fsR = await import('fs');
+    const pathR = await import('path');
+    const sha = (f: string) => crypto.createHash('sha256').update(fsR.readFileSync(f)).digest('hex');
+
+    // R1: الافتتاحي = الرصيد − صافي القيود (وليس القيم الافتراضية)
+    const acc: any = { id: 'acc-x', balances: { YER_OLD: 0, YER_NEW: 0, SAR: 123456, USD: 0 } };
+    const entries: any[] = [{ lines: [
+      { accountId: 'acc-x', currency: 'SAR', debit: 1000, credit: 0 },
+      { accountId: 'acc-x', currency: 'SAR', debit: 0, credit: 400 },
+      { accountId: 'other', currency: 'SAR', debit: 0, credit: 999 },
+    ] }];
+    const init = computeInitialBalances(acc, entries);
+    assert(
+      init.SAR === 123456 - 600 && init.USD === 0,
+      'R1: اشتقاق الرصيد الافتتاحي من الرصيد وصافي القيود عند الترحيل',
+      'المرحلة 1-ب',
+      `الافتتاحي المشتق لـ SAR = ${init.SAR} (المتوقع 122856).`
+    );
+
+    const mkRem = (n: string) => remittanceRegistry.registerMasterRemittance({
+      id: `r-${n}`, transferNumber: n, direction: 'incoming', status: 'available', senderName: 's', senderPhone: '',
+      recipientName: 'r', recipientPhone: '', networkName: 'n', amount: 1, currency: 'SAR', feeAmount: 0, totalPaid: 1,
+      branchName: 'b', tellerName: 't', createdAt: '2026-11-09 10:00',
+    } as any);
+    const dataDir = pathR.resolve(process.cwd(), 'data');
+    const legacyA = pathR.join(dataDir, 'accounts_ledger.json');
+    const legacyJ = pathR.join(dataDir, 'journal_entries.json');
+    const ledgerF = pathR.join(dataDir, 'ledger.json');
+    const sfx = Date.now().toString().slice(-6);
+    const mk1 = `R2-${sfx}`;
+    mkRem(mk1);
+    const hA = sha(legacyA), hJ = sha(legacyJ), hL = sha(ledgerF);
+    const p1 = remittanceRegistry.payoutRemittance({ transferId: mk1, transferNumber: mk1, recipientIdType: 'national_id', recipientIdNumber: '1', tellerId: 'usr-003', tellerName: 't', tellerRole: 'teller' });
+    assert(
+      p1.success === true && sha(legacyA) === hA && sha(legacyJ) === hJ && sha(ledgerF) !== hL,
+      'R2: الصرف يكتب ledger.json فقط ولا يلمس الملفين القديمين',
+      'المرحلة 1-ب',
+      'لا مرآة قديمة بعد الآن (الملفان محفوظان دون حذف).'
+    );
+
+    // R3: فشل الحفظ النهائي بعد القيد → COMMIT_PENDING_RECOVERY وخصم واحد
+    const mk2 = `R3-${sfx}`;
+    mkRem(mk2);
+    const before = serverAccountingEngine.getJournalEntries().length;
+    const bal0 = serverAccountingEngine.getCashierBalance('SAR');
+    let calls = 0;
+    const reg: any = remittanceRegistry;
+    const origSave = reg.savePayoutsToDisk.bind(reg);
+    reg.savePayoutsToDisk = () => { calls++; if (calls >= 2) throw new Error('disk full'); return origSave(); };
+    const p2 = remittanceRegistry.payoutRemittance({ transferId: mk2, transferNumber: mk2, recipientIdType: 'national_id', recipientIdNumber: '1', tellerId: 'usr-003', tellerName: 't', tellerRole: 'teller' });
+    reg.savePayoutsToDisk = origSave;
+    assert(
+      p2.success === false && p2.errorCode === 'COMMIT_PENDING_RECOVERY' &&
+        serverAccountingEngine.getJournalEntries().length === before + 1 &&
+        serverAccountingEngine.getCashierBalance('SAR') === bal0 - 1,
+      'R3: رمز COMMIT_PENDING_RECOVERY عند فشل الحفظ النهائي بعد الخصم',
+      'المرحلة 1-ب',
+      `الرمز: ${p2.errorCode}، قيد واحد وخصم واحد فقط.`
+    );
+  } catch (err: any) {
+    assert(false, 'اختبارات المرحلة 1-ب', 'المرحلة 1-ب', err.message);
+  }
+
   console.log('===============================================================');
   const totalPassed = results.filter((r) => r.passed).length;
   console.log(`📊 النتيجة النهائية: ${totalPassed} / ${results.length} اختبارات نجحت بنسبة 100%`);

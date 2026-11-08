@@ -679,6 +679,18 @@ async function startServer() {
       });
 
       if (!payoutResult.success) {
+        if (payoutResult.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: payoutResult.errorCode,
+            moneyDeducted: true,
+            doNotRetry: true,
+            error: payoutResult.error,
+            record: payoutResult.record,
+            journalEntry: payoutResult.journalEntry,
+            accounts: serverAccountingEngine.getAccounts(),
+          });
+        }
         return res.status(409).json({
           success: false,
           isDuplicate: remittanceRegistry.isRemittancePaid(transferNumber),

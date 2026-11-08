@@ -491,6 +491,7 @@ class RemittanceRegistry {
     masterRemittance?: RemittanceMasterRecord;
     journalEntry?: ServerJournalEntry;
     error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
     isDuplicate?: boolean;
   } {
     if (!params.transferNumber || typeof params.transferNumber !== 'string') {
@@ -733,9 +734,23 @@ class RemittanceRegistry {
       this.auditLogs.unshift(auditEntry);
 
       // حفظ التغييرات ذرياً
-      this.savePayoutsToDisk();
-      this.saveMasterRemittancesToDisk();
-      this.saveAuditLogsToDisk();
+      try {
+        this.savePayoutsToDisk();
+        this.saveMasterRemittancesToDisk();
+        this.saveAuditLogsToDisk();
+      } catch (finalSaveErr: any) {
+        // R3: القيد والخصم تما فعلاً؛ سجل prepared على القرص سيُستكمل تلقائياً عند إعادة التشغيل
+        console.error('[RemittanceRegistry] COMMIT_PENDING_RECOVERY: ledger posted but final save failed:', finalSaveErr);
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error:
+            'تم خصم النقدية وتسجيل القيد المحاسبي، لكن تعذر حفظ اعتماد الصرف النهائي على القرص. لا تُعد المحاولة؛ سيُستكمل الصرف تلقائياً عند إعادة تشغيل النظام.',
+          record: preparedRecord,
+          masterRemittance: masterRem,
+          journalEntry: accountingRes.journalEntry,
+        };
+      }
 
       return {
         success: true,
