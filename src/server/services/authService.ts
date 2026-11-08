@@ -236,7 +236,7 @@ class AuthService {
       u.pinHash = hashPinWithSalt(pin, u.pinSalt);
     }
 
-    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, defaultUsers, { failOnCorruption: false });
+    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, defaultUsers, { failOnCorruption: true });
     this.users.clear();
     for (const u of loadedUsers) {
       this.users.set(u.username, u);

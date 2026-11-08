@@ -126,13 +126,13 @@ class ServerAccountingEngine {
   }
 
   private loadState(): void {
-    const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, DEFAULT_ACCOUNTS, { failOnCorruption: false });
+    const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, DEFAULT_ACCOUNTS, { failOnCorruption: true });
     this.accounts.clear();
     for (const acc of loadedAccounts) {
       this.accounts.set(acc.id, acc);
     }
 
-    this.journalEntries = safeReadJson<ServerJournalEntry[]>(JOURNAL_FILE, [], { failOnCorruption: false });
+    this.journalEntries = safeReadJson<ServerJournalEntry[]>(JOURNAL_FILE, [], { failOnCorruption: true });
   }
 
   public getAccounts(): ServerAccount[] {

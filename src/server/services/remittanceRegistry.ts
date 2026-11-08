@@ -144,12 +144,12 @@ class RemittanceRegistry {
    * H4: قراءة آمنة تمنع بلع الأخطاء وتدمير البيانات عند وجود تلف
    */
   private loadFromDisk() {
-    this.settings = safeReadJson<RemittanceSettingsRecord>(SETTINGS_FILE, this.settings, { failOnCorruption: false });
+    this.settings = safeReadJson<RemittanceSettingsRecord>(SETTINGS_FILE, this.settings, { failOnCorruption: true });
 
     const numbersList = safeReadJson<{ number: string; registeredAt: string; registeredBy: string; mode: string }[]>(
       NUMBERS_REGISTRY_FILE,
       [],
-      { failOnCorruption: false }
+      { failOnCorruption: true }
     );
     this.registeredNumbers.clear();
     for (const item of numbersList) {
@@ -158,7 +158,7 @@ class RemittanceRegistry {
       }
     }
 
-    const payoutsList = safeReadJson<RemittancePayoutRecord[]>(PAYOUTS_REGISTRY_FILE, [], { failOnCorruption: false });
+    const payoutsList = safeReadJson<RemittancePayoutRecord[]>(PAYOUTS_REGISTRY_FILE, [], { failOnCorruption: true });
     this.payouts.clear();
     this.idempotencyStore.clear();
     this.idempotencyToTransferMap.clear();
@@ -172,9 +172,9 @@ class RemittanceRegistry {
       }
     }
 
-    this.auditLogs = safeReadJson<RemittanceAuditRecord[]>(AUDIT_LOGS_FILE, [], { failOnCorruption: false });
+    this.auditLogs = safeReadJson<RemittanceAuditRecord[]>(AUDIT_LOGS_FILE, [], { failOnCorruption: true });
 
-    const masterList = safeReadJson<RemittanceMasterRecord[]>(MASTER_REMITTANCES_FILE, [], { failOnCorruption: false });
+    const masterList = safeReadJson<RemittanceMasterRecord[]>(MASTER_REMITTANCES_FILE, [], { failOnCorruption: true });
     this.masterRemittances.clear();
     for (const item of masterList) {
       if (item && item.transferNumber) {

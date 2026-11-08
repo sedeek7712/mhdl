@@ -308,6 +308,74 @@ async function runTestSuite() {
       assert(false, 'N1: اختبار منع الصرف المزدوج', 'منع الصرف المزدوج (N1)', err.message);
     }
 
+    // =========================================================================
+    // 3.2 N2: اختبار منع تصفير البيانات عند تلف الملفات والنسخ الاحتياطي
+    // =========================================================================
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const testDir = path.resolve(process.cwd(), 'data', 'test_corruption');
+      if (!fs.existsSync(testDir)) fs.mkdirSync(testDir, { recursive: true });
+
+      const emptyLedgerPath = path.resolve(testDir, 'accounts_ledger_empty.json');
+      const corruptUsersPath = path.resolve(testDir, 'system_users_corrupt.json');
+      const corruptRemittancesPath = path.resolve(testDir, 'remittances_master_corrupt.json');
+      const atomicBakTestPath = path.resolve(testDir, 'atomic_bak_test.json');
+
+      // 1. ملف دفتر أستاذ فارغ (0 بايت)
+      fs.writeFileSync(emptyLedgerPath, '');
+      let emptyLedgerFailed = false;
+      try {
+        safeReadJson(emptyLedgerPath, [{ id: 'acc-fake', balances: {} }]);
+      } catch (e: any) {
+        emptyLedgerFailed = true;
+      }
+
+      // 2. ملف مستخدمين مقطوع (Truncated JSON)
+      fs.writeFileSync(corruptUsersPath, '{"users": [ {"username": "admin"');
+      let corruptUsersFailed = false;
+      try {
+        safeReadJson(corruptUsersPath, [{ id: 'usr-default' }]);
+      } catch (e: any) {
+        corruptUsersFailed = true;
+      }
+
+      // 3. ملف حوالات مقطوع
+      fs.writeFileSync(corruptRemittancesPath, '[{"transferNumber": "TR-123", "amount":');
+      let corruptRemittancesFailed = false;
+      try {
+        safeReadJson(corruptRemittancesPath, []);
+      } catch (e: any) {
+        corruptRemittancesFailed = true;
+      }
+
+      // 4. اختبار حفظ نسخة .bak في safeAtomicWriteJson
+      safeAtomicWriteJson(atomicBakTestPath, { initial: true });
+      safeAtomicWriteJson(atomicBakTestPath, { updated: true });
+      const bakExists = fs.existsSync(`${atomicBakTestPath}.bak`);
+
+      // التحقق من إنشاء ملفات .corrupt.*
+      const dirFiles = fs.readdirSync(testDir);
+      const corruptBackupsCreated = dirFiles.filter((f) => f.includes('.corrupt.')).length >= 3;
+
+      // تنظيف ملفات الاختبار
+      try {
+        fs.rmSync(testDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup
+      }
+
+      const allProtected = emptyLedgerFailed && corruptUsersFailed && corruptRemittancesFailed && bakExists && corruptBackupsCreated;
+      assert(
+        allProtected,
+        'N2: اختبار منع تصفير البيانات والتعامل مع الملفات الفارغة/المقطوعة كتالفة وإنشاء .bak',
+        'حماية الملفات وتلف البيانات (N2)',
+        `النتيجة: كشف الملف الفارغ (${emptyLedgerFailed})، كشف ملف users المقطوع (${corruptUsersFailed})، كشف الحوالات المقطوعة (${corruptRemittancesFailed})، إنشاء .bak (${bakExists})، حفظ نسخ .corrupt (${corruptBackupsCreated}).`
+      );
+    } catch (err: any) {
+      assert(false, 'N2: اختبار حماية البيانات من التلف', 'حماية الملفات وتلف البيانات (N2)', err.message);
+    }
+
   // =========================================================================
   // 4. H2: اختبار إحباط إعادة استخدام مفتاح عدم التكرار لحوالة أخرى (Cross-Transfer Idempotency Attack)
   // =========================================================================
