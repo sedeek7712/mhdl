@@ -204,6 +204,111 @@ async function runTestSuite() {
   }
 
   // =========================================================================
+  // 3.1 N1: اختبار منع الصرف المزدوج عبر نمط Write-Ahead وحماية القيد المزدوج
+  // =========================================================================
+  try {
+      const doubleTestNum = `TR-N1-TEST-${Date.now().toString().slice(-5)}`;
+      const payoutAmount = 1000;
+      const payoutCurrency = 'SAR';
+
+      // تسجيل الحوالة أولاً
+      remittanceRegistry.registerMasterRemittance({
+        id: `rem-${doubleTestNum}`,
+        transferNumber: doubleTestNum,
+        direction: 'incoming',
+        status: 'available',
+        senderName: 'عميل اختبار',
+        senderPhone: '771234567',
+        recipientName: 'مستلم اختبار الصرف المزدوج',
+        recipientPhone: '779077071',
+        networkName: 'شبكة النجم',
+        amount: payoutAmount,
+        currency: payoutCurrency,
+        feeAmount: 0,
+        totalPaid: payoutAmount,
+        branchName: 'المركز الرئيسي',
+        tellerName: 'إدارة العمليات',
+        createdAt: getYemenDateTimeString(),
+      });
+
+      const initialCashierBalance = serverAccountingEngine.getCashierBalance(payoutCurrency);
+
+      // حفظ الدالة الأصلية وحقن خطأ في savePayoutsToDisk لمحاكاة الانهيار أثناء الصرف
+      const originalSavePayouts = (remittanceRegistry as any).savePayoutsToDisk;
+      let failureInjected = false;
+
+      (remittanceRegistry as any).savePayoutsToDisk = function () {
+        if (!failureInjected) {
+          failureInjected = true;
+          throw new Error('محاكاة انهيار النظام أو فشل الكتابة على القرص أثناء الصرف (Crash Simulation)');
+        }
+        return originalSavePayouts.apply(this, arguments);
+      };
+
+      try {
+        remittanceRegistry.payoutRemittance({
+          idempotencyKey: `idem_${doubleTestNum}_crash`,
+          transferId: `id-${doubleTestNum}`,
+          transferNumber: doubleTestNum,
+          recipientIdType: 'national_id',
+          recipientIdNumber: '04010099881',
+          tellerId: 'usr-003',
+          tellerName: 'صديق علي الفتاحي',
+          tellerRole: 'teller',
+          amount: payoutAmount,
+          currency: payoutCurrency,
+        });
+      } catch (e: any) {
+        // تم التقاط خطأ المحاكاة
+      } finally {
+        // استعادة الدالة الأصلية
+        (remittanceRegistry as any).savePayoutsToDisk = originalSavePayouts;
+      }
+
+      // محاكاة إعادة تشغيل السيرفر وتحميل البيانات من القرص
+      (serverAccountingEngine as any).loadState();
+      (remittanceRegistry as any).loadFromDisk();
+
+      // محاولة صرف نفس الحوالة مرة ثانية بعد إعادة التشغيل
+      const secondAttempt = remittanceRegistry.payoutRemittance({
+        idempotencyKey: `idem_${doubleTestNum}_second`,
+        transferId: `id-${doubleTestNum}`,
+        transferNumber: doubleTestNum,
+        recipientIdType: 'national_id',
+        recipientIdNumber: '04010099881',
+        tellerId: 'usr-003',
+        tellerName: 'صديق علي الفتاحي',
+        tellerRole: 'teller',
+        amount: payoutAmount,
+        currency: payoutCurrency,
+      });
+
+      // التحقق من قيود اليومية الخاصة بهذه الحوالة
+      const allEntries = serverAccountingEngine.getJournalEntries();
+      const matchingEntries = allEntries.filter(
+        (j) => j.referenceType === 'transfer_payout' && j.referenceId === doubleTestNum
+      );
+
+      const finalCashierBalance = serverAccountingEngine.getCashierBalance(payoutCurrency);
+      const totalDeducted = initialCashierBalance - finalCashierBalance;
+
+      // يجب أن يكون هناك قيد واحد فقط لكل حوالة، والصندوق مخصوماً مرة واحدة فقط (أو العملية ملغاة بالكامل 0 قيد و0 خصم)
+      const isExactlyOnePayout = matchingEntries.length === 1 && totalDeducted === payoutAmount;
+      const isFullyRolledBack = matchingEntries.length === 0 && totalDeducted === 0;
+
+      assert(
+        isExactlyOnePayout || isFullyRolledBack,
+        'N1: اختبار منع الصرف المزدوج والتعافي بعد انهيار الحفظ',
+        'منع الصرف المزدوج (N1)',
+        `النتيجة: تم تسجيل ${matchingEntries.length} قيد، وإجمالي الخصم ${totalDeducted} ${payoutCurrency}. ${
+          isExactlyOnePayout ? 'تم التعافي والصرف لمرة واحدة فقط دون تكرار.' : isFullyRolledBack ? 'تم التراجع الكامل دون خصم.' : 'فشل: حدث صرف مزدوج أو عدم اتساق مالي!'
+        }`
+      );
+    } catch (err: any) {
+      assert(false, 'N1: اختبار منع الصرف المزدوج', 'منع الصرف المزدوج (N1)', err.message);
+    }
+
+  // =========================================================================
   // 4. H2: اختبار إحباط إعادة استخدام مفتاح عدم التكرار لحوالة أخرى (Cross-Transfer Idempotency Attack)
   // =========================================================================
   try {

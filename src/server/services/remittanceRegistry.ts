@@ -51,6 +51,7 @@ export interface RemittanceAuditRecord {
 }
 
 export interface RemittancePayoutRecord {
+  status?: 'prepared' | 'committed';
   idempotencyKey?: string;
   transferId: string;
   transferNumber: string;
@@ -179,6 +180,51 @@ class RemittanceRegistry {
       if (item && item.transferNumber) {
         this.masterRemittances.set(item.transferNumber.trim().toUpperCase(), item);
       }
+    }
+
+    // N1 (Write-Ahead Crash Recovery): فحص ومعالجة السجلات المعلقة (prepared) عند بدء التشغيل
+    // لكل سجل prepared: إن وُجد قيد transfer_payout بنفس referenceId فأكمله، وإلا ألغِ السجل prepared
+    const journalEntries = serverAccountingEngine.getJournalEntries();
+    let hasRecoveredChanges = false;
+
+    for (const [cleanNum, payoutRecord] of Array.from(this.payouts.entries())) {
+      if (payoutRecord.status === 'prepared') {
+        const matchingJv = journalEntries.find(
+          (jv) => jv.referenceType === 'transfer_payout' && jv.referenceId === cleanNum
+        );
+
+        if (matchingJv) {
+          // اكتمال القيد المحاسبي مسبقاً: نثبت السجل كـ committed ونحدّث حالة الحوالة إلى paid
+          payoutRecord.status = 'committed';
+          payoutRecord.journalEntryReference = matchingJv.entryNumber;
+          const master = this.masterRemittances.get(cleanNum);
+          if (master) {
+            master.status = 'paid';
+            master.paidAt = payoutRecord.paidAt;
+            master.recipientIdType = payoutRecord.recipientIdType;
+            master.recipientIdNumber = payoutRecord.recipientIdNumber;
+            master.voucherNumber = payoutRecord.voucherNumber;
+            master.journalEntryReference = matchingJv.entryNumber;
+            master.cashMovementReference = payoutRecord.cashMovementReference;
+            master.payoutRecordId = payoutRecord.voucherNumber;
+          }
+          hasRecoveredChanges = true;
+        } else {
+          // لم يُنفذ القيد المحاسبي ولم تُخصم النقدية: إلغاء السجل prepared لتبقى الحوالة متاحة
+          this.payouts.delete(cleanNum);
+          if (payoutRecord.idempotencyKey) {
+            const compositeKey = `${cleanNum}:${payoutRecord.tellerId}:${payoutRecord.idempotencyKey}`;
+            this.idempotencyStore.delete(compositeKey);
+            this.idempotencyToTransferMap.delete(payoutRecord.idempotencyKey);
+          }
+          hasRecoveredChanges = true;
+        }
+      }
+    }
+
+    if (hasRecoveredChanges) {
+      this.savePayoutsToDisk();
+      this.saveMasterRemittancesToDisk();
     }
   }
 
@@ -405,7 +451,7 @@ class RemittanceRegistry {
     const cleanNum = transferNumber.trim().toUpperCase();
     const payoutRecord = this.payouts.get(cleanNum);
     const masterRecord = this.masterRemittances.get(cleanNum);
-    return Boolean(payoutRecord || masterRecord?.status === 'paid');
+    return Boolean((payoutRecord && payoutRecord.status !== 'prepared') || masterRecord?.status === 'paid');
   }
 
   public getPayoutRecord(transferNumber: string): RemittancePayoutRecord | undefined {
@@ -485,12 +531,14 @@ class RemittanceRegistry {
     // التحقق من الصرف المسبق
     if (this.payouts.has(cleanNum)) {
       const existing = this.payouts.get(cleanNum)!;
-      return {
-        success: false,
-        isDuplicate: true,
-        record: existing,
-        error: `رفض النظام: الحوالة رقم ${cleanNum} تم صرفها مسبقاً بتاريخ ${existing.paidAt} بواسطة ${existing.tellerName}. يمنع صرف الحوالة مرتين منعاً باتاً.`,
-      };
+      if (existing.status === 'committed' || !existing.status) {
+        return {
+          success: false,
+          isDuplicate: true,
+          record: existing,
+          error: `رفض النظام: الحوالة رقم ${cleanNum} تم صرفها مسبقاً بتاريخ ${existing.paidAt} بواسطة ${existing.tellerName}. يمنع صرف الحوالة مرتين منعاً باتاً.`,
+        };
+      }
     }
 
     // التحقق من الصلاحيات
@@ -565,34 +613,12 @@ class RemittanceRegistry {
         params.managerOverride && (params.tellerRole === 'owner' || params.tellerRole === 'general_manager')
       );
 
-      // C3: تنفيذ القيد المحاسبي المزدوج وخصم الصندوق الفعلي على الخادم
-      const accountingRes = serverAccountingEngine.executeRemittancePayout({
-        transferNumber: cleanNum,
-        amount: masterRem.amount,
-        currency: masterRem.currency as CurrencyCode,
-        recipientName: masterRem.recipientName,
-        recipientIdNumber: params.recipientIdNumber.trim(),
-        networkName: masterRem.networkName,
-        tellerId: params.tellerId,
-        tellerName: params.tellerName,
-        tellerRole: params.tellerRole,
-        branchId: params.tellerBranch,
-        managerOverrideApproved: isManagerOverrideAllowed,
-        managerOverrideBy: isManagerOverrideAllowed ? params.tellerName : undefined,
-      });
-
-      if (!accountingRes.success) {
-        return {
-          success: false,
-          error: accountingRes.error || 'فشلت معالجة القيد المحاسبي وصندوق الكاشير على الخادم.',
-        };
-      }
-
       const yemenPaidAt = getYemenDateTimeString();
       const voucherNum = params.voucherNumber || `V-PAY-${Date.now().toString().slice(-4)}`;
-      const entryNum = accountingRes.journalEntry!.entryNumber;
 
-      const payoutRecord: RemittancePayoutRecord = {
+      // 1. نمط Write-Ahead: كتابة سجل الصرف أولاً بحالة prepared مع fsync على القرص
+      const preparedRecord: RemittancePayoutRecord = {
+        status: 'prepared',
         idempotencyKey: params.idempotencyKey,
         transferId: masterRem.id,
         transferNumber: cleanNum,
@@ -605,21 +631,83 @@ class RemittanceRegistry {
         currency: masterRem.currency,
         paidAt: yemenPaidAt,
         voucherNumber: voucherNum,
-        journalEntryReference: entryNum,
+        journalEntryReference: 'PENDING_COMMIT',
         cashMovementReference: voucherNum,
         managerOverride: isManagerOverrideAllowed,
         managerOverrideBy: isManagerOverrideAllowed ? params.tellerName : undefined,
         managerOverrideReason: params.managerOverrideReason,
       };
 
-      this.payouts.set(cleanNum, payoutRecord);
+      this.payouts.set(cleanNum, preparedRecord);
       if (params.idempotencyKey) {
         const compositeKey = `${cleanNum}:${params.tellerId}:${params.idempotencyKey}`;
-        this.idempotencyStore.set(compositeKey, payoutRecord);
+        this.idempotencyStore.set(compositeKey, preparedRecord);
         this.idempotencyToTransferMap.set(params.idempotencyKey, cleanNum);
       }
 
-      // تحديث حالة الحوالة في السجل الرئيسي
+      // حفظ السجل الأولي على القرص بـ fsync لمنع الصرف المزدوج عند الانهيار
+      this.savePayoutsToDisk();
+
+      // 2. تنفيذ القيد المحاسبي المزدوج وخصم الصندوق الفعلي على الخادم
+      let accountingRes;
+      try {
+        accountingRes = serverAccountingEngine.executeRemittancePayout({
+          transferNumber: cleanNum,
+          amount: masterRem.amount,
+          currency: masterRem.currency as CurrencyCode,
+          recipientName: masterRem.recipientName,
+          recipientIdNumber: params.recipientIdNumber.trim(),
+          networkName: masterRem.networkName,
+          tellerId: params.tellerId,
+          tellerName: params.tellerName,
+          tellerRole: params.tellerRole,
+          branchId: params.tellerBranch,
+          managerOverrideApproved: isManagerOverrideAllowed,
+          managerOverrideBy: isManagerOverrideAllowed ? params.tellerName : undefined,
+        });
+      } catch (accErr: any) {
+        // التراجع في الذاكرة والقرص عند فشل القيد المحاسبي
+        this.payouts.delete(cleanNum);
+        if (params.idempotencyKey) {
+          const compositeKey = `${cleanNum}:${params.tellerId}:${params.idempotencyKey}`;
+          this.idempotencyStore.delete(compositeKey);
+          this.idempotencyToTransferMap.delete(params.idempotencyKey);
+        }
+        try {
+          this.savePayoutsToDisk();
+        } catch {
+          // ignore
+        }
+        return {
+          success: false,
+          error: `فشلت معالجة القيد المحاسبي: ${accErr.message}`,
+        };
+      }
+
+      if (!accountingRes.success) {
+        // التراجع في الذاكرة والقرص عند رفض القيد المحاسبي
+        this.payouts.delete(cleanNum);
+        if (params.idempotencyKey) {
+          const compositeKey = `${cleanNum}:${params.tellerId}:${params.idempotencyKey}`;
+          this.idempotencyStore.delete(compositeKey);
+          this.idempotencyToTransferMap.delete(params.idempotencyKey);
+        }
+        try {
+          this.savePayoutsToDisk();
+        } catch {
+          // ignore
+        }
+        return {
+          success: false,
+          error: accountingRes.error || 'فشلت معالجة القيد المحاسبي وصندوق الكاشير على الخادم.',
+        };
+      }
+
+      // 3. تحديث الحوالة إلى paid وسجل الصرف إلى committed
+      const entryNum = accountingRes.journalEntry!.entryNumber;
+      preparedRecord.status = 'committed';
+      preparedRecord.journalEntryReference = entryNum;
+
       masterRem.status = 'paid';
       masterRem.paidAt = yemenPaidAt;
       masterRem.recipientIdType = params.recipientIdType;
@@ -651,9 +739,14 @@ class RemittanceRegistry {
 
       return {
         success: true,
-        record: payoutRecord,
+        record: preparedRecord,
         masterRemittance: masterRem,
         journalEntry: accountingRes.journalEntry,
+      };
+    } catch (unexpectedErr: any) {
+      return {
+        success: false,
+        error: `خطأ غير متوقع أثناء معالجة الصرف: ${unexpectedErr.message}`,
       };
     } finally {
       this.inFlightPayouts.delete(cleanNum);

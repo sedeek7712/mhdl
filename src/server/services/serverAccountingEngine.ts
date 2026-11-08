@@ -177,6 +177,17 @@ class ServerAccountingEngine {
       return { success: false, error: 'حساب صندوق الكاشير (acc-1102) غير مهيأ في الخادم.' };
     }
 
+    // N1 (حارس ثانٍ على مستوى الدفتر): رفض صريح لأي قيد ثانٍ من نوع transfer_payout لنفس referenceId
+    const existingPayoutEntry = this.journalEntries.find(
+      (e) => e.referenceType === 'transfer_payout' && e.referenceId === params.transferNumber
+    );
+    if (existingPayoutEntry) {
+      return {
+        success: false,
+        error: `رفض محاسبي قاطع: يوجد قيد صرف مسبق برقم (${existingPayoutEntry.entryNumber}) لنفس رقم الحوالة (${params.transferNumber}). يمنع تسجيل قيد ثانٍ منعاً باتاً.`,
+      };
+    }
+
     const currentBalance = cashier.balances[params.currency] || 0;
 
     // H1: التحقق من السيولة على الخادم - لا نثق بمدخلات المتصفح
