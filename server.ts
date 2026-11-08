@@ -14,9 +14,9 @@ import {
   requireRoles,
   createRateLimiter,
   authService,
-  SYSTEM_USERS,
   AuthenticatedUser,
 } from './src/server/services/authService.js';
+import { serverAccountingEngine, CurrencyCode } from './src/server/services/serverAccountingEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,7 +89,7 @@ async function startServer() {
   });
 
   // =========================================================================
-  // Authentication & Session Endpoints (FIND-002, FIND-010)
+  // Authentication & Session Endpoints (FIND-002, FIND-010, H5)
   // =========================================================================
   app.post('/api/auth/login', (req: Request, res: Response) => {
     const { roleOrUsername, pin } = req.body;
@@ -131,14 +131,9 @@ async function startServer() {
     });
   });
 
-  app.get('/api/auth/users', (_req: Request, res: Response) => {
-    const users = Object.values(SYSTEM_USERS).map(({ id, name, role, username, branchName }) => ({
-      id,
-      name,
-      role,
-      username,
-      branchName,
-    }));
+  // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
+  app.get('/api/auth/users', requireAuth, (_req: Request, res: Response) => {
+    const users = authService.getAllPublicUsers();
     return res.status(200).json({ success: true, users });
   });
 
@@ -354,35 +349,35 @@ async function startServer() {
               record: dispatchRegistry.getByVoucherNumber(voucherNumber),
             });
           } catch (apiErr: any) {
-            console.warn('[WhatsApp Dispatch Meta API Notice]:', apiErr?.message);
+            // H6: إزالة الرجوع الصامت إلى Sandbox في واتساب وإرجاع رسالة الفشل الحقيقية
+            console.error('[WhatsApp Dispatch Meta API Failure]:', apiErr?.message);
+            dispatchRegistry.recordFailure(record.id, apiErr?.message || 'فشل الاتصال بـ Meta Cloud API');
+            return res.status(502).json({
+              success: false,
+              mode: 'live',
+              error: `فشل إرسال صورة السند عبر Meta WhatsApp Cloud API: ${apiErr?.message || 'خطأ في معالجة طلب واتساب'}`,
+              record: dispatchRegistry.getByVoucherNumber(voucherNumber),
+            });
           }
         }
 
-        // ENTERPRISE SANDBOX SIMULATOR MODE
-        metaMediaId = `meta_media_sandbox_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        // إذا لم تكن بيانات Meta مهيأة، يتم استخدام نمط المحاكاة المحلي الواضح بدون إيهام الكاشير بوصول حقيقي
+        metaMediaId = `meta_media_simulated_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
 
-        whatsappMessageId = `wamid.HBgM${Date.now()}AN_SANDBOX_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        whatsappMessageId = `wamid.SIMULATED_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
         dispatchRegistry.recordSent(record.id, whatsappMessageId);
-
-        setTimeout(() => {
-          dispatchRegistry.recordWebhookEvent(whatsappMessageId, 'delivered', {
-            id: whatsappMessageId,
-            status: 'delivered',
-            timestamp: String(Math.floor(Date.now() / 1000)),
-            recipient_id: recipientPhone,
-          });
-        }, 1500);
 
         return res.status(200).json({
           success: true,
           mode: 'sandbox',
-          message: 'تم اعتماد وإرسال صورة السند بنجاح (نمط المحاكاة المؤسسي - Sandbox)',
+          isSimulated: true,
+          message: 'تم حفظ السند والأرشيف الرقمي (نمط المحاكاة المحلي - لم يتم الإرسال إلى هاتف حقيقي لعدم تهيئة توكن Meta)',
           whatsappMessageId,
           metaMediaId,
-          status: 'SENT',
+          status: 'SENT_LOCAL_SIMULATION',
           record: dispatchRegistry.getByVoucherNumber(voucherNumber),
-          notice: 'تم حفظ الأرشيف الرقمي وبصمة SHA-256 بنجاح، وستتحول الحالة إلى DELIVERED عبر Webhook تلقائياً.',
+          notice: 'لإرسال رسائل واتساب حقيقية للعملاء، يجب إدخال WHATSAPP_TOKEN و WHATSAPP_PHONE_NUMBER_ID في ملف متغيرات البيئة.',
         });
       } catch (err: any) {
         console.error('[WhatsApp Dispatch Root Error]:', err);
@@ -697,6 +692,8 @@ async function startServer() {
         message: 'تم اعتماد صرف الحوالة وتسليم النقدية وتوثيق العملية في سجل التدقيق بنجاح.',
         record: payoutResult.record,
         masterRemittance: payoutResult.masterRemittance,
+        journalEntry: payoutResult.journalEntry,
+        accounts: serverAccountingEngine.getAccounts(),
       });
     }
   );
@@ -722,11 +719,11 @@ async function startServer() {
     });
   });
 
-  // Register new master remittance (outgoing or incoming from teller desk)
+  // C2: حصر تسجيل الحوالات الواردة الخارجية بالمدير والمالك لمنع اختلاق حوالات وهمية من الكاشير
   app.post(
     '/api/remittances/register-master',
     requireAuth,
-    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    requireRoles(['branch_manager', 'general_manager', 'owner']),
     (req: any, res: Response) => {
       const {
         transferNumber,
@@ -738,7 +735,6 @@ async function startServer() {
         amount,
         currency,
         direction,
-        status,
         feeAmount,
         notes,
       } = req.body;
@@ -752,24 +748,40 @@ async function startServer() {
         });
       }
 
+      const parsedAmount = Number(amount);
+      if (!parsedAmount || parsedAmount <= 0 || !Number.isFinite(parsedAmount)) {
+        return res.status(400).json({
+          success: false,
+          error: 'مبلغ الحوالة يجب أن يكون رقماً موجباً أكبر من الصفر.',
+        });
+      }
+
+      const validCurrencies = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+      if (!validCurrencies.includes(currency)) {
+        return res.status(400).json({
+          success: false,
+          error: `العملة (${currency}) غير صالحة. العملات المعتمدة: ${validCurrencies.join(', ')}`,
+        });
+      }
+
       const regResult = remittanceRegistry.registerMasterRemittance({
         id: `rem-master-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         transferNumber: transferNumber.trim().toUpperCase(),
-        direction: direction || 'incoming',
-        status: status || 'available',
+        direction: direction === 'outgoing' ? 'outgoing' : 'incoming',
+        status: 'available', // إجبار الحالة على available خادمياً
         senderName: senderName || 'غير محدد',
         senderPhone: senderPhone || '',
         recipientName: recipientName.trim(),
         recipientPhone: recipientPhone || '',
         networkName: networkName || 'شبكة النجم للحوالات',
-        amount: Number(amount),
+        amount: parsedAmount,
         currency: currency.trim(),
         feeAmount: Number(feeAmount) || 0,
-        totalPaid: Number(amount) + (Number(feeAmount) || 0),
+        totalPaid: parsedAmount + (Number(feeAmount) || 0),
         branchName: authenticatedUser.branchName || 'الفرع الرئيسي',
         tellerName: authenticatedUser.name,
         createdAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-        notes: notes || 'مسجلة ومعتمدة مركزياً من نقطة الصرافة المعتمدة',
+        notes: notes || 'مسجلة ومعتمدة مركزياً من إدارة التحويلات',
       });
 
       if (!regResult.success) {
@@ -782,6 +794,59 @@ async function startServer() {
       return res.status(200).json({
         success: true,
         message: 'تم تسجيل الحوالة بنجاح في السجل المركزي المعتمد.',
+        record: regResult.record,
+      });
+    }
+  );
+
+  // =========================================================================
+  // Server-Authoritative Accounting Endpoints (C3)
+  // =========================================================================
+  app.get('/api/accounting/accounts', requireAuth, (_req: Request, res: Response) => {
+    const accounts = serverAccountingEngine.getAccounts();
+    return res.status(200).json({
+      success: true,
+      accounts,
+    });
+  });
+
+  app.get('/api/accounting/journal-entries', requireAuth, (_req: Request, res: Response) => {
+    const journalEntries = serverAccountingEngine.getJournalEntries();
+    return res.status(200).json({
+      success: true,
+      journalEntries,
+    });
+  });
+
+  app.post(
+    '/api/accounting/fund-drawer',
+    requireAuth,
+    requireRoles(['owner', 'general_manager', 'branch_manager']),
+    (req: any, res: Response) => {
+      const { fromAccountId, toAccountId, amount, currency } = req.body;
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      const result = serverAccountingEngine.fundCashierDrawer({
+        fromAccountId: fromAccountId || 'acc-1101',
+        toAccountId: toAccountId || 'acc-1102',
+        amount: Number(amount),
+        currency: currency as CurrencyCode,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+      });
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          error: result.error,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'تمت تغذية الصندوق بنجاح وتوثيق القيد المحاسبي المزدوج.',
+        journalEntry: result.journalEntry,
+        accounts: serverAccountingEngine.getAccounts(),
       });
     }
   );

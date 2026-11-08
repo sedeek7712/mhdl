@@ -1,8 +1,14 @@
 node_modules/
 build/
 dist/
+dev-dist/
+.aistudio/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
+data/.jwt_secret
+data/*.tmp*
+data/*.corrupt*
+data/archived_vouchers/

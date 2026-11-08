@@ -91,6 +91,27 @@ function AppContent() {
     offlineStorage.saveAccounts(accounts);
   }, [accounts]);
 
+  // C3: مزامنة الحسابات وقيود اليومية المعتمدة من الخادم كمرجع وحيد للحقيقة
+  useEffect(() => {
+    async function syncAuthoritativeLedger() {
+      try {
+        const [accRes, jvRes] = await Promise.all([
+          apiClient.getAccounts(),
+          apiClient.getJournalEntries(),
+        ]);
+        if (accRes.success && accRes.accounts && accRes.accounts.length > 0) {
+          setAccounts(accRes.accounts as Account[]);
+        }
+        if (jvRes.success && jvRes.journalEntries && jvRes.journalEntries.length > 0) {
+          setJournalEntries(jvRes.journalEntries as JournalEntry[]);
+        }
+      } catch (err) {
+        // Fallback to local storage if offline
+      }
+    }
+    syncAuthoritativeLedger();
+  }, [currentUser]);
+
   useEffect(() => {
     offlineStorage.saveCustomers(customers);
   }, [customers]);
@@ -621,7 +642,7 @@ function AppContent() {
 
     try {
       // 1. Call Server-Side API to enforce atomic duplicate payout prevention & audit registry
-      const idempotencyKey = `payout_${targetRem.transferNumber}_${Date.now()}`;
+      const idempotencyKey = `pay_${targetRem.transferNumber}_${currentUser.id}_${Date.now()}`;
       const serverResult = await apiClient.payoutRemittance({
         transferId: targetRem.id,
         transferNumber: targetRem.transferNumber,
@@ -631,7 +652,6 @@ function AppContent() {
         currency: targetRem.currency,
         clientAmount: targetRem.amount,
         clientCurrency: targetRem.currency,
-        cashierDrawerBalance: cashierBalance,
         idempotencyKey,
       });
 
@@ -644,32 +664,21 @@ function AppContent() {
       const now = new Date();
       const dateStr = now.toISOString().split('T')[0];
       const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-      const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
+      
+      // C3: استخدام القيد المحاسبي والأرصدة الرسمية الصادرة من الخادم
+      const officialJv = serverResult.journalEntry;
+      const entryNum = officialJv?.entryNumber || serverResult.record?.journalEntryReference || `JV-${new Date().getFullYear()}-0001`;
 
-      // 2. Update balances: Cashier pays out amount, network claim account is debited
-      setAccounts((prevAccounts) =>
-        prevAccounts.map((acc) => {
-          if (acc.id === 'acc-1102') {
-            return {
-              ...acc,
-              balances: {
-                ...acc.balances,
-                [targetRem.currency]: (acc.balances[targetRem.currency] || 0) - targetRem.amount,
-              },
-            };
-          }
-          if (acc.id === 'acc-1301') {
-            return {
-              ...acc,
-              balances: {
-                ...acc.balances,
-                [targetRem.currency]: (acc.balances[targetRem.currency] || 0) + targetRem.amount,
-              },
-            };
-          }
-          return acc;
-        })
-      );
+      if (serverResult.accounts && serverResult.accounts.length > 0) {
+        setAccounts(serverResult.accounts as Account[]);
+      }
+
+      if (officialJv) {
+        setJournalEntries((prev) => [
+          officialJv as JournalEntry,
+          ...prev.filter((j) => j.id !== officialJv.id && j.entryNumber !== officialJv.entryNumber),
+        ]);
+      }
 
       // 3. Update Remittance state
       setRemittances((prev) =>
@@ -678,7 +687,7 @@ function AppContent() {
             ? {
                 ...r,
                 status: 'paid',
-                paidAt: `${dateStr} ${timeStr}`,
+                paidAt: serverResult.record?.paidAt || `${dateStr} ${timeStr}`,
                 recipientIdType,
                 recipientIdNumber: recipientIdNumber.trim(),
               }
@@ -686,58 +695,24 @@ function AppContent() {
         )
       );
 
-      // 4. Balanced Journal Entry
-      const newJournalEntry: JournalEntry = {
-        id: `jv-pay-${Date.now()}`,
-        entryNumber: entryNum,
-        date: dateStr,
-        time: timeStr,
-        descriptionAr: `صرف حوالة واردة ${targetRem.transferNumber} للمستفيد ${targetRem.recipientName} (إثبات هوية: ${recipientIdNumber.trim()})`,
-        lines: [
-          {
-            accountId: 'acc-1301',
-            accountNameAr: `حساب ${targetRem.networkName}`,
-            currency: targetRem.currency,
-            debit: targetRem.amount,
-            credit: 0,
-            note: 'مطالبة الشبكة بقيمة الحوالة المصروفة',
-          },
-          {
-            accountId: 'acc-1102',
-            accountNameAr: 'صندوق كاشير الصراف 1',
-            currency: targetRem.currency,
-            debit: 0,
-            credit: targetRem.amount,
-            note: `تسليم نقدي للمستفيد ${targetRem.recipientName}`,
-          },
-        ],
-        referenceType: 'transfer_payout',
-        referenceId: targetRem.transferNumber,
-        branchId: currentUser.branchId,
-        createdBy: currentUser.name,
-        isBalanced: true,
-      };
-
-      setJournalEntries((prev) => [...prev, newJournalEntry]);
-
-      // 5. System audit log
+      // 4. System audit log
       const payoutAuditLog: SystemAuditLog = {
         id: `sys-payout-${Date.now()}`,
         category: 'financial',
         timestamp: `${dateStr} ${timeStr}`,
-        action: 'صرف حوالة مالية واردة',
-        details: `صرف الحوالة رقم ${targetRem.transferNumber} بمبلغ ${formatMoney(targetRem.amount, targetRem.currency)} للمستفيد ${targetRem.recipientName} (هوية: ${recipientIdNumber.trim()}) بقيد ${entryNum}`,
+        action: 'صرف حوالة مالية واردة (قيد خادمي معتمد)',
+        details: `صرف الحوالة رقم ${targetRem.transferNumber} بمبلغ ${formatMoney(targetRem.amount, targetRem.currency)} للمستفيد ${targetRem.recipientName} (هوية: ${recipientIdNumber.trim()}) بقيد معتمد ${entryNum}`,
         performedBy: currentUser.name,
         userRole: currentUser.role,
       };
       setSystemAuditLogs((prev) => [payoutAuditLog, ...prev]);
 
-      // 6. Generate Official Voucher via Central Voucher Engine
+      // 5. Generate Official Voucher via Central Voucher Engine
       const payoutVoucher = voucherEngine.createIncomingTransferPayoutVoucher({
         remittance: {
           ...targetRem,
           status: 'paid',
-          paidAt: `${dateStr} ${timeStr}`,
+          paidAt: serverResult.record?.paidAt || `${dateStr} ${timeStr}`,
           recipientIdType,
           recipientIdNumber: recipientIdNumber.trim(),
         },
@@ -751,7 +726,7 @@ function AppContent() {
 
       toast.success(
         'تم صرف الحوالة بنجاح',
-        `تم تسليم مبلغ ${formatMoney(targetRem.amount, targetRem.currency)} للمستفيد وقيد السند المحاسبي وتوثيق السجل بالسيرفر.`
+        `تم تسليم مبلغ ${formatMoney(targetRem.amount, targetRem.currency)} للمستفيد وتوثيق القيد المحاسبي (${entryNum}) في دفاتر الخادم المركزية.`
       );
     } catch (err: any) {
       toast.error('حدث خطأ أثناء صرف الحوالة', err.message || 'يرجى المحاولة مرة أخرى.');

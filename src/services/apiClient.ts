@@ -14,7 +14,8 @@ class ApiClient {
   constructor() {
     if (typeof window !== 'undefined') {
       try {
-        this.token = window.sessionStorage.getItem(AUTH_TOKEN_KEY) || window.localStorage.getItem(AUTH_TOKEN_KEY);
+        // M3: قصر قراءة التوكن على sessionStorage فقط ومنع حفظه أو قراءته من localStorage
+        this.token = window.sessionStorage.getItem(AUTH_TOKEN_KEY);
         const storedUser = window.sessionStorage.getItem(AUTH_USER_KEY);
         if (storedUser) {
           this.currentUser = JSON.parse(storedUser);
@@ -119,7 +120,7 @@ class ApiClient {
     managerOverride?: boolean;
     managerOverrideReason?: string;
     idempotencyKey?: string;
-  }): Promise<{ success: boolean; isDuplicate?: boolean; record?: any; error?: string; message?: string }> {
+  }): Promise<{ success: boolean; isDuplicate?: boolean; record?: any; journalEntry?: any; accounts?: any[]; error?: string; message?: string }> {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (payload.idempotencyKey) {
@@ -136,6 +137,54 @@ class ApiClient {
       return data;
     } catch (err: any) {
       return { success: false, error: err.message || 'تعذر الاتصال بالخادم لصرف الحوالة' };
+    }
+  }
+
+  /**
+   * جلب الأرصدة وحسابات دفتر الأستاذ الرسمية من الخادم
+   */
+  public async getAccounts(): Promise<{ success: boolean; accounts?: any[]; error?: string }> {
+    try {
+      const res = await this.fetch('/api/accounting/accounts');
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر جلب الحسابات من الخادم' };
+    }
+  }
+
+  /**
+   * جلب قيود اليومية المعتمدة من الخادم
+   */
+  public async getJournalEntries(): Promise<{ success: boolean; journalEntries?: any[]; error?: string }> {
+    try {
+      const res = await this.fetch('/api/accounting/journal-entries');
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر جلب قيود اليومية من الخادم' };
+    }
+  }
+
+  /**
+   * تغذية صندوق الكاشير من الخزينة المركزية بقيد خادمي معتمد
+   */
+  public async fundCashierDrawer(payload: {
+    fromAccountId: string;
+    toAccountId: string;
+    amount: number;
+    currency: string;
+  }): Promise<{ success: boolean; journalEntry?: any; accounts?: any[]; error?: string; message?: string }> {
+    try {
+      const res = await this.fetch('/api/accounting/fund-drawer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر الاتصال بالخادم لتغذية الصندوق' };
     }
   }
 

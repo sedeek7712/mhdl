@@ -1,5 +1,49 @@
 [
   {
+    "id": "audit-pay-1794096646553",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً بقيد خادمي)",
+    "details": "تم صرف الحوالة TR-A-6551 بمبلغ 1000 SAR للمستفيد (مستلم أ - إثبات هوية: national_id 04010022334) بواسطة الكاشير. سند: V-PAY-6553، قيد: JV-2026-0002",
+    "performedBy": "الكاشير",
+    "userRole": "teller",
+    "timestamp": "2026-11-08 03:10",
+    "oldValue": "status: available",
+    "newValue": "status: paid (Voucher: V-PAY-6553, JV: JV-2026-0002)"
+  },
+  {
+    "id": "audit-pay-1794096646550",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً بقيد خادمي)",
+    "details": "تم صرف الحوالة TR-AUDIT-46547 بمبلغ 5000 SAR للمستفيد (صديق علي محمد الفتاحي - إثبات هوية: national_id 04010099881) بواسطة صديق علي الفتاحي. سند: V-PAY-6550، قيد: JV-2026-0001",
+    "performedBy": "صديق علي الفتاحي",
+    "userRole": "teller",
+    "timestamp": "2026-11-08 03:10",
+    "oldValue": "status: available",
+    "newValue": "status: paid (Voucher: V-PAY-6550, JV: JV-2026-0001)"
+  },
+  {
+    "id": "audit-pay-1794096592447",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً بقيد خادمي)",
+    "details": "تم صرف الحوالة TR-A-2446 بمبلغ 1000 SAR للمستفيد (مستلم أ - إثبات هوية: national_id 04010022334) بواسطة الكاشير. سند: V-PAY-2447، قيد: JV-2026-0002",
+    "performedBy": "الكاشير",
+    "userRole": "teller",
+    "timestamp": "2026-11-08 03:09",
+    "oldValue": "status: available",
+    "newValue": "status: paid (Voucher: V-PAY-2447, JV: JV-2026-0002)"
+  },
+  {
+    "id": "audit-pay-1794096592445",
+    "category": "financial",
+    "action": "صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً بقيد خادمي)",
+    "details": "تم صرف الحوالة TR-AUDIT-92441 بمبلغ 5000 SAR للمستفيد (صديق علي محمد الفتاحي - إثبات هوية: national_id 04010099881) بواسطة صديق علي الفتاحي. سند: V-PAY-2445، قيد: JV-2026-0001",
+    "performedBy": "صديق علي الفتاحي",
+    "userRole": "teller",
+    "timestamp": "2026-11-08 03:09",
+    "oldValue": "status: available",
+    "newValue": "status: paid (Voucher: V-PAY-2445, JV: JV-2026-0001)"
+  },
+  {
     "id": "audit-pay-1794093488781-hoxm",
     "category": "financial",
     "action": "صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً)",
