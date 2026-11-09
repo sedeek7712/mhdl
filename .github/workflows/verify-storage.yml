@@ -37,6 +37,9 @@ jobs:
       - name: Run chart reconciliation tests
         run: bun run test:chart-reconciliation
 
+      - name: Run operating expense tests
+        run: bun run test:operating-expense
+
       - name: TypeScript validation
         run: bun run lint
 
