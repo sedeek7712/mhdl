@@ -5,6 +5,7 @@
  */
 
 import path from 'path';
+import crypto from 'crypto';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
