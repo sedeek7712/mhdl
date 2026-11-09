@@ -1072,6 +1072,86 @@ async function startServer() {
   );
 
   app.post(
+    '/api/accounting/exchanges',
+    requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        idempotencyKey,
+        rateId,
+        rateMode,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount,
+        commission,
+        customerName,
+        customerPhone,
+        notes,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof rateId !== 'string' || typeof rateMode !== 'string' ||
+          typeof sourceCurrency !== 'string' || typeof targetCurrency !== 'string' ||
+          typeof sourceAmount !== 'number' || typeof commission !== 'number') {
+        return res.status(400).json({
+          success: false,
+          error: 'معرف السعر ونوع العملية والعملتان والمبلغ والعمولة حقول إلزامية.',
+        });
+      }
+
+      const approvedRate = serverExchangeRateRegistry.getRates().find((rate) => rate.id === rateId);
+      if (!approvedRate) {
+        return res.status(409).json({
+          success: false,
+          error: 'سعر الصرف المطلوب غير موجود في قائمة الأسعار المعتمدة على الخادم.',
+        });
+      }
+
+      const result = serverAccountingEngine.executeExchange({
+        rate: approvedRate,
+        rateMode: rateMode as 'buy' | 'sell',
+        sourceCurrency: sourceCurrency as CurrencyCode,
+        targetCurrency: targetCurrency as CurrencyCode,
+        sourceAmount,
+        commission,
+        customerName: typeof customerName === 'string' ? customerName : 'عميل نقدي',
+        customerPhone: typeof customerPhone === 'string' ? customerPhone : '',
+        notes: typeof notes === 'string' ? notes : '',
+        operatorId: authenticatedUser.id,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+        idempotencyKey,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة الصرافة غير محسومة. أوقف النظام ولا تعاود العملية حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم عملية الصرافة.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+        effectiveRate: result.effectiveRate,
+        grossTargetAmount: result.grossTargetAmount,
+        targetAmount: result.targetAmount,
+        voucherNumber: result.journalEntry?.voucherNumber,
+      });
+    }
+  );
+
+  app.post(
     '/api/accounting/fund-drawer',
     requireAuth,
     requireRoles(['owner', 'general_manager', 'branch_manager']),
