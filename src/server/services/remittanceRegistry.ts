@@ -519,6 +519,8 @@ export class RemittanceRegistry {
     feeAmount: number;
     notes?: string;
     branchName: string;
+    branchId: string;
+    tellerId: string;
     tellerName: string;
     tellerRole: string;
   }): {
@@ -539,6 +541,8 @@ export class RemittanceRegistry {
         typeof params.recipientName !== 'string' || !params.recipientName.trim() || params.recipientName.trim().length > 160 ||
         typeof params.networkName !== 'string' || !params.networkName.trim() || params.networkName.trim().length > 100 ||
         typeof params.branchName !== 'string' || !params.branchName.trim() ||
+        typeof params.branchId !== 'string' || !params.branchId.trim() ||
+        typeof params.tellerId !== 'string' || !params.tellerId.trim() ||
         typeof params.tellerName !== 'string' || !params.tellerName.trim() ||
         typeof params.tellerRole !== 'string' || !params.tellerRole.trim()) {
       return { success: false, error: 'بيانات المرسل والمستفيد والشبكة والفرع والمنفذ مطلوبة.' };
@@ -598,7 +602,7 @@ export class RemittanceRegistry {
         existingByKey.tellerName === params.tellerName.trim() &&
         (existingByKey.tellerRole || '') === params.tellerRole &&
         (existingByKey.notes || '') === notes &&
-        existingByKey.numberingMode === this.settings.numberingMode;
+        existingByKey.numberingMode === (existingByKey.numberingMode === 'manual' ? 'manual' : 'automatic');
       const requestedManual = typeof params.manualTransferNumber === 'string'
         ? params.manualTransferNumber.trim().toUpperCase()
         : '';
@@ -701,7 +705,7 @@ export class RemittanceRegistry {
       referenceId: cleanNumber,
       amount: totalPaid,
       currency: params.currency,
-      actorId: params.tellerName.trim(),
+      actorId: params.tellerId.trim(),
     });
     if (!started.success || !started.transactionId) {
       return {
@@ -720,9 +724,9 @@ export class RemittanceRegistry {
       recipientName: params.recipientName.trim(),
       networkName: params.networkName.trim(),
       notes,
-      tellerId: params.tellerName.trim(),
+      tellerId: params.tellerId.trim(),
       tellerName: params.tellerName.trim(),
-      branchId: params.branchName.trim(),
+      branchId: params.branchId.trim(),
       idempotencyKey: params.idempotencyKey,
     });
 
