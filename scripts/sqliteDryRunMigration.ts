@@ -17,5 +17,6 @@ if (!sourceDirectory) {
 } else {
   const report = runSqliteDryRun(sourceDirectory);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (report.status !== 'PASS') process.exitCode = 1;
+  // A technically successful core dry run is not authorization to cut over.
+  if (report.status !== 'PASS' || !report.validation.completeSystemParity) process.exitCode = 1;
 }
