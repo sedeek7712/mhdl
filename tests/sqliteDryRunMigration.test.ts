@@ -400,3 +400,35 @@ test('operational dry-run rejects an empty exchange-rate registry', () => {
     fs.rmSync(fixture.directory, { recursive: true, force: true });
   }
 });
+
+test('operational dry-run rejects all-zero, one-sided, and negative exchange rates', () => {
+  const scenarios = [
+    { buyRate: 0, sellRate: 0 },
+    { buyRate: 0, sellRate: 3.75 },
+    { buyRate: -1, sellRate: 3.75 },
+  ];
+
+  for (const rate of scenarios) {
+    const fixture = createOperationalParityFixture();
+    try {
+      writeFixtureJson(fixture.directory, 'exchange_rate_state.json', {
+        schemaVersion: 1,
+        rates: [{
+          id: 'fixture-rate-usd-sar',
+          fromCurrency: 'USD',
+          toCurrency: 'SAR',
+          ...rate,
+          updatedAt: '2026-11-10T08:10:00.000Z',
+          updatedBy: 'fixture_owner',
+        }],
+        auditLogs: [],
+      });
+      const report = runSqliteDryRun(fixture.directory);
+      assert.equal(report.status, 'FAIL', JSON.stringify(rate));
+      assert.equal(report.validation.completeSystemParity, false);
+      assert.equal(report.validation.temporaryDatabaseRemoved, true);
+    } finally {
+      fs.rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  }
+});
