@@ -3,7 +3,15 @@ name: Validate SQLite foundation
 on:
   push:
     branches:
-      - storage/sqlite-foundation-2026-11-09
+      - 'storage/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'package.json'
+      - 'src/server/db/**'
+      - 'tests/sqlite*.test.ts'
+      - '.github/workflows/sqlite-foundation.yml'
 
 permissions:
   contents: read
