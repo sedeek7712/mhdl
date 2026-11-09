@@ -40,6 +40,9 @@ jobs:
       - name: Run operating expense tests
         run: bun run test:operating-expense
 
+      - name: Run incoming remittance registration tests
+        run: bun run test:incoming-remittances
+
       - name: TypeScript validation
         run: bun run lint
 
