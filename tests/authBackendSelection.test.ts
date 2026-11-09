@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { openSqliteDatabase, runSqliteMigrations } from '../src/server/db/sqliteDatabase.js';
+import { SQLITE_MIGRATIONS } from '../src/server/db/sqliteMigrations.js';
+import { importSqliteUsers, type SqliteUserRecord } from '../src/server/db/sqliteAuthRepository.js';
+import { hashSqliteAuthPin } from '../src/server/services/sqliteAuthService.js';
+
+test('explicit ALNAMARI_AUTH_BACKEND=sqlite selects the SQLite service and preserves token validation', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-auth-backend-'));
+  const databaseFile = path.join(directory, 'exchange.sqlite');
+  const previous = {
+    backend: process.env.ALNAMARI_AUTH_BACKEND,
+    database: process.env.ALNAMARI_SQLITE_DB_PATH,
+    jwtSecret: process.env.JWT_SECRET,
+    appSecret: process.env.APP_SECRET,
+    nodeEnv: process.env.NODE_ENV,
+    testData: process.env.ALNAMARI_TEST_DATA_DIR,
+  };
+  let selectedModule: typeof import('../src/server/services/authService.js') | undefined;
+
+  t.after(() => {
+    selectedModule?.closeAuthService();
+    for (const [key, value] of Object.entries({
+      ALNAMARI_AUTH_BACKEND: previous.backend,
+      ALNAMARI_SQLITE_DB_PATH: previous.database,
+      JWT_SECRET: previous.jwtSecret,
+      APP_SECRET: previous.appSecret,
+      NODE_ENV: previous.nodeEnv,
+      ALNAMARI_TEST_DATA_DIR: previous.testData,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  const salt = crypto.randomBytes(16).toString('hex');
+  const owner: SqliteUserRecord = {
+    id: 'backend-selector-owner',
+    username: 'backend_owner',
+    name: 'مالك اختيار الخلفية',
+    role: 'owner',
+    branchId: 'branch-main',
+    branchName: 'الفرع الرئيسي',
+    pinSalt: salt,
+    pinHash: hashSqliteAuthPin('849263', salt),
+    isActive: true,
+    mustChangePin: false,
+    sessionVersion: crypto.randomBytes(16).toString('hex'),
+    createdAt: new Date().toISOString(),
+  };
+
+  const seedDb = openSqliteDatabase({ filePath: databaseFile });
+  runSqliteMigrations(seedDb, SQLITE_MIGRATIONS);
+  importSqliteUsers(seedDb, [owner]);
+  seedDb.close();
+
+  process.env.NODE_ENV = 'test';
+  process.env.ALNAMARI_TEST_DATA_DIR = directory;
+  process.env.ALNAMARI_AUTH_BACKEND = 'sqlite';
+  process.env.ALNAMARI_SQLITE_DB_PATH = databaseFile;
+  process.env.JWT_SECRET = 'backend-selector-test-secret-with-more-than-32-characters';
+  delete process.env.APP_SECRET;
+
+  selectedModule = await import('../src/server/services/authService.js');
+  assert.equal(selectedModule.authBackend, 'sqlite');
+  assert.equal(typeof selectedModule.sqliteAuthRouter, 'function');
+
+  const login = selectedModule.authService.authenticateUser('backend_owner', '849263', '127.0.0.1');
+  assert.equal(login.success, true);
+  assert.equal(selectedModule.authService.verifyToken(login.token as string)?.userId, owner.id);
+});
