@@ -16,7 +16,8 @@
     "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts",
     "setup:chart-of-accounts": "node --import tsx scripts/reconcileChartOfAccounts.ts",
     "test:chart-reconciliation": "node --import tsx --test tests/chartOfAccountsMigration.test.ts",
-    "test:operating-expense": "node --import tsx --test tests/operatingExpense.test.ts"
+    "test:operating-expense": "node --import tsx --test tests/operatingExpense.test.ts",
+    "test:incoming-remittances": "node --import tsx --test tests/incomingRemittanceRegistration.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
