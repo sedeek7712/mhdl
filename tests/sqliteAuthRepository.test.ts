@@ -7,6 +7,7 @@ import {
   changeSqliteUserPin,
   getSqliteUserByUsername,
   insertSqliteUser,
+  importSqliteUsers,
   listSqlitePublicUsers,
   listSqliteSecurityEvents,
   resetSqliteStaffPin,
@@ -183,4 +184,66 @@ test('security events persist in SQLite and can be bounded for audit retrieval',
   assert.equal(listSqliteSecurityEvents(db, 1)[0].id, 'sec-2');
   assert.equal(listSqliteSecurityEvents(db, 10).length, 2);
   assert.throws(() => listSqliteSecurityEvents(db, 1001), /between 1 and 1000/);
+});
+
+
+test('imports a complete legacy user set atomically and preserves credentials', (t) => {
+  const db = createDatabase(t);
+  const legacyUsers = [
+    user(),
+    user({
+      id: 'user-teller-1',
+      username: 'teller_01',
+      name: 'الصراف الأول',
+      role: 'teller',
+      pinSalt: 'd'.repeat(32),
+      pinHash: 'e'.repeat(64),
+      sessionVersion: 'f'.repeat(32),
+    }),
+  ];
+
+  const imported = importSqliteUsers(db, legacyUsers);
+  assert.equal(imported.length, 2);
+  assert.equal(getSqliteUserByUsername(db, 'owner_main')?.pinHash, 'b'.repeat(64));
+  assert.equal(getSqliteUserByUsername(db, 'teller_01')?.pinHash, 'e'.repeat(64));
+  assert.equal(listSqlitePublicUsers(db).length, 2);
+});
+
+test('rejects partial or ambiguous owner sets before importing any user', (t) => {
+  const db = createDatabase(t);
+  const teller = user({
+    id: 'user-teller-1',
+    username: 'teller_01',
+    name: 'الصراف الأول',
+    role: 'teller',
+  });
+
+  assert.throws(() => importSqliteUsers(db, [teller]), /exactly one active owner/);
+  assert.throws(() => importSqliteUsers(db, [user(), user({
+    id: 'user-owner-2',
+    username: 'owner_second',
+    sessionVersion: 'd'.repeat(32),
+  })]), /exactly one active owner/);
+  assert.equal(listSqlitePublicUsers(db).length, 0);
+});
+
+test('rolls back the entire user import on duplicate or pre-existing records', (t) => {
+  const db = createDatabase(t);
+  const duplicateUsername = user({
+    id: 'user-teller-1',
+    username: 'OWNER_MAIN',
+    role: 'teller',
+  });
+  assert.throws(() => importSqliteUsers(db, [user(), duplicateUsername]), /duplicate usernames or user IDs/);
+  assert.equal(listSqlitePublicUsers(db).length, 0);
+
+  insertOwner(db);
+  assert.throws(() => importSqliteUsers(db, [
+    user({
+      id: 'user-teller-2',
+      username: 'teller_02',
+      role: 'teller',
+    }),
+  ]), /already contains user accounts/);
+  assert.equal(listSqlitePublicUsers(db).length, 1);
 });
