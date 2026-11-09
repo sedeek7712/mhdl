@@ -204,6 +204,66 @@ class ApiClient {
     }
   }
 
+  public async getActiveCashierShift(): Promise<{
+    success: boolean;
+    activeShift?: any | null;
+    history?: any[];
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/shifts/active');
+      const data = await response.json();
+      return response.ok ? data : { success: false, error: data.error || 'تعذر جلب الوردية من الخادم.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر الاتصال بخادم الورديات.' };
+    }
+  }
+
+  public async openCashierShift(payload: { idempotencyKey: string }): Promise<{
+    success: boolean;
+    shift?: any;
+    replayed?: boolean;
+    outcomeUncertain?: boolean;
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return { ...data, outcomeUncertain: !response.ok && response.status >= 500 };
+    } catch (error: any) {
+      return { success: false, outcomeUncertain: true, error: error.message || 'انقطع الاتصال أثناء فتح الوردية؛ أعد الطلب بالمفتاح نفسه.' };
+    }
+  }
+
+  public async closeCashierShift(payload: {
+    idempotencyKey: string;
+    shiftId: string;
+    actualBalances: Record<string, number>;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    shift?: any;
+    replayed?: boolean;
+    outcomeUncertain?: boolean;
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/shifts/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return { ...data, outcomeUncertain: !response.ok && response.status >= 500 };
+    } catch (error: any) {
+      return { success: false, outcomeUncertain: true, error: error.message || 'انقطع الاتصال أثناء إقفال الوردية؛ أعد الطلب بالمفتاح نفسه.' };
+    }
+  }
+
   /**
    * جلب الأرصدة وحسابات دفتر الأستاذ الرسمية من الخادم
    */
