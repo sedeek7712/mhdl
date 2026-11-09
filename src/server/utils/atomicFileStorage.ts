@@ -85,10 +85,15 @@ export function safeAtomicWriteJson(filePath: string, data: any): void {
 export function safeReadJson<T>(
   filePath: string,
   defaultData: T,
-  options: { failOnCorruption?: boolean } = { failOnCorruption: true }
+  options: { failOnCorruption?: boolean; failOnMissing?: boolean } = { failOnCorruption: true }
 ): T {
   if (!fs.existsSync(filePath)) {
-    // الملف غير موجود: نكتب البيانات الافتراضية بشكل ذري
+    if (options.failOnMissing === true) {
+      throw new Error(
+        `خطأ حرج في سلامة البيانات: الملف المطلوب (${path.basename(filePath)}) غير موجود. تم إيقاف القراءة المالية لمنع إنشاء بيانات افتراضية أو أرصدة غير حقيقية.`
+      );
+    }
+    // الملفات الاختيارية فقط: نكتب القيمة الافتراضية بشكل ذري عند أول تشغيل
     safeAtomicWriteJson(filePath, defaultData);
     return defaultData;
   }
@@ -96,7 +101,7 @@ export function safeReadJson<T>(
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     if (!raw.trim()) {
-      return defaultData;
+      throw new Error('الملف فارغ أو مقطوع (0 بايت أو مسافات فقط)');
     }
     return JSON.parse(raw) as T;
   } catch (err: any) {
