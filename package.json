@@ -13,7 +13,9 @@
     "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts",
     "setup:owner": "node --import tsx scripts/bootstrapOwner.ts",
     "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts",
-    "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts"
+    "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts",
+    "setup:chart-of-accounts": "node --import tsx scripts/reconcileChartOfAccounts.ts",
+    "test:chart-reconciliation": "node --import tsx --test tests/chartOfAccountsMigration.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
