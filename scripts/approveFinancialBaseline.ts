@@ -134,12 +134,13 @@ async function main(): Promise<void> {
   });
   if (!Array.isArray(users) || users.length !== 1 ||
       users[0].role !== 'owner' || users[0].isActive !== true ||
-      typeof users[0].pinSalt !== 'string' || typeof users[0].pinHash !== 'string') {
+      typeof users[0].pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(users[0].pinSalt) ||
+      typeof users[0].pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(users[0].pinHash)) {
     throw new Error('ملف المستخدمين لا يحتوي حساب مالك واحداً نشطاً ببيانات اعتماد صحيحة؛ تم إيقاف اعتماد الأرصدة.');
   }
 
   const ownerPin = await readHidden('أدخل PIN المالك للتحقق قبل اعتماد الأرصدة: ');
-  if (!/^\\d{6}$/.test(ownerPin)) {
+  if (!/^\d{6}$/.test(ownerPin)) {
     throw new Error('يجب إدخال PIN مكوّن من 6 أرقام.');
   }
   const enteredHash = crypto.pbkdf2Sync(ownerPin, users[0].pinSalt, 100000, 32, 'sha256');
