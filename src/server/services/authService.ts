@@ -31,6 +31,7 @@ export interface StoredUserRecord extends AuthenticatedUser {
   pinHash: string;
   isActive: boolean;
   mustChangePin: boolean;
+  sessionVersion: string;
   createdAt: string;
 }
 
@@ -50,6 +51,7 @@ export interface AuthTokenPayload {
   role: AuthenticatedUser['role'];
   branchId: string;
   branchName: string;
+  sessionVersion: string;
   iat: number;
   exp: number;
 }
@@ -204,7 +206,7 @@ class AuthService {
     return this.users.get(roleOrUsername);
   }
 
-  public generateToken(user: AuthenticatedUser): string {
+  public generateToken(user: StoredUserRecord): string {
     const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
     const now = Math.floor(Date.now() / 1000);
     const exp = now + this.TOKEN_EXPIRY_HOURS * 3600;
@@ -216,6 +218,7 @@ class AuthService {
       role: user.role,
       branchId: user.branchId,
       branchName: user.branchName,
+      sessionVersion: user.sessionVersion,
       iat: now,
       exp,
     };
@@ -256,14 +259,16 @@ class AuthService {
       const payload: AuthTokenPayload = JSON.parse(Buffer.from(data, 'base64url').toString('utf-8'));
       const now = Math.floor(Date.now() / 1000);
       if (!payload || typeof payload.userId !== 'string' || typeof payload.username !== 'string' ||
-          typeof payload.role !== 'string' || !Number.isSafeInteger(payload.exp) || payload.exp <= now) {
+          typeof payload.role !== 'string' || typeof payload.sessionVersion !== 'string' ||
+          !Number.isSafeInteger(payload.exp) || payload.exp <= now) {
         return null;
       }
 
       // إيقاف الجلسات فور تعطيل الحساب أو تغير هويته/صلاحياته في ملف المستخدمين.
       const currentUser = this.users.get(payload.username);
       if (!currentUser || !currentUser.isActive || currentUser.id !== payload.userId ||
-          currentUser.role !== payload.role || currentUser.branchId !== payload.branchId) {
+          currentUser.role !== payload.role || currentUser.branchId !== payload.branchId ||
+          currentUser.sessionVersion !== payload.sessionVersion) {
         return null;
       }
       return payload;
