@@ -279,7 +279,7 @@ export async function startServer(options: { port?: number; host?: string; useVi
         if (typeof voucherNumber !== 'string' || !voucherNumber.trim() ||
             typeof transactionId !== 'string' || !transactionId.trim() ||
             typeof voucherType !== 'string' ||
-            typeof recipientPhone !== 'string' || !/^\\+?\\d{8,15}$/.test(recipientPhone.trim())) {
+            typeof recipientPhone !== 'string' || !/^\+?\d{8,15}$/.test(recipientPhone.trim())) {
           return res.status(400).json({
             success: false,
             error: 'رقم السند ورقم العملية ونوع السند ورقم هاتف صحيح حقول إلزامية',
