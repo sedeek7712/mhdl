@@ -682,8 +682,7 @@ function AppContent() {
     setIsProcessingPayout(true);
 
     try {
-      // 1. Call Server-Side API to enforce atomic duplicate payout prevention & audit registry
-      const idempotencyKey = `pay_${targetRem.transferNumber}_${currentUser.id}_${Date.now()}`;
+      // 1. Call the server; it derives a stable idempotency key from the authenticated teller and transfer.
       const serverResult = await apiClient.payoutRemittance({
         transferId: targetRem.id,
         transferNumber: targetRem.transferNumber,
@@ -693,7 +692,6 @@ function AppContent() {
         currency: targetRem.currency,
         clientAmount: targetRem.amount,
         clientCurrency: targetRem.currency,
-        idempotencyKey,
       });
 
       if (!serverResult.success) {
