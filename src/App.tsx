@@ -52,8 +52,6 @@ import { A4AccountStatementModal } from './components/A4AccountStatementModal';
 import { ReceiveTransferDesk } from './components/ReceiveTransferDesk';
 import { PrintAuditLogModal } from './components/vouchers/PrintAuditLogModal';
 import { RoleAuthModal } from './components/ui/RoleAuthModal';
-import { UserRole } from './types/exchange';
-import { AVAILABLE_ROLES } from './data/initialData';
 
 function AppContent() {
   const toast = useToast();
@@ -65,7 +63,8 @@ function AppContent() {
   const [isA4StatementOpen, setIsA4StatementOpen] = useState<boolean>(false);
   const [statementCustomerId, setStatementCustomerId] = useState<string | undefined>(undefined);
   const [statementType, setStatementType] = useState<'customer' | 'account' | 'profits'>('account');
-  const [roleAuthTarget, setRoleAuthTarget] = useState<UserRole | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isProcessingPayout, setIsProcessingPayout] = useState<boolean>(false);
   const [isOfflineModalOpen, setIsOfflineModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
@@ -88,11 +87,13 @@ function AppContent() {
 
   // Sync to local persistent storage automatically on change
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveAccounts(accounts);
-  }, [accounts]);
+  }, [accounts, isAuthenticated]);
 
   // C3: مزامنة الحسابات وقيود اليومية المعتمدة من الخادم كمرجع وحيد للحقيقة
   useEffect(() => {
+    if (!isAuthenticated) return;
     async function syncAuthoritativeLedger() {
       try {
         const [accRes, jvRes] = await Promise.all([
@@ -110,69 +111,109 @@ function AppContent() {
       }
     }
     syncAuthoritativeLedger();
-  }, [currentUser]);
+  }, [currentUser, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveCustomers(customers);
-  }, [customers]);
+  }, [customers, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveRates(exchangeRates);
-  }, [exchangeRates]);
+  }, [exchangeRates, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveAuditLogs(auditLogs);
-  }, [auditLogs]);
+  }, [auditLogs, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveJournalEntries(journalEntries);
-  }, [journalEntries]);
+  }, [journalEntries, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveRemittances(remittances);
-  }, [remittances]);
+  }, [remittances, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveRemittanceSettings(remittanceSettings);
-  }, [remittanceSettings]);
+  }, [remittanceSettings, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveSystemAuditLogs(systemAuditLogs);
-  }, [systemAuditLogs]);
+  }, [systemAuditLogs, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveActiveShift(activeShift);
-  }, [activeShift]);
+  }, [activeShift, isAuthenticated]);
 
-  // Authenticate session and sync with backend API
+  // Restore a previously authenticated owner session; never auto-login with a role or default PIN.
   useEffect(() => {
-    apiClient.login(currentUser.role).then(() => {
-      apiClient.fetch('/api/remittances/settings')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data && data.success && data.settings) {
-            setRemittanceSettings((prev) => ({
-              ...prev,
-              ...data.settings,
-            }));
-          }
-        })
-        .catch(() => {
-          // Fallback to local storage when backend is offline
-        });
+    let cancelled = false;
 
-      apiClient.fetch('/api/remittances/audit-logs')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data && data.success && Array.isArray(data.logs) && data.logs.length > 0) {
-            setSystemAuditLogs(data.logs);
-          }
-        })
-        .catch(() => {
-          // Fallback to local storage
+    const restoreSession = async () => {
+      const session = await apiClient.getSession();
+      if (cancelled) return;
+
+      if (session.success && session.user?.role === 'owner') {
+        setCurrentUser({
+          id: session.user.userId,
+          name: session.user.name,
+          role: 'owner',
+          roleTitleAr: 'المالك والمشرف العام',
+          branchId: session.user.branchId,
+          branchName: session.user.branchName,
         });
-    });
-  }, [currentUser]);
+        setIsAuthenticated(true);
+      } else {
+        apiClient.clearSession();
+        setIsAuthenticated(false);
+      }
+
+      setIsAuthChecking(false);
+    };
+
+    restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load server-owned settings only after the owner session has been verified.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    apiClient.fetch('/api/remittances/settings')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.success && data.settings) {
+          setRemittanceSettings((prev) => ({
+            ...prev,
+            ...data.settings,
+          }));
+        }
+      })
+      .catch(() => {
+        // Keep the last locally saved values when the local server is unavailable.
+      });
+
+    apiClient.fetch('/api/remittances/audit-logs')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.success && Array.isArray(data.logs)) {
+          setSystemAuditLogs(data.logs);
+        }
+      })
+      .catch(() => {
+        // Keep the last locally saved values when the local server is unavailable.
+      });
+  }, [isAuthenticated]);
 
   // Listen to browser network connectivity events
   useEffect(() => {
@@ -1245,25 +1286,36 @@ function AppContent() {
     setActiveVoucher(voucher);
   };
 
-  // Secure Role Escalation with Server-Side Verification
-  const handleRequestRoleChange = (role: UserRole) => {
-    if (role === currentUser.role) return;
+  // This deployment is intentionally single-user and single-role (owner only).
 
-    // For standard operational roles (teller, auditor), allow switching with notification
-    if (role === 'teller' || role === 'auditor') {
-      const roleMeta = AVAILABLE_ROLES.find((r) => r.role === role);
-      setCurrentUser((prev) => ({
-        ...prev,
-        role,
-        roleTitleAr: roleMeta?.titleAr || role,
-      }));
-      toast.info(`تم تبديل الجلسة إلى: [${roleMeta?.titleAr.split('(')[0].trim()}]`);
-      return;
-    }
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center" dir="rtl">
+        <div className="text-sm text-slate-300">جارٍ التحقق من جلسة الدخول الآمنة...</div>
+      </div>
+    );
+  }
 
-    // High privilege roles: Owner, General Manager, Branch Manager require server PIN verification
-    setRoleAuthTarget(role);
-  };
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4" dir="rtl">
+        <div className="w-full max-w-md text-center space-y-3">
+          <h1 className="text-xl font-bold">نظام عمرو النماري للصرافة</h1>
+          <p className="text-sm text-slate-400">هذا الإصدار مخصص لمالك واحد. سجّل الدخول للمتابعة.</p>
+        </div>
+        <RoleAuthModal
+          isOpen={true}
+          isRequired={true}
+          targetRole="owner"
+          onClose={() => undefined}
+          onSuccess={(authedUser) => {
+            setCurrentUser(authedUser);
+            setIsAuthenticated(true);
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -1272,7 +1324,6 @@ function AppContent() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         currentUser={currentUser}
-        onRequestRoleChange={handleRequestRoleChange}
         isOnline={isOnline}
         setIsOnline={setIsOnline}
         onOpenRatesModal={() => setIsRatesModalOpen(true)}
@@ -1430,18 +1481,7 @@ function AppContent() {
         initialMode={statementType}
       />
 
-      {/* Server PIN Authentication Modal for Role Escalation */}
-      {roleAuthTarget && (
-        <RoleAuthModal
-          isOpen={!!roleAuthTarget}
-          targetRole={roleAuthTarget}
-          onClose={() => setRoleAuthTarget(null)}
-          onSuccess={(authedUser) => {
-            setCurrentUser(authedUser);
-            setRoleAuthTarget(null);
-          }}
-        />
-      )}
+
 
       {/* Exchange Rates & Audit Log Modal */}
       <ExchangeRatesModal
