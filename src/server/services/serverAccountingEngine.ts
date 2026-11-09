@@ -38,8 +38,9 @@ export interface ServerAccount {
   id: string;
   code: string;
   nameAr: string;
+  name?: string;
   type: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
-  category: 'cash_box' | 'bank' | 'network' | 'customer' | 'remittance' | 'operational';
+  category: 'cash_box' | 'bank' | 'network' | 'customer' | 'capital' | 'exchange_profit' | 'commission' | 'operating_expense' | 'remittance' | 'operational';
   balances: Record<CurrencyCode, number>;
 }
 
@@ -92,14 +93,29 @@ class ServerAccountingEngine {
     }
 
     // الدفاتر المالية ملفات إلزامية: لا ننشئ أرصدة افتراضية عند فقدانها أو تلفها.
-    const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, [], {
+    const rawLoadedAccounts = safeReadJson<unknown[]>(ACCOUNTS_FILE, [], {
       failOnCorruption: true,
       failOnMissing: true,
     });
 
-    if (!Array.isArray(loadedAccounts) || loadedAccounts.length === 0) {
+    if (!Array.isArray(rawLoadedAccounts) || rawLoadedAccounts.length === 0) {
       throw new Error('توقف آمن: دفتر الحسابات فارغ أو لا يحتوي حسابات. لا يمكن تشغيل العمليات المالية قبل استعادة الدفتر الصحيح.');
     }
+
+    // The checked-in ledger uses legacy "name"; the application chart uses "nameAr".
+    // Normalize the read model without modifying the source file on startup.
+    const loadedAccounts: ServerAccount[] = rawLoadedAccounts.map((rawAccount) => {
+      if (!rawAccount || typeof rawAccount !== 'object' || Array.isArray(rawAccount)) {
+        return rawAccount as ServerAccount;
+      }
+      const record = rawAccount as Record<string, unknown>;
+      const nameAr = typeof record.nameAr === 'string' && record.nameAr.trim()
+        ? record.nameAr
+        : typeof record.name === 'string'
+          ? record.name
+          : '';
+      return { ...record, nameAr } as unknown as ServerAccount;
+    });
 
     const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
     const accountTypes: ServerAccount['type'][] = ['asset', 'liability', 'equity', 'revenue', 'expense'];
