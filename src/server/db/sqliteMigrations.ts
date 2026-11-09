@@ -344,4 +344,13 @@ CREATE TABLE voucher_attachments (
 CREATE INDEX idx_voucher_attachments_voucher ON voucher_attachments(voucher_number);
 `,
   },
+
+  {
+    version: 3,
+    name: 'journal_customer_phone_provenance',
+    sql: `-- v3 preserves the customer phone bound to a server-generated exchange journal.
+ALTER TABLE journal_entries ADD COLUMN customer_phone TEXT
+  CHECK (customer_phone IS NULL OR length(customer_phone) <= 40);
+`,
+  },
 ];
