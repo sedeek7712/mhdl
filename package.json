@@ -15,7 +15,8 @@
     "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts",
     "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts",
     "setup:chart-of-accounts": "node --import tsx scripts/reconcileChartOfAccounts.ts",
-    "test:chart-reconciliation": "node --import tsx --test tests/chartOfAccountsMigration.test.ts"
+    "test:chart-reconciliation": "node --import tsx --test tests/chartOfAccountsMigration.test.ts",
+    "test:operating-expense": "node --import tsx --test tests/operatingExpense.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
