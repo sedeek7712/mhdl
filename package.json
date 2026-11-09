@@ -11,7 +11,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts",
-    "setup:owner": "node --import tsx scripts/bootstrapOwner.ts"
+    "setup:owner": "node --import tsx scripts/bootstrapOwner.ts",
+    "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
