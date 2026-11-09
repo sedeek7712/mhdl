@@ -239,6 +239,7 @@ test('rolls back the entire user import on duplicate or pre-existing records', (
 
   insertOwner(db);
   assert.throws(() => importSqliteUsers(db, [
+    user(),
     user({
       id: 'user-teller-2',
       username: 'teller_02',
