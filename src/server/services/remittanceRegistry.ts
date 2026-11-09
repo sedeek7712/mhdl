@@ -5,6 +5,7 @@
  */
 
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
@@ -642,7 +643,8 @@ class RemittanceRegistry {
       }
 
       const yemenPaidAt = getYemenDateTimeString();
-      const voucherNum = params.voucherNumber || `V-PAY-${Date.now().toString().slice(-4)}`;
+      // إصدار رقم سند صرف من الخادم فقط؛ UUID يمنع تصادم الأرقام عند العمليات المتزامنة أو السريعة.
+      const voucherNum = `V-PAY-${new Date().getFullYear()}-${crypto.randomUUID().toUpperCase()}`;
       const entryNum = accountingRes.journalEntry!.entryNumber;
 
       const payoutRecord: RemittancePayoutRecord = {
@@ -684,7 +686,7 @@ class RemittanceRegistry {
       this.masterRemittances.set(cleanNum, masterRem);
 
       const auditEntry: RemittanceAuditRecord = {
-        id: `audit-pay-${Date.now()}`,
+        id: `audit-pay-${crypto.randomUUID()}`,
         category: 'financial',
         action: 'صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً بقيد خادمي)',
         details: `تم صرف الحوالة ${cleanNum} بمبلغ ${masterRem.amount} ${masterRem.currency} للمستفيد (${masterRem.recipientName} - إثبات هوية: ${params.recipientIdType} ${params.recipientIdNumber}) بواسطة ${params.tellerName}. سند: ${voucherNum}، قيد: ${entryNum}`,
