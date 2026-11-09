@@ -220,6 +220,10 @@ class RemittanceRegistry {
       }
       this.payouts.set(cleanNum, item);
       if (item.idempotencyKey) {
+        const boundTransfer = this.idempotencyToTransferMap.get(item.idempotencyKey);
+        if (boundTransfer && boundTransfer !== cleanNum) {
+          throw new Error(`توقف آمن: مفتاح عدم التكرار مرتبط بأكثر من حوالة (${item.idempotencyKey}).`);
+        }
         const compositeKey = `${cleanNum}:${item.tellerId}:${item.idempotencyKey}`;
         this.idempotencyStore.set(compositeKey, item);
         this.idempotencyToTransferMap.set(item.idempotencyKey, cleanNum);
@@ -524,6 +528,9 @@ class RemittanceRegistry {
           success: true,
           record: existing,
           masterRemittance: this.masterRemittances.get(cleanNum),
+          journalEntry: serverAccountingEngine.getJournalEntries().find(
+            (entry) => entry.entryNumber === existing.journalEntryReference
+          ),
         };
       }
     }
