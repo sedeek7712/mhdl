@@ -4,14 +4,26 @@ on:
   push:
     branches:
       - 'storage/**'
+    paths:
+      - 'package.json'
+      - 'bun.lock'
+      - 'scripts/sqliteDryRunMigration.ts'
+      - 'src/server/db/**'
+      - 'tests/sqlite*.test.ts'
+      - 'tests/storageIntegrity.test.ts'
+      - '.github/workflows/sqlite-foundation.yml'
   pull_request:
     branches:
       - main
       - 'audit/**'
+      - 'storage/**'
     paths:
       - 'package.json'
+      - 'bun.lock'
+      - 'scripts/sqliteDryRunMigration.ts'
       - 'src/server/db/**'
       - 'tests/sqlite*.test.ts'
+      - 'tests/storageIntegrity.test.ts'
       - '.github/workflows/sqlite-foundation.yml'
 
 permissions:
@@ -19,40 +31,35 @@ permissions:
 
 jobs:
   sqlite-foundation:
-    name: SQLite schema and financial repository tests (${{ matrix.os }})
+    name: SQLite tests (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
+        include:
+          - os: ubuntu-latest
+            node: 22.16.0
+          - os: windows-latest
+            node: 24.22.2
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-
       - name: Set up Node.js with built-in SQLite
         uses: actions/setup-node@v4
         with:
-          node-version: 22.16.0
-
+          node-version: ${{ matrix.node }}
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
-
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
-
       - name: Validate runtime versions
         run: |
           node --version
           bun --version
-
       - name: Run financial storage and SQLite tests
         run: bun run test:storage
-
       - name: Validate TypeScript
         run: bun run lint
-
       - name: Build production frontend
         run: bun run build
