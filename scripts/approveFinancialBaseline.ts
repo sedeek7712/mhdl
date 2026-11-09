@@ -81,7 +81,7 @@ function readHidden(question: string): Promise<string> {
       input.off('data', onData);
       input.setRawMode(false);
       input.pause();
-      process.stdout.write('\\n');
+      process.stdout.write('\n');
     };
     const onData = (chunk: Buffer) => {
       for (const byte of chunk) {
@@ -98,7 +98,7 @@ function readHidden(question: string): Promise<string> {
         if (byte === 8 || byte === 127) {
           if (value.length > 0) {
             value = value.slice(0, -1);
-            process.stdout.write('\\b \\b');
+            process.stdout.write('\b \b');
           }
           continue;
         }
