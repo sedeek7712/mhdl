@@ -5,9 +5,11 @@ on:
     branches:
       - main
       - "audit/**"
+      - "storage/**"
   pull_request:
     branches:
       - main
+      - "storage/**"
 
 permissions:
   contents: read
