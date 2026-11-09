@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { INITIAL_ACCOUNTS } from '../src/data/initialData.js';
-import { buildChartReconciliationPlan, ChartAccountDefinition } from '../src/server/services/chartOfAccountsMigration.js';
+import { buildChartReconciliationPlan, type ChartAccountDefinition } from '../src/server/services/chartOfAccountsMigration.js';
 import { safeAtomicWriteJson, safeReadJson } from '../src/server/utils/atomicFileStorage.js';
 
 interface OwnerRecord {
