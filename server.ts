@@ -352,6 +352,9 @@ export async function startServer(options: { port?: number; host?: string; useVi
             error: 'نوع الملف غير صالح أمنياً: يجب أن تكون الصورة ملف PNG أو JPEG أصلي ومعتمد.',
           });
         }
+        // Derive the upload MIME type from the verified file signature, never from the client label.
+        mimeType = isPng ? 'image/png' : 'image/jpeg';
+        const imageExtension = isPng ? 'png' : 'jpg';
 
         // Step 3: Digital Fingerprint (SHA-256) & Permanent Archive Storage
         const sha256 = dispatchRegistry.calculateSha256(buffer);
@@ -403,7 +406,7 @@ export async function startServer(options: { port?: number; host?: string; useVi
             const uploadRes = await metaWhatsAppService.uploadMediaDirectly(
               buffer,
               mimeType,
-              `voucher_${voucherNumber}.png`
+              `voucher_${voucherNumber}.${imageExtension}`
             );
             metaMediaId = uploadRes.mediaId;
             dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
