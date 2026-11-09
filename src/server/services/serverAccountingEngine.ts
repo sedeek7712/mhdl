@@ -114,8 +114,35 @@ class ServerAccountingEngine {
       failOnMissing: true,
     });
     if (!Array.isArray(loadedJournalEntries) ||
-        loadedJournalEntries.some((entry) => !entry || typeof entry.id !== 'string' || !Array.isArray(entry.lines))) {
-      throw new Error('توقف آمن: ملف قيود اليومية لا يحتوي بنية سجلات صالحة.');
+        loadedJournalEntries.some((entry) => {
+          if (!entry || typeof entry.id !== 'string' || !entry.id.trim() ||
+              typeof entry.entryNumber !== 'string' || !entry.entryNumber.trim() ||
+              typeof entry.referenceId !== 'string' || !entry.referenceId.trim() ||
+              !Array.isArray(entry.lines) || entry.lines.length < 2) {
+            return true;
+          }
+
+          const totals = new Map<CurrencyCode, { debit: number; credit: number }>();
+          for (const line of entry.lines) {
+            if (!line || typeof line.accountId !== 'string' ||
+                !currencies.includes(line.currency) ||
+                typeof line.debit !== 'number' || !Number.isFinite(line.debit) || line.debit < 0 ||
+                typeof line.credit !== 'number' || !Number.isFinite(line.credit) || line.credit < 0 ||
+                (line.debit > 0 && line.credit > 0)) {
+              return true;
+            }
+
+            const total = totals.get(line.currency) || { debit: 0, credit: 0 };
+            total.debit += line.debit;
+            total.credit += line.credit;
+            totals.set(line.currency, total);
+          }
+
+          return Array.from(totals.values()).some(
+            (total) => Math.abs(total.debit - total.credit) > 0.001
+          );
+        })) {
+      throw new Error('توقف آمن: ملف قيود اليومية يحتوي سجلات غير مكتملة أو قيوداً غير متوازنة حسب العملة.');
     }
 
     this.accounts.clear();
