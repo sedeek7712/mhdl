@@ -188,7 +188,17 @@ class ApiClient {
     toAccountId: string;
     amount: number;
     currency: string;
-  }): Promise<{ success: boolean; journalEntry?: any; accounts?: any[]; error?: string; message?: string }> {
+    idempotencyKey: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    message?: string;
+    errorCode?: string;
+    doNotRetry?: boolean;
+    outcomeUncertain?: boolean;
+  }> {
     try {
       const res = await this.fetch('/api/accounting/fund-drawer', {
         method: 'POST',
