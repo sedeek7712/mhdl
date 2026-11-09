@@ -97,7 +97,7 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
       setRegRecipientPhone('');
       setRegAmount(0);
       setRegNotes('');
-      toast.success('تم اعتماد الحوالة الواردة', `الحوالة ${registered.transferNumber} أصبحت متاحة للتحقق والصرف.`);
+      // The parent reports the server-confirmed status; do not announce availability here.
     } catch (error: any) {
       toast.error('تعذر تسجيل الحوالة الواردة', error.message || 'لم يتم تأكيد حفظ الحوالة من الخادم.');
     } finally {
