@@ -9,6 +9,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
+import { buildExchangeJournalLines } from '../../services/exchangeAccounting.js';
+import type { ServerExchangeRate } from './serverExchangeRateRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,13 +62,14 @@ export interface ServerJournalEntry {
   time: string;
   descriptionAr: string;
   lines: ServerJournalLine[];
-  referenceType: 'transfer_payout' | 'transfer_send' | 'internal_transfer' | 'expense' | 'manual_adjustment';
+  referenceType: 'exchange' | 'transfer_payout' | 'transfer_send' | 'internal_transfer' | 'expense' | 'manual_adjustment';
   referenceId: string;
   branchId: string;
   createdBy: string;
   createdById?: string;
   isBalanced: boolean;
   idempotencyKey?: string;
+  requestFingerprint?: string;
   voucherNumber?: string;
 }
 
@@ -730,6 +733,275 @@ class ServerAccountingEngine {
       journalEntry,
       accounts: this.getAccounts(),
       totalPaid,
+    };
+  }
+
+  public executeExchange(params: {
+    rate: ServerExchangeRate;
+    rateMode: 'buy' | 'sell';
+    sourceCurrency: CurrencyCode;
+    targetCurrency: CurrencyCode;
+    sourceAmount: number;
+    commission: number;
+    customerName: string;
+    customerPhone: string;
+    notes: string;
+    operatorId: string;
+    operatorName: string;
+    branchId?: string;
+    idempotencyKey: string;
+  }): {
+    success: boolean;
+    journalEntry?: ServerJournalEntry;
+    accounts?: ServerAccount[];
+    effectiveRate?: number;
+    grossTargetAmount?: number;
+    targetAmount?: number;
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+  } {
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    if (typeof params.idempotencyKey !== 'string' || !uuidPattern.test(params.idempotencyKey)) {
+      return { success: false, error: 'معرف عملية الصرافة غير صالح.' };
+    }
+    if (!currencies.includes(params.sourceCurrency) || !currencies.includes(params.targetCurrency) ||
+        params.sourceCurrency === params.targetCurrency) {
+      return { success: false, error: 'زوج العملات المحدد غير صالح.' };
+    }
+    if (params.rateMode !== 'buy' && params.rateMode !== 'sell') {
+      return { success: false, error: 'نوع سعر الصرف غير صالح.' };
+    }
+    if (typeof params.sourceAmount !== 'number' || !Number.isFinite(params.sourceAmount) ||
+        params.sourceAmount <= 0 || Math.abs(params.sourceAmount * 100 - Math.round(params.sourceAmount * 100)) > 1e-8) {
+      return { success: false, error: 'مبلغ العملة المستلمة يجب أن يكون موجباً وصالحاً حتى منزلتين عشريتين.' };
+    }
+    if (typeof params.commission !== 'number' || !Number.isFinite(params.commission) ||
+        params.commission < 0 || Math.abs(params.commission * 100 - Math.round(params.commission * 100)) > 1e-8) {
+      return { success: false, error: 'عمولة الصرافة يجب أن تكون صفراً أو مبلغاً موجباً حتى منزلتين عشريتين.' };
+    }
+    if (typeof params.customerName !== 'string' || !params.customerName.trim() ||
+        params.customerName.trim().length > 160 ||
+        typeof params.customerPhone !== 'string' || params.customerPhone.length > 40 ||
+        typeof params.notes !== 'string' || params.notes.length > 500) {
+      return { success: false, error: 'بيانات العميل أو ملاحظات الصرافة غير صالحة.' };
+    }
+    if (typeof params.operatorId !== 'string' || !params.operatorId.trim() ||
+        typeof params.operatorName !== 'string' || !params.operatorName.trim()) {
+      return { success: false, error: 'هوية منفذ الصرافة غير صالحة.' };
+    }
+
+    const rate = params.rate;
+    if (!rate || typeof rate.id !== 'string' ||
+        !Number.isFinite(rate.buyRate) || rate.buyRate <= 0 ||
+        !Number.isFinite(rate.sellRate) || rate.sellRate <= 0 ||
+        !rate.updatedAt) {
+      return { success: false, error: 'لا يوجد سعر صرف معتمد لهذا الزوج. اطلب من المالك اعتماد السعر الحالي أولاً.' };
+    }
+    const isDirect = rate.fromCurrency === params.sourceCurrency && rate.toCurrency === params.targetCurrency;
+    const isInverse = rate.fromCurrency === params.targetCurrency && rate.toCurrency === params.sourceCurrency;
+    if (!isDirect && !isInverse) {
+      return { success: false, error: 'سعر الصرف المعتمد لا يطابق زوج العملات المطلوب.' };
+    }
+
+    const requestFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+      rateId: rate.id,
+      rateMode: params.rateMode,
+      sourceCurrency: params.sourceCurrency,
+      targetCurrency: params.targetCurrency,
+      sourceAmount: params.sourceAmount,
+      commission: params.commission,
+      customerName: params.customerName.trim(),
+      customerPhone: params.customerPhone.trim(),
+      notes: params.notes.trim(),
+      operatorId: params.operatorId,
+      branchId: params.branchId || 'br-main',
+    })).digest('hex');
+
+    if (this.storageWriteBlocked || this.activeTransactionId ||
+        fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة. أوقف النظام ولا تنفذ صرافة جديدة حتى مطابقة الدفاتر.',
+      };
+    }
+
+    const priorEntry = this.journalEntries.find((entry) =>
+      entry.referenceType === 'exchange' && entry.idempotencyKey === params.idempotencyKey
+    );
+    if (priorEntry) {
+      if (priorEntry.requestFingerprint !== requestFingerprint) {
+        return {
+          success: false,
+          error: 'معرف عملية الصرافة مستخدم سابقاً ببيانات مختلفة. رُفض الطلب دون تنفيذ حركة جديدة.',
+        };
+      }
+      const priorSourceLine = priorEntry.lines.find((line) =>
+        line.accountId === 'acc-1102' && line.currency === params.sourceCurrency &&
+        line.debit === params.sourceAmount && line.credit === 0
+      );
+      if (!priorSourceLine) {
+        return { success: false, error: 'تعذر مطابقة القيد السابق مع طلب إعادة الصرافة.' };
+      }
+      const rateUsed = Number(priorEntry.descriptionAr.match(/سعر ([0-9.]+)/)?.[1]);
+      return {
+        success: true,
+        journalEntry: priorEntry,
+        accounts: this.getAccounts(),
+        effectiveRate: Number.isFinite(rateUsed) ? rateUsed : undefined,
+        grossTargetAmount: priorEntry.lines.find((line) =>
+          line.accountId === 'acc-2101' && line.currency === params.targetCurrency && line.debit > 0
+        )?.debit,
+        targetAmount: priorEntry.lines.find((line) =>
+          line.accountId === 'acc-1102' && line.currency === params.targetCurrency && line.credit > 0
+        )?.credit,
+      };
+    }
+
+    const effectiveRate = isDirect
+      ? (params.rateMode === 'buy' ? rate.buyRate : rate.sellRate)
+      : 1 / (params.rateMode === 'buy' ? rate.sellRate : rate.buyRate);
+    if (!Number.isFinite(effectiveRate) || effectiveRate <= 0) {
+      return { success: false, error: 'سعر الصرف المعتمد غير صالح.' };
+    }
+    const grossTargetAmount = Math.round(
+      ((isDirect ? params.sourceAmount * effectiveRate : params.sourceAmount / effectiveRate) + Number.EPSILON) * 100
+    ) / 100;
+    const targetAmount = Math.round((grossTargetAmount - params.commission + Number.EPSILON) * 100) / 100;
+    if (params.commission >= grossTargetAmount || targetAmount <= 0) {
+      return { success: false, error: 'العمولة يجب أن تكون أقل من إجمالي المبلغ المستهدف.' };
+    }
+
+    const cashier = this.accounts.get('acc-1102');
+    const clearing = this.accounts.get('acc-2101');
+    const commissionAccount = this.accounts.get('acc-4101');
+    if (!cashier || cashier.type !== 'asset' ||
+        !clearing || clearing.type !== 'liability' ||
+        !commissionAccount || commissionAccount.type !== 'revenue') {
+      return { success: false, error: 'حساب الصندوق أو التسوية أو إيرادات العمولة غير مهيأ في دليل الحسابات.' };
+    }
+    if (cashier.balances[params.targetCurrency] < targetAmount) {
+      return { success: false, error: 'رصيد صندوق الكاشير غير كافٍ لتسليم العملة المستهدفة.' };
+    }
+
+    let posting;
+    try {
+      posting = buildExchangeJournalLines({
+        sourceCurrency: params.sourceCurrency,
+        sourceAmount: params.sourceAmount,
+        targetCurrency: params.targetCurrency,
+        targetAmount,
+        commission: params.commission,
+      });
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر تكوين قيد الصرافة.' };
+    }
+
+    const totals = new Map<CurrencyCode, { debit: number; credit: number }>();
+    for (const line of posting.lines) {
+      const total = totals.get(line.currency) || { debit: 0, credit: 0 };
+      total.debit += line.debit;
+      total.credit += line.credit;
+      totals.set(line.currency, total);
+    }
+    if (Array.from(totals.values()).some((total) => Math.abs(total.debit - total.credit) > 0.001)) {
+      return { success: false, error: 'قيد الصرافة غير متوازن حسب العملة؛ أوقفت العملية.' };
+    }
+
+    const started = this.beginFinancialTransaction({
+      operation: 'currency_exchange',
+      referenceId: rate.id,
+      amount: params.sourceAmount,
+      currency: params.sourceCurrency,
+      actorId: params.operatorId,
+    });
+    if (!started.success || !started.transactionId) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: started.error || 'تعذر بدء المعاملة المالية الآمنة للصرافة.',
+      };
+    }
+
+    const previousBalances = {
+      cashierSource: cashier.balances[params.sourceCurrency],
+      cashierTarget: cashier.balances[params.targetCurrency],
+      clearingSource: clearing.balances[params.sourceCurrency],
+      clearingTarget: clearing.balances[params.targetCurrency],
+      commissionTarget: commissionAccount.balances[params.targetCurrency],
+    };
+    cashier.balances[params.sourceCurrency] += params.sourceAmount;
+    cashier.balances[params.targetCurrency] -= targetAmount;
+    clearing.balances[params.sourceCurrency] += params.sourceAmount;
+    clearing.balances[params.targetCurrency] -= grossTargetAmount;
+    commissionAccount.balances[params.targetCurrency] += params.commission;
+
+    const [date, time] = getYemenDateTimeString().split(' ');
+    const voucherNumber = `V-EX-${crypto.randomUUID().toUpperCase()}`;
+    const entryNumber = `JV-EX-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const journalEntry: ServerJournalEntry = {
+      id: `jv-ex-${crypto.randomUUID()}`,
+      entryNumber,
+      date,
+      time,
+      descriptionAr: `صرافة ${params.sourceAmount} ${params.sourceCurrency} مقابل ${targetAmount} ${params.targetCurrency} بسعر ${effectiveRate}`,
+      lines: posting.lines.map((line) => ({
+        ...line,
+        note: line.accountId === 'acc-1102'
+          ? (line.currency === params.sourceCurrency
+            ? `قبض نقدي من العميل ${params.customerName.trim()}`
+            : `تسليم صافي العملة للعميل ${params.customerName.trim()}`)
+          : line.note,
+      })),
+      referenceType: 'exchange',
+      referenceId: voucherNumber,
+      branchId: params.branchId || 'br-main',
+      createdBy: params.operatorName.trim(),
+      createdById: params.operatorId,
+      isBalanced: true,
+      idempotencyKey: params.idempotencyKey,
+      requestFingerprint,
+      voucherNumber,
+    };
+
+    this.journalEntries.unshift(journalEntry);
+    try {
+      safeAtomicWriteJson(ACCOUNTS_FILE, Array.from(this.accounts.values()));
+      safeAtomicWriteJson(JOURNAL_FILE, this.journalEntries);
+    } catch (error: any) {
+      cashier.balances[params.sourceCurrency] = previousBalances.cashierSource;
+      cashier.balances[params.targetCurrency] = previousBalances.cashierTarget;
+      clearing.balances[params.sourceCurrency] = previousBalances.clearingSource;
+      clearing.balances[params.targetCurrency] = previousBalances.clearingTarget;
+      commissionAccount.balances[params.targetCurrency] = previousBalances.commissionTarget;
+      this.journalEntries.shift();
+      this.storageWriteBlocked = true;
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ عملية الصرافة. لا تعاود الطلب؛ أوقف النظام وطابق الحسابات والقيود. ${error.message}`,
+      };
+    }
+
+    const completed = this.completeFinancialTransaction(started.transactionId);
+    if (!completed.success) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        journalEntry,
+        error: completed.error || 'تعذر إغلاق علامة معاملة الصرافة؛ يلزم فحص الدفاتر.',
+      };
+    }
+
+    return {
+      success: true,
+      journalEntry,
+      accounts: this.getAccounts(),
+      effectiveRate,
+      grossTargetAmount,
+      targetAmount,
     };
   }
 
