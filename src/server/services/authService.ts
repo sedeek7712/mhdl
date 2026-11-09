@@ -231,8 +231,8 @@ class AuthService {
   }
 
   private validStrongPin(pin: string): boolean {
-    return /^\\d{6}$/.test(pin) &&
-      !/^(\\d)\\1+$/.test(pin) &&
+    return /^\d{6}$/.test(pin) &&
+      !/^(\d)\1+$/.test(pin) &&
       !['123456', '654321', '000000', '111111', '222222', '123321'].includes(pin);
   }
 
