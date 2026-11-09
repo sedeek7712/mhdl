@@ -97,10 +97,13 @@ class ServerAccountingEngine {
     }
 
     const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    const accountTypes: ServerAccount['type'][] = ['asset', 'liability', 'equity', 'revenue', 'expense'];
     const accountIds = new Set<string>();
 
     for (const account of loadedAccounts) {
       if (!account || typeof account.id !== 'string' || !account.id.trim() ||
+          typeof account.nameAr !== 'string' || !account.nameAr.trim() ||
+          !accountTypes.includes(account.type) ||
           !account.balances || typeof account.balances !== 'object') {
         throw new Error('توقف آمن: سجل حساب غير صالح في دفتر الأستاذ. لم يتم تحميل أي أرصدة مالية.');
       }
@@ -190,7 +193,8 @@ class ServerAccountingEngine {
       throw new Error('توقف آمن: حسابات الدفتر لا تطابق حسابات خط الأساس المعتمد. يلزم إعادة مطابقة واعتماد الأرصدة.');
     }
 
-    const accountMap = new Map(loadedAccounts.map((account) => [account.id, account]));
+    const accountMap = new Map<string, ServerAccount>();
+    for (const account of loadedAccounts) accountMap.set(account.id, account);
     const movements = new Map<string, Record<CurrencyCode, number>>();
     for (const account of loadedAccounts) {
       movements.set(account.id, { YER_OLD: 0, YER_NEW: 0, SAR: 0, USD: 0 });
