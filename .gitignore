@@ -14,3 +14,4 @@ data/*.corrupt*
 data/archived_vouchers/
 data/*.pre-single-user.*.bak
 data/system_users.local.json
+data/financial_transaction_pending.json
