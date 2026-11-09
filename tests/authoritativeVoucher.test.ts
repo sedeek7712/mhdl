@@ -204,7 +204,7 @@ test('rejects a teller attempting to send a voucher from another branch', () => 
     transactionId: master.transferNumber,
     voucherType: 'transfer_outgoing',
     recipientPhone: master.recipientPhone,
-  }, entry, { masterRemittance: master }), /فرع آخر|السجل/);
+  }, entry, { masterRemittance: master }), /سجل الحوالات المعتمد/);
 });
 
 test('builds a received remittance voucher only from a paid payout journal', () => {
