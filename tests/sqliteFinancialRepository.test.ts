@@ -113,11 +113,11 @@ test('actual financial schema applies all migrations and creates financial and o
     'exchange_rates', 'exchange_rate_audit', 'cashier_shifts',
     'cashier_shift_balances', 'cashier_shift_events',
     'app_users', 'security_events', 'whatsapp_dispatches',
-    'whatsapp_webhook_events', 'voucher_attachments',
+    'whatsapp_webhook_events', 'voucher_attachments', 'auth_login_attempts',
   ]) assert.equal(names.has(name), true, `Missing table ${name}`);
 
   const migrationCount = db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number };
-  assert.equal(Number(migrationCount.count), 3);
+  assert.equal(Number(migrationCount.count), 4);
   const journalColumns = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
   assert.equal(journalColumns.some((column) => column.name === 'customer_phone'), true);
 });
@@ -135,7 +135,7 @@ test('v3 adds journal customer phone without rewriting the v1 or v2 migration hi
   assert.equal(after.some((column) => column.name === 'customer_phone'), true);
 
   const history = db.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as Array<{ version: number; name: string }>;
-  assert.deepEqual(history.map((row) => row.version), [1, 2, 3]);
+  assert.deepEqual(history.map((row) => row.version), [1, 2, 3, 4]);
   assert.equal(history[0].name, 'financial_core_ledger_remittances_rates_and_shifts');
   assert.equal(history[1].name, 'operational_parity_users_whatsapp_and_shift_replay');
 });
