@@ -166,6 +166,7 @@ class AuthService {
           typeof user.branchName !== 'string' || !user.branchName.trim() ||
           typeof user.pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(user.pinSalt) ||
           typeof user.pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(user.pinHash) ||
+          typeof user.sessionVersion !== 'string' || !/^[a-f0-9]{32}$/i.test(user.sessionVersion) ||
           user.role !== 'owner' || user.isActive !== true || user.mustChangePin !== false) {
         throw new Error('توقف آمن: حساب المالك غير مهيأ أو ما زال يستخدم بيانات اعتماد قديمة. شغّل npm run setup:owner لتغيير PIN وإيقاف الحسابات الأخرى مع حفظ نسخة احتياطية محلية.');
       }
