@@ -47,6 +47,14 @@ export function getYemenFullTimestamp(date = new Date()): string {
  * يمنع تلف ملفات JSON عند انقطاع التيار الكهربائي أو إيقاف السيرفر المفاجئ
  */
 export function safeAtomicWriteJson(filePath: string, data: any): void {
+  // Deterministic failure injection is available only in isolated test mode.
+  // It lets integration tests simulate a process/storage failure between JSON file writes.
+  if (process.env.NODE_ENV === 'test' &&
+      process.env.ALNAMARI_TEST_FAIL_WRITE_BASENAME === path.basename(filePath)) {
+    delete process.env.ALNAMARI_TEST_FAIL_WRITE_BASENAME;
+    throw new Error(`Injected test-only atomic write failure for ${path.basename(filePath)}`);
+  }
+
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
