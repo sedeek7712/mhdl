@@ -872,36 +872,57 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
     const users = loaded.get('system_users.json');
     if (users) {
       const userRecords = records(users.payload, 'system_users.json');
-      const ids = userRecords.map((user) => stringValue(user.id, 'user.id'));
-      if (new Set(ids).size !== ids.length) throw new Error('Duplicate user IDs in source user registry.');
-      if (userRecords.some((user) => !optionalText(user, 'pinHash') || !optionalText(user, 'pinSalt'))) {
-        throw new Error('A source user record is missing its PIN hash or salt.');
+      const ids = new Set<string>();
+      const usernames = new Set<string>();
+      const validRoles = ['owner', 'general_manager', 'branch_manager', 'teller', 'auditor', 'accountant', 'compliance_officer'];
+      for (const user of userRecords) {
+        const id = stringValue(user.id, 'legacyUser.id');
+        const username = stringValue(user.username, 'legacyUser.username').toLowerCase();
+        if (ids.has(id) || usernames.has(username) ||
+            !validRoles.includes(stringValue(user.role, 'legacyUser.role')) ||
+            !optionalText(user, 'pinHash') || !optionalText(user, 'pinSalt')) {
+          throw new Error('Legacy user registry contains invalid or duplicate account records.');
+        }
+        ids.add(id);
+        usernames.add(username);
       }
       report.imported.usersValidated = userRecords.length;
-      report.warnings.push('User authentication records were validated but not imported because the user/authentication tables are not in SQLite migration v1.');
+      report.warnings.push('Legacy system_users.json accounts were validated for audit only; the current local-authentication registry is system_users.local.json.');
     }
 
     const localUsers = loaded.get('system_users.local.json');
     if (localUsers) {
-      const userRecords = records(localUsers.payload, 'system_users.local.json');
-      report.imported.localUsersValidated = userRecords.length;
-      report.warnings.push('Local owner authentication records were validated but not imported; credential records remain outside SQLite migration v1.');
+      const count = importLocalUsers(db, localUsers.payload);
+      report.imported.localUsersValidated = count;
+      report.imported.localUsersImported = count;
+    }
+
+    const exchangeRates = loaded.get('exchange_rate_state.json');
+    if (exchangeRates) {
+      const result = importExchangeRateState(db, exchangeRates.payload);
+      report.imported.exchangeRates = result.rates;
+      report.imported.exchangeRateAuditLogs = result.auditLogs;
+    }
+
+    const shiftState = loaded.get('cash_box_shift_state.json');
+    if (shiftState) {
+      const result = importCashierShiftState(db, shiftState.payload);
+      report.imported.cashierShifts = result.shifts;
+      report.imported.cashierShiftBalances = result.balances;
+      report.imported.cashierShiftEvents = result.events;
     }
 
     const whatsApp = loaded.get('whatsapp_dispatch_registry.json');
     if (whatsApp) {
-      const recordsList = records(whatsApp.payload, 'whatsapp_dispatch_registry.json');
-      report.imported.whatsappDispatchesValidated = recordsList.length;
-      if (recordsList.length > 0) {
-        report.warnings.push('WhatsApp dispatch rows were validated but not imported because dispatch/event tables are not in SQLite migration v1.');
-      }
+      const result = importWhatsAppDispatches(db, whatsApp.payload, absoluteSource);
+      report.imported.whatsappDispatchesValidated = result.dispatches;
+      report.imported.whatsappDispatches = result.dispatches;
+      report.imported.whatsappWebhookEvents = result.webhookEvents;
+      report.imported.voucherAttachments = result.attachments;
     }
 
-    for (const deferred of ['exchange_rate_state.json', 'cash_box_shift_state.json']) {
-      if (loaded.has(deferred)) {
-        report.warnings.push(`${deferred} was detected but is not imported by this first dry-run version; rate/shift parity will be added before a complete-system migration.`);
-      }
-    }
+    report.validation.operationalDataImported = true;
+    report.validation.voucherArchivesVerified = true;
 
     let snapshotMatches = true;
     const balanceRows = db.prepare(
