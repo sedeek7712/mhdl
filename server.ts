@@ -18,6 +18,7 @@ import {
   AuthenticatedUser,
 } from './src/server/services/authService.js';
 import { serverAccountingEngine, CurrencyCode } from './src/server/services/serverAccountingEngine.js';
+import { serverExchangeRateRegistry } from './src/server/services/serverExchangeRateRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1028,6 +1029,47 @@ async function startServer() {
       journalEntries,
     });
   });
+
+  // Exchange rates and their audit history are server-owned. Unapproved zero rates are never executable.
+  app.get('/api/accounting/exchange-rates', requireAuth, (_req: Request, res: Response) => {
+    return res.status(200).json({
+      success: true,
+      rates: serverExchangeRateRegistry.getRates(),
+      auditLogs: serverExchangeRateRegistry.getAuditLogs(),
+    });
+  });
+
+  app.put(
+    '/api/accounting/exchange-rates/:rateId',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const { buyRate, sellRate, note } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+      const result = serverExchangeRateRegistry.updateRate({
+        rateId: req.params.rateId,
+        buyRate,
+        sellRate,
+        note,
+        actorId: authenticatedUser.id,
+        actorName: authenticatedUser.name,
+      });
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم تحديث سعر الصرف.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        rate: result.rate,
+        rates: result.rates,
+        auditLogs: result.auditLogs,
+      });
+    }
+  );
 
   app.post(
     '/api/accounting/fund-drawer',
