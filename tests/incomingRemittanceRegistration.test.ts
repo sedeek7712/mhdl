@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('incoming remittance registration commits master, number reservation and audit; exact replay is idempotent', async (t) => {
+test('incoming remittance registration is idempotent and leaves a recovery marker on partial save', async (t) => {
   const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'mhdl-incoming-remittance-'));
   t.after(() => fs.rmSync(dataDirectory, { recursive: true, force: true }));
 
@@ -144,122 +144,27 @@ test('incoming remittance registration commits master, number reservation and au
     });
     assert.equal(reservedConflict.success, false);
     assert.match(reservedConflict.error || '', /محجوزة مسبقاً/);
-  } finally {
-    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = previousNodeEnv;
-    if (previousDataDirectory === undefined) delete process.env.ALNAMARI_TEST_DATA_DIR;
-    else process.env.ALNAMARI_TEST_DATA_DIR = previousDataDirectory;
-  }
-});
 
-test('incoming remittance registration leaves recovery marker when a later registry file save fails', async (t) => {
-  const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'mhdl-incoming-remittance-failure-'));
-  t.after(() => fs.rmSync(dataDirectory, { recursive: true, force: true }));
-
-  const previousNodeEnv = process.env.NODE_ENV;
-  const previousDataDirectory = process.env.ALNAMARI_TEST_DATA_DIR;
-  process.env.NODE_ENV = 'test';
-  process.env.ALNAMARI_TEST_DATA_DIR = dataDirectory;
-
-  const zeroBalances = { YER_OLD: 0, YER_NEW: 0, SAR: 0, USD: 0 };
-  const accounts = [
-    {
-      id: 'acc-1101',
-      code: '1101',
-      nameAr: 'الخزينة الرئيسية',
-      type: 'asset',
-      category: 'cash_box',
-      balances: { ...zeroBalances, SAR: 1000 },
-    },
-    {
-      id: 'acc-1102',
-      code: '1102',
-      nameAr: 'صندوق الكاشير',
-      type: 'asset',
-      category: 'cash_box',
-      balances: { ...zeroBalances, SAR: 500 },
-    },
-  ];
-  const owner = {
-    id: 'owner-incoming-failure-test',
-    name: 'مالك الاختبار',
-    role: 'owner',
-    isActive: true,
-  };
-  const openingBalances = Object.fromEntries(accounts.map((account) => [
-    account.id,
-    { type: account.type, balances: { ...account.balances } },
-  ]));
-
-  fs.writeFileSync(path.join(dataDirectory, 'accounts_ledger.json'), JSON.stringify(accounts), 'utf8');
-  fs.writeFileSync(path.join(dataDirectory, 'journal_entries.json'), '[]', 'utf8');
-  fs.writeFileSync(path.join(dataDirectory, 'system_users.local.json'), JSON.stringify([owner]), 'utf8');
-  fs.writeFileSync(
-    path.join(dataDirectory, 'financial_baseline_approved.local.json'),
-    JSON.stringify({
-      schemaVersion: 1,
-      approvedAt: '2026-11-09 12:00:00',
-      approvedBy: owner.name,
-      approvedByUserId: owner.id,
-      openingBalances,
-    }),
-    'utf8'
-  );
-  fs.writeFileSync(
-    path.join(dataDirectory, 'remittance_settings.json'),
-    JSON.stringify({
-      numberingMode: 'automatic',
-      prefix: 'TR-',
-      nextSequence: 100001,
-      updatedAt: '2026-11-09 12:00',
-      updatedBy: owner.name,
-      updatedByRole: 'owner',
-    }),
-    'utf8'
-  );
-  fs.writeFileSync(path.join(dataDirectory, 'remittance_numbers_registry.json'), '[]', 'utf8');
-  fs.writeFileSync(path.join(dataDirectory, 'remittance_payouts_registry.json'), '[]', 'utf8');
-  fs.writeFileSync(path.join(dataDirectory, 'remittance_audit_logs.json'), '[]', 'utf8');
-  fs.writeFileSync(path.join(dataDirectory, 'remittances_master.json'), '[]', 'utf8');
-
-  try {
-    const { RemittanceRegistry } = await import('../src/server/services/remittanceRegistry.ts');
-    const { serverAccountingEngine } = await import('../src/server/services/serverAccountingEngine.ts');
-    const registry = new RemittanceRegistry();
-
-    Object.defineProperty(registry, 'saveNumbersToDisk', {
+    Object.defineProperty(remittanceRegistry, 'saveNumbersToDisk', {
       configurable: true,
       value: () => {
         throw new Error('injected registry write failure');
       },
     });
 
-    const result = registry.registerMasterRemittance({
-      id: '',
+    const partialFailure = remittanceRegistry.registerMasterRemittance({
+      ...request,
       transferNumber: 'TR-200001',
-      direction: 'incoming',
-      status: 'available',
-      senderName: 'المرسل',
-      senderPhone: '',
-      recipientName: 'المستفيد',
-      recipientPhone: '',
-      networkName: 'شبكة النجم',
-      amount: 100,
-      currency: 'SAR',
-      feeAmount: 0,
-      totalPaid: 100,
-      branchName: 'الفرع الرئيسي',
-      tellerName: owner.name,
-      tellerRole: owner.role,
-      createdAt: '',
-      notes: '',
     });
-
-    assert.equal(result.success, false);
-    assert.equal(result.errorCode, 'COMMIT_PENDING_RECOVERY');
-    assert.equal(registry.getMasterRemittance('TR-200001'), undefined);
+    assert.equal(partialFailure.success, false);
+    assert.equal(partialFailure.errorCode, 'COMMIT_PENDING_RECOVERY');
+    assert.equal(remittanceRegistry.getMasterRemittance('TR-200001'), undefined);
     assert.equal(serverAccountingEngine.isFinancialWriteBlocked(), true);
     assert.equal(fs.existsSync(path.join(dataDirectory, 'financial_transaction_pending.json')), true);
+
+    const persistedAfterFailure = JSON.parse(fs.readFileSync(path.join(dataDirectory, 'remittances_master.json'), 'utf8'));
+    assert.equal(persistedAfterFailure.some((record: { transferNumber: string }) => record.transferNumber === 'TR-200001'), true);
+    // The marker explains the partial disk state; no subsequent operation may silently proceed.
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
