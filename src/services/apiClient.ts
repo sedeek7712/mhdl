@@ -221,6 +221,43 @@ class ApiClient {
     }
   }
 
+  public async executeInternalTransfer(payload: {
+    fromAccountId: string;
+    toAccountId: string;
+    currency: string;
+    amount: number;
+    description: string;
+    idempotencyKey: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    message?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/internal-transfers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تنفيذ المناقلة؛ قد تكون نتيجة العملية غير محسومة.',
+      };
+    }
+  }
+
   /**
    * الاستعلام عن تقرير المطابقة المالية للحوالات والصرف
    */
