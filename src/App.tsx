@@ -31,7 +31,6 @@ import {
 } from './data/initialData';
 import { formatMoney, tafqeetArabic, validateDoubleEntryBalance } from './services/accountingEngine';
 import { voucherEngine } from './services/voucherEngine';
-import { buildExchangeJournalLines } from './services/exchangeAccounting';
 import { offlineStorage } from './services/offlineStorage';
 import { apiClient } from './services/apiClient';
 import { ToastProvider, useToast } from './components/ui/Toast';
@@ -346,7 +345,9 @@ function AppContent() {
   const [isInternalTransferModalOpen, setIsInternalTransferModalOpen] = useState<boolean>(false);
 
   // 1. Execute Currency Exchange (صرافة العملات)
-  const handleExecuteExchange = (data: {
+  const handleExecuteExchange = async (data: {
+    rateId: string;
+    rateMode: 'buy' | 'sell';
     sourceCurrency: CurrencyCode;
     sourceAmount: number;
     targetCurrency: CurrencyCode;
@@ -356,117 +357,127 @@ function AppContent() {
     customerName: string;
     customerPhone: string;
     notes: string;
-  }) => {
-    if (!Number.isFinite(data.exchangeRate) || data.exchangeRate <= 0 ||
-        !Number.isFinite(data.sourceAmount) || data.sourceAmount <= 0 ||
-        !Number.isFinite(data.targetAmount) || data.targetAmount <= 0 ||
-        !Number.isFinite(data.commission) || data.commission < 0 ||
-        data.sourceCurrency === data.targetCurrency) {
-      toast.error('بيانات الصرافة غير صالحة', 'لم يتم تسجيل أي حركة مالية.');
-      return;
-    }
-
-    let lines: ReturnType<typeof buildExchangeJournalLines>['lines'];
-    let grossTargetAmount: number;
-    try {
-      const posting = buildExchangeJournalLines(data);
-      lines = posting.lines.map((line) => ({
-        ...line,
-        note: line.accountId === 'acc-1102'
-          ? (line.currency === data.sourceCurrency
-            ? `قبض نقدي من العميل ${data.customerName}`
-            : `تسليم صافي نقدي للعميل ${data.customerName}`)
-          : line.note,
-      }));
-      grossTargetAmount = posting.grossTargetAmount;
-    } catch (error: any) {
-      toast.error('تعذر تكوين القيد المحاسبي', error.message || 'تحقق من المبلغ والعمولة.');
-      return;
-    }
-
-    const balanceCheck = validateDoubleEntryBalance(lines);
-    if (!balanceCheck.isBalanced) {
-      toast.error('القيد غير متوازن', 'أوقِفت العملية ولم تُحدّث الأرصدة.');
-      return;
-    }
-
-    const entryId = `jv-ex-${Date.now()}`;
-    const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
-    const voucherNum = `V-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-
-    // Temporary local posting: keep cash, clearing liability, and target-currency commission in sync.
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.sourceCurrency]: (acc.balances[data.sourceCurrency] || 0) + data.sourceAmount,
-              [data.targetCurrency]: (acc.balances[data.targetCurrency] || 0) - data.targetAmount,
-            },
-          };
-        }
-        if (acc.id === 'acc-2101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.sourceCurrency]: (acc.balances[data.sourceCurrency] || 0) + data.sourceAmount,
-              [data.targetCurrency]: (acc.balances[data.targetCurrency] || 0) - grossTargetAmount,
-            },
-          };
-        }
-        if (data.commission > 0 && acc.id === 'acc-4101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.targetCurrency]: (acc.balances[data.targetCurrency] || 0) + data.commission,
-            },
-          };
-        }
-        return acc;
-      })
-    );
-
-    const newJournalEntry: JournalEntry = {
-      id: entryId,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `صرافة ${formatMoney(data.sourceAmount, data.sourceCurrency)} مقابل ${formatMoney(data.targetAmount, data.targetCurrency)} بسعر ${data.exchangeRate}`,
-      lines,
-      referenceType: 'exchange',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: balanceCheck.isBalanced,
+  }): Promise<boolean> => {
+    const pendingStorageKey = 'alnamari_pending_exchange_v1';
+    const request = {
+      rateId: data.rateId,
+      rateMode: data.rateMode,
+      sourceCurrency: data.sourceCurrency,
+      targetCurrency: data.targetCurrency,
+      sourceAmount: data.sourceAmount,
+      commission: data.commission,
+      customerName: data.customerName,
+      customerPhone: data.customerPhone,
+      notes: data.notes,
     };
 
-    setJournalEntries((prev) => [...prev, newJournalEntry]);
+    let idempotencyKey: string;
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          request?: typeof request;
+        };
+        if (!pending.idempotencyKey ||
+            JSON.stringify(pending.request) !== JSON.stringify(request)) {
+          toast.warning(
+            'توجد صرافة سابقة لم تُحسم',
+            'أعد نفس العملية السابقة لاسترجاع نتيجتها، أو اطلب مطابقة الدفتر قبل بدء عملية مختلفة.'
+          );
+          return false;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          request,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error('تعذر حفظ معرف الصرافة', 'أوقِف العملية؛ لا يمكن ضمان منع تكرار القيد دون حفظ معرفها.');
+      return false;
+    }
 
-    // Create Official Voucher via Central Voucher Engine
-    const newVoucher = voucherEngine.createExchangeVoucher({
-      voucherNumber: voucherNum,
-      transactionNumber: entryNum,
+    const result = await apiClient.executeExchange({
+      idempotencyKey,
+      ...request,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'الصرافة غير محسومة',
+          result.error || 'أوقف النظام ولا تعاود الصرافة حتى مطابقة الدفاتر.'
+        );
+        return false;
+      }
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نحدّث الأرصدة في الواجهة. أعد نفس الطلب لاسترجاع النتيجة باستخدام معرف العملية نفسه.'
+        );
+        return false;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // A stale key is safe: the next request will be rejected if its payload differs.
+      }
+      toast.error('رفض الخادم عملية الصرافة', result.error || 'لم يتم تنفيذ العملية.');
+      return false;
+    }
+
+    const entry = result.journalEntry;
+    if (!Array.isArray(result.accounts) || !entry ||
+        typeof entry.id !== 'string' ||
+        typeof entry.entryNumber !== 'string' ||
+        entry.idempotencyKey !== idempotencyKey ||
+        typeof result.voucherNumber !== 'string' ||
+        !Number.isFinite(result.effectiveRate) ||
+        !Number.isFinite(result.targetAmount) ||
+        !Number.isFinite(result.grossTargetAmount)) {
+      toast.error(
+        'نتيجة الصرافة غير مكتملة',
+        'لم نحدّث الشاشة. لا تنشئ عملية جديدة؛ تحقق من دفتر الخادم باستخدام معرف الصرافة نفسه.'
+      );
+      return false;
+    }
+
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((item) =>
+        item.id === entry.id || item.entryNumber === entry.entryNumber
+      );
+      return exists ? previous : [entry as JournalEntry, ...previous];
+    });
+
+    const voucher = voucherEngine.createExchangeVoucher({
+      voucherNumber: result.voucherNumber,
+      transactionNumber: entry.entryNumber,
       customerName: data.customerName,
       customerPhone: data.customerPhone,
       sourceCurrency: data.sourceCurrency,
       sourceAmount: data.sourceAmount,
       targetCurrency: data.targetCurrency,
-      targetAmount: data.targetAmount,
-      exchangeRate: data.exchangeRate,
+      targetAmount: result.targetAmount,
+      exchangeRate: result.effectiveRate,
       commission: data.commission,
       branchName: currentUser.branchName,
       tellerName: currentUser.name,
       notes: data.notes,
     });
+    setActiveVoucher(voucher);
 
-    setActiveVoucher(newVoucher);
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // Replaying the same key is safe and returns the existing server journal entry.
+    }
+    return true;
   };
 
   // 2. Create Outgoing Remittance (إرسال حوالة صادرة)
