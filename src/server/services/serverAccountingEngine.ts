@@ -60,7 +60,7 @@ export interface ServerJournalEntry {
   time: string;
   descriptionAr: string;
   lines: ServerJournalLine[];
-  referenceType: 'transfer_payout' | 'transfer_send' | 'internal_transfer' | 'manual_adjustment';
+  referenceType: 'transfer_payout' | 'transfer_send' | 'internal_transfer' | 'expense' | 'manual_adjustment';
   referenceId: string;
   branchId: string;
   createdBy: string;
@@ -675,6 +675,198 @@ class ServerAccountingEngine {
         errorCode: 'COMMIT_PENDING_RECOVERY',
         journalEntry,
         error: completed.error || 'تعذر إغلاق علامة المعاملة المالية؛ يلزم فحص الدفاتر.',
+      };
+    }
+
+    return {
+      success: true,
+      journalEntry,
+      accounts: this.getAccounts(),
+    };
+  }
+
+  public executeOperatingExpense(params: {
+    expenseType: string;
+    amount: number;
+    currency: CurrencyCode;
+    notes: string;
+    operatorId: string;
+    operatorName: string;
+    branchId?: string;
+    idempotencyKey: string;
+  }): {
+    success: boolean;
+    journalEntry?: ServerJournalEntry;
+    accounts?: ServerAccount[];
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+  } {
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    if (typeof params.idempotencyKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(params.idempotencyKey)) {
+      return { success: false, error: 'معرف سند المصروف غير صالح.' };
+    }
+    if (!currencies.includes(params.currency)) {
+      return { success: false, error: 'عملة المصروف غير مدعومة.' };
+    }
+    if (typeof params.amount !== 'number' || !Number.isFinite(params.amount) ||
+        params.amount <= 0 || Math.abs(params.amount * 1000 - Math.round(params.amount * 1000)) > 1e-8) {
+      return { success: false, error: 'مبلغ المصروف يجب أن يكون موجباً وصالحاً حتى ثلاث منازل عشرية.' };
+    }
+    if (typeof params.expenseType !== 'string' || !params.expenseType.trim() ||
+        params.expenseType.trim().length > 120 ||
+        typeof params.notes !== 'string' || !params.notes.trim() || params.notes.trim().length > 240) {
+      return { success: false, error: 'نوع المصروف والبيان إلزاميان، ويجب ألا يتجاوز كل منهما الحد المسموح.' };
+    }
+    if (typeof params.operatorId !== 'string' || !params.operatorId.trim() ||
+        typeof params.operatorName !== 'string' || !params.operatorName.trim()) {
+      return { success: false, error: 'بيانات منفذ سند المصروف غير صالحة.' };
+    }
+
+    if (this.storageWriteBlocked || this.activeTransactionId ||
+        fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة. أوقف النظام ولا تنفذ مصروفاً جديداً حتى مطابقة الدفاتر.',
+      };
+    }
+
+    const expectedDescription = `مصروف تشغيلي: ${params.expenseType.trim()} - ${params.notes.trim()}`;
+    const priorEntry = this.journalEntries.find((entry) =>
+      entry.idempotencyKey === params.idempotencyKey &&
+      entry.referenceType === 'expense' &&
+      typeof entry.descriptionAr === 'string' &&
+      entry.descriptionAr === expectedDescription &&
+      entry.createdBy === params.operatorName &&
+      entry.branchId === (params.branchId || 'br-main')
+    );
+    if (priorEntry) {
+      const debitLine = priorEntry.lines.find((line) =>
+        line.accountId === 'acc-5101' &&
+        line.currency === params.currency &&
+        Math.abs(line.debit - params.amount) <= 0.0000001 &&
+        line.credit === 0
+      );
+      const creditLine = priorEntry.lines.find((line) =>
+        line.accountId === 'acc-1102' &&
+        line.currency === params.currency &&
+        Math.abs(line.credit - params.amount) <= 0.0000001 &&
+        line.debit === 0
+      );
+      if (!debitLine || !creditLine) {
+        return {
+          success: false,
+          error: 'معرف المصروف مستخدم سابقاً مع مبلغ أو عملة مختلفة. رُفض الطلب دون تنفيذ حركة جديدة.',
+        };
+      }
+      return {
+        success: true,
+        journalEntry: priorEntry,
+        accounts: this.getAccounts(),
+      };
+    }
+
+    const expenseAccount = this.accounts.get('acc-5101');
+    const cashierAccount = this.accounts.get('acc-1102');
+    if (!expenseAccount || expenseAccount.type !== 'expense') {
+      return {
+        success: false,
+        error: 'حساب المصروفات (acc-5101) غير موجود أو نوعه غير صحيح. رحّل دليل الحسابات واعتمد خط الأساس قبل تسجيل المصروفات.',
+      };
+    }
+    if (!cashierAccount || cashierAccount.type !== 'asset') {
+      return { success: false, error: 'صندوق الكاشير (acc-1102) غير موجود أو نوعه غير صحيح.' };
+    }
+
+    const cashierBalance = cashierAccount.balances[params.currency];
+    if (typeof cashierBalance !== 'number' || !Number.isFinite(cashierBalance) ||
+        cashierBalance < params.amount) {
+      return {
+        success: false,
+        error: `رصيد صندوق الكاشير غير كافٍ لتغطية المصروف بعملة ${params.currency}.`,
+      };
+    }
+
+    const started = this.beginFinancialTransaction({
+      operation: 'operating_expense',
+      referenceId: 'acc-5101->acc-1102',
+      amount: params.amount,
+      currency: params.currency,
+      actorId: params.operatorId,
+    });
+    if (!started.success || !started.transactionId) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: started.error || 'تعذر بدء معاملة المصروف الآمنة.',
+      };
+    }
+
+    const previousCashierBalance = cashierAccount.balances[params.currency];
+    const previousExpenseBalance = expenseAccount.balances[params.currency] || 0;
+    cashierAccount.balances[params.currency] = previousCashierBalance - params.amount;
+    expenseAccount.balances[params.currency] = previousExpenseBalance + params.amount;
+
+    const [date, time] = getYemenDateTimeString().split(' ');
+    const voucherNumber = `V-EXP-${crypto.randomUUID().toUpperCase()}`;
+    const entryNumber = `JV-EXP-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const journalEntry: ServerJournalEntry = {
+      id: `jv-exp-${crypto.randomUUID()}`,
+      entryNumber,
+      date,
+      time,
+      descriptionAr: expectedDescription,
+      lines: [
+        {
+          accountId: expenseAccount.id,
+          accountNameAr: expenseAccount.nameAr,
+          currency: params.currency,
+          debit: params.amount,
+          credit: 0,
+          note: params.notes.trim(),
+        },
+        {
+          accountId: cashierAccount.id,
+          accountNameAr: cashierAccount.nameAr,
+          currency: params.currency,
+          debit: 0,
+          credit: params.amount,
+          note: 'صرف نقدي من صندوق الكاشير',
+        },
+      ],
+      referenceType: 'expense',
+      referenceId: voucherNumber,
+      branchId: params.branchId || 'br-main',
+      createdBy: params.operatorName,
+      isBalanced: true,
+      idempotencyKey: params.idempotencyKey,
+      voucherNumber,
+    };
+
+    this.journalEntries.unshift(journalEntry);
+    try {
+      safeAtomicWriteJson(ACCOUNTS_FILE, Array.from(this.accounts.values()));
+      safeAtomicWriteJson(JOURNAL_FILE, this.journalEntries);
+    } catch (error: any) {
+      cashierAccount.balances[params.currency] = previousCashierBalance;
+      expenseAccount.balances[params.currency] = previousExpenseBalance;
+      this.journalEntries.shift();
+      this.storageWriteBlocked = true;
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ سند المصروف في الدفاتر. لا تعاود العملية؛ أوقف النظام وطابق الحسابات والقيود. ${error.message}`,
+      };
+    }
+
+    const completed = this.completeFinancialTransaction(started.transactionId);
+    if (!completed.success) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        journalEntry,
+        error: completed.error || 'تعذر إغلاق علامة معاملة المصروف؛ يلزم فحص الدفاتر.',
       };
     }
 
