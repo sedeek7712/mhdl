@@ -31,6 +31,7 @@ import {
 } from './data/initialData';
 import { formatMoney, tafqeetArabic, validateDoubleEntryBalance } from './services/accountingEngine';
 import { voucherEngine } from './services/voucherEngine';
+import { buildExchangeJournalLines } from './services/exchangeAccounting';
 import { offlineStorage } from './services/offlineStorage';
 import { apiClient } from './services/apiClient';
 import { ToastProvider, useToast } from './components/ui/Toast';
@@ -335,6 +336,39 @@ function AppContent() {
     customerPhone: string;
     notes: string;
   }) => {
+    if (!Number.isFinite(data.exchangeRate) || data.exchangeRate <= 0 ||
+        !Number.isFinite(data.sourceAmount) || data.sourceAmount <= 0 ||
+        !Number.isFinite(data.targetAmount) || data.targetAmount <= 0 ||
+        !Number.isFinite(data.commission) || data.commission < 0 ||
+        data.sourceCurrency === data.targetCurrency) {
+      toast.error('بيانات الصرافة غير صالحة', 'لم يتم تسجيل أي حركة مالية.');
+      return;
+    }
+
+    let lines: ReturnType<typeof buildExchangeJournalLines>['lines'];
+    let grossTargetAmount: number;
+    try {
+      const posting = buildExchangeJournalLines(data);
+      lines = posting.lines.map((line) => ({
+        ...line,
+        note: line.accountId === 'acc-1102'
+          ? (line.currency === data.sourceCurrency
+            ? `قبض نقدي من العميل ${data.customerName}`
+            : `تسليم صافي نقدي للعميل ${data.customerName}`)
+          : line.note,
+      }));
+      grossTargetAmount = posting.grossTargetAmount;
+    } catch (error: any) {
+      toast.error('تعذر تكوين القيد المحاسبي', error.message || 'تحقق من المبلغ والعمولة.');
+      return;
+    }
+
+    const balanceCheck = validateDoubleEntryBalance(lines);
+    if (!balanceCheck.isBalanced) {
+      toast.error('القيد غير متوازن', 'أوقِفت العملية ولم تُحدّث الأرصدة.');
+      return;
+    }
+
     const entryId = `jv-ex-${Date.now()}`;
     const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
     const voucherNum = `V-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
@@ -342,7 +376,7 @@ function AppContent() {
     const dateStr = now.toISOString().split('T')[0];
     const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
 
-    // Update balances: Cashier box receives source currency and dispenses target currency
+    // Temporary local posting: keep cash, clearing liability, and target-currency commission in sync.
     setAccounts((prevAccounts) =>
       prevAccounts.map((acc) => {
         if (acc.id === 'acc-1102') {
@@ -355,55 +389,28 @@ function AppContent() {
             },
           };
         }
-        // If commission, credit commission revenue account
+        if (acc.id === 'acc-2101') {
+          return {
+            ...acc,
+            balances: {
+              ...acc.balances,
+              [data.sourceCurrency]: (acc.balances[data.sourceCurrency] || 0) + data.sourceAmount,
+              [data.targetCurrency]: (acc.balances[data.targetCurrency] || 0) - grossTargetAmount,
+            },
+          };
+        }
         if (data.commission > 0 && acc.id === 'acc-4101') {
           return {
             ...acc,
             balances: {
               ...acc.balances,
-              [data.sourceCurrency]: (acc.balances[data.sourceCurrency] || 0) + data.commission,
+              [data.targetCurrency]: (acc.balances[data.targetCurrency] || 0) + data.commission,
             },
           };
         }
         return acc;
       })
     );
-
-    // Balanced Journal Entry
-    const lines = [
-      {
-        accountId: 'acc-1102',
-        accountNameAr: 'صندوق كاشير الصراف 1',
-        currency: data.sourceCurrency,
-        debit: data.sourceAmount,
-        credit: 0,
-        note: `قبض نقدي من العميل ${data.customerName}`,
-      },
-      {
-        accountId: 'acc-2101',
-        accountNameAr: 'أمانات العملاء ووسيط التسوية',
-        currency: data.sourceCurrency,
-        debit: 0,
-        credit: data.sourceAmount,
-        note: 'تسوية عملة مقبوضة',
-      },
-      {
-        accountId: 'acc-2101',
-        accountNameAr: 'أمانات العملاء ووسيط التسوية',
-        currency: data.targetCurrency,
-        debit: data.targetAmount,
-        credit: 0,
-        note: 'تسوية عملة مسلمة',
-      },
-      {
-        accountId: 'acc-1102',
-        accountNameAr: 'صندوق كاشير الصراف 1',
-        currency: data.targetCurrency,
-        debit: 0,
-        credit: data.targetAmount,
-        note: `تسليم نقدي للعميل ${data.customerName}`,
-      },
-    ];
 
     const newJournalEntry: JournalEntry = {
       id: entryId,
@@ -416,7 +423,7 @@ function AppContent() {
       referenceId: voucherNum,
       branchId: currentUser.branchId,
       createdBy: currentUser.name,
-      isBalanced: true,
+      isBalanced: balanceCheck.isBalanced,
     };
 
     setJournalEntries((prev) => [...prev, newJournalEntry]);
