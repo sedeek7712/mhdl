@@ -116,8 +116,10 @@ class ServerCashBoxShiftRegistry {
     const balances = normalizeBalances(params.balances);
     if (!balances) return { success: false, error: 'أرصدة الصندوق الحالية غير صالحة؛ لا يمكن فتح الوردية.' };
 
+    // The opening balance is a server snapshot, not client input. Exclude it from the replay
+    // fingerprint so a lost HTTP response can be safely replayed even after later ledger activity.
     const requestFingerprint = fingerprint({
-      balances, actorId: params.actorId, boxId: params.boxId || 'acc-1102',
+      actorId: params.actorId, boxId: params.boxId || 'acc-1102',
     });
     const prior = this.state.activeShift?.openIdempotencyKey === params.idempotencyKey
       ? this.state.activeShift
