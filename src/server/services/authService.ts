@@ -30,6 +30,7 @@ export interface StoredUserRecord extends AuthenticatedUser {
   pinSalt: string;
   pinHash: string;
   isActive: boolean;
+  mustChangePin: boolean;
   createdAt: string;
 }
 
@@ -139,8 +140,8 @@ class AuthService {
       failOnMissing: true,
     });
 
-    if (!Array.isArray(loadedUsers) || loadedUsers.length === 0) {
-      throw new Error('توقف آمن: ملف المستخدمين فارغ أو لا يحتوي حساباً صالحاً. يجب تنفيذ تهيئة المالك بصورة صريحة قبل تشغيل النظام.');
+    if (!Array.isArray(loadedUsers) || loadedUsers.length !== 1) {
+      throw new Error('توقف آمن: يجب أن يحتوي النظام على حساب مالك واحد فقط. شغّل الأمر npm run setup:owner لإنشاء حساب واحد بأمان مع حفظ نسخة احتياطية من الحسابات السابقة.');
     }
 
     const allowedRoles: AuthenticatedUser['role'][] = [
@@ -163,8 +164,8 @@ class AuthService {
           typeof user.branchName !== 'string' || !user.branchName.trim() ||
           typeof user.pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(user.pinSalt) ||
           typeof user.pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(user.pinHash) ||
-          typeof user.isActive !== 'boolean') {
-        throw new Error('توقف آمن: ملف المستخدمين يحتوي بيانات اعتماد أو صلاحيات غير مكتملة؛ لن يتم إنشاء PIN افتراضي.');
+          user.role !== 'owner' || user.isActive !== true || user.mustChangePin !== false) {
+        throw new Error('توقف آمن: حساب المالك غير مهيأ أو ما زال يستخدم بيانات اعتماد قديمة. شغّل npm run setup:owner لتغيير PIN وإيقاف الحسابات الأخرى مع حفظ نسخة احتياطية محلية.');
       }
 
       const normalizedUsername = user.username.trim().toLowerCase();
