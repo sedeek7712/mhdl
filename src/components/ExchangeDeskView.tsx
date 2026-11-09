@@ -88,8 +88,23 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (sourceAmount <= 0) {
-      toast.warning('يرجى إدخال المبلغ المراد صرافته بشكل صحيح');
+    if (!Number.isFinite(sourceAmount) || sourceAmount <= 0 ||
+        Math.abs(sourceAmount * 100 - Math.round(sourceAmount * 100)) > 1e-8) {
+      toast.warning('مبلغ العملة المستلمة يجب أن يكون موجباً وبحد أقصى منزلتين عشريتين.');
+      return;
+    }
+    if (sourceCurrency === targetCurrency) {
+      toast.warning('اختر عملتين مختلفتين لإتمام الصرافة.');
+      return;
+    }
+    if (!Number.isFinite(effectiveRate) || effectiveRate <= 0) {
+      toast.error('سعر الصرف غير صالح', 'لا يمكن تنفيذ الصرافة بسعر صفر أو قيمة غير صحيحة.');
+      return;
+    }
+    if (!Number.isFinite(commission) || commission < 0 ||
+        Math.abs(commission * 100 - Math.round(commission * 100)) > 1e-8 ||
+        commission >= rawTargetAmount || targetAmount <= 0) {
+      toast.error('العمولة غير صالحة', 'العمولة بعملة المبلغ المستهدف، ويجب أن تكون موجبة أو صفراً، وأقل من إجمالي المبلغ، وبحد أقصى منزلتين عشريتين.');
       return;
     }
     if (!hasSufficientLiquidity) {
