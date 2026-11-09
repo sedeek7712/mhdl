@@ -488,6 +488,248 @@ class ServerAccountingEngine {
   /**
    * تغذية صندوق الكاشير من الخزينة المركزية بقيد مزدوج موثق
    */
+  public executeOutgoingRemittance(params: {
+    transferNumber: string;
+    amount: number;
+    feeAmount: number;
+    currency: CurrencyCode;
+    senderName: string;
+    recipientName: string;
+    networkName: string;
+    notes?: string;
+    tellerId: string;
+    tellerName: string;
+    branchId?: string;
+    idempotencyKey: string;
+  }): {
+    success: boolean;
+    journalEntry?: ServerJournalEntry;
+    accounts?: ServerAccount[];
+    totalPaid?: number;
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+  } {
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    if (typeof params.idempotencyKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(params.idempotencyKey)) {
+      return { success: false, error: 'معرف عملية الحوالة الصادرة غير صالح.' };
+    }
+    if (typeof params.transferNumber !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9-]{2,63}$/.test(params.transferNumber)) {
+      return { success: false, error: 'رقم الحوالة الصادرة غير صالح.' };
+    }
+    if (!currencies.includes(params.currency)) {
+      return { success: false, error: 'عملة الحوالة الصادرة غير مدعومة.' };
+    }
+    const isValidAmount = (value: number) =>
+      typeof value === 'number' && Number.isFinite(value) &&
+      value >= 0 && Math.abs(value * 1000 - Math.round(value * 1000)) <= 1e-8;
+    if (!isValidAmount(params.amount) || params.amount <= 0 ||
+        !isValidAmount(params.feeAmount)) {
+      return { success: false, error: 'مبلغ الحوالة والعمولة يجب أن يكونا صالحين حتى ثلاث منازل عشرية، مع مبلغ حوالة موجب.' };
+    }
+    if (typeof params.senderName !== 'string' || !params.senderName.trim() || params.senderName.trim().length > 160 ||
+        typeof params.recipientName !== 'string' || !params.recipientName.trim() || params.recipientName.trim().length > 160 ||
+        typeof params.networkName !== 'string' || !params.networkName.trim() || params.networkName.trim().length > 100 ||
+        typeof params.tellerId !== 'string' || !params.tellerId.trim() ||
+        typeof params.tellerName !== 'string' || !params.tellerName.trim()) {
+      return { success: false, error: 'اسم المرسل والمستفيد والشبكة وبيانات المنفذ حقول إلزامية.' };
+    }
+    const notes = typeof params.notes === 'string' ? params.notes.trim() : '';
+    if (notes.length > 500) {
+      return { success: false, error: 'ملاحظات الحوالة تتجاوز الحد المسموح.' };
+    }
+
+    const totalPaid = params.amount + params.feeAmount;
+    if (!Number.isFinite(totalPaid) || totalPaid <= 0) {
+      return { success: false, error: 'إجمالي المبلغ المدفوع غير صالح.' };
+    }
+
+    const priorEntry = this.journalEntries.find((entry) =>
+      entry.idempotencyKey === params.idempotencyKey &&
+      entry.referenceType === 'transfer_send'
+    );
+    if (priorEntry) {
+      const sameTransfer = priorEntry.referenceId === params.transferNumber.trim().toUpperCase() &&
+        priorEntry.createdBy === params.tellerName &&
+        priorEntry.branchId === (params.branchId || 'br-main') &&
+        priorEntry.descriptionAr === `إرسال حوالة صادرة ${params.transferNumber.trim().toUpperCase()} للمستلم ${params.recipientName.trim()} عبر ${params.networkName.trim()}`;
+      const cashLine = priorEntry.lines.find((line) =>
+        line.accountId === 'acc-1102' && line.currency === params.currency &&
+        Math.abs(line.debit - totalPaid) <= 0.0000001 && line.credit === 0
+      );
+      const payableLine = priorEntry.lines.find((line) =>
+        line.accountId === 'acc-2201' && line.currency === params.currency &&
+        Math.abs(line.credit - params.amount) <= 0.0000001 && line.debit === 0
+      );
+      const commissionLine = params.feeAmount > 0
+        ? priorEntry.lines.find((line) =>
+            line.accountId === 'acc-4101' && line.currency === params.currency &&
+            Math.abs(line.credit - params.feeAmount) <= 0.0000001 && line.debit === 0
+          )
+        : undefined;
+      if (!sameTransfer || !cashLine || !payableLine || (params.feeAmount > 0 && !commissionLine)) {
+        return { success: false, error: 'معرف الحوالة مستخدم سابقاً مع بيانات مختلفة. لم تُنفذ حركة مالية جديدة.' };
+      }
+      return {
+        success: true,
+        journalEntry: priorEntry,
+        accounts: this.getAccounts(),
+        totalPaid,
+      };
+    }
+
+    if (this.storageWriteBlocked ||
+        (!this.activeTransactionId && fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE))) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة. أوقف النظام ولا تسجل حوالة صادرة جديدة حتى مطابقة الدفاتر.',
+      };
+    }
+
+    const cashier = this.accounts.get('acc-1102');
+    const pendingRemittance = this.accounts.get('acc-2201');
+    const commissionAccount = this.accounts.get('acc-4101');
+    if (!cashier || cashier.type !== 'asset') {
+      return { success: false, error: 'صندوق الكاشير (acc-1102) غير موجود أو نوعه المحاسبي غير صحيح.' };
+    }
+    if (!pendingRemittance || pendingRemittance.type !== 'liability') {
+      return {
+        success: false,
+        error: 'حساب الحوالات المعلقة/مستحقات الشبكة (acc-2201) غير موجود أو ليس حساب التزامات. رحّل دليل الحسابات واعتمد خط الأساس أولاً.',
+      };
+    }
+    if (params.feeAmount > 0 && (!commissionAccount || commissionAccount.type !== 'revenue')) {
+      return {
+        success: false,
+        error: 'حساب إيرادات العمولات (acc-4101) غير موجود أو نوعه المحاسبي غير صحيح.',
+      };
+    }
+
+    let ownTransactionId: string | null = null;
+    if (!this.activeTransactionId) {
+      const started = this.beginFinancialTransaction({
+        operation: 'outgoing_remittance',
+        referenceId: params.transferNumber.trim().toUpperCase(),
+        amount: totalPaid,
+        currency: params.currency,
+        actorId: params.tellerId,
+      });
+      if (!started.success || !started.transactionId) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: started.error || 'تعذر بدء معاملة الحوالة الصادرة الآمنة.',
+        };
+      }
+      ownTransactionId = started.transactionId;
+    }
+
+    const previousCashier = cashier.balances[params.currency] || 0;
+    const previousPending = pendingRemittance.balances[params.currency] || 0;
+    const previousCommission = commissionAccount?.balances[params.currency] || 0;
+    cashier.balances[params.currency] = previousCashier + totalPaid;
+    pendingRemittance.balances[params.currency] = previousPending + params.amount;
+    if (params.feeAmount > 0 && commissionAccount) {
+      commissionAccount.balances[params.currency] = previousCommission + params.feeAmount;
+    }
+
+    const [date, time] = getYemenDateTimeString().split(' ');
+    const normalizedNumber = params.transferNumber.trim().toUpperCase();
+    const voucherNumber = `V-OUT-${crypto.randomUUID().toUpperCase()}`;
+    const entryNumber = `JV-OUT-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const lines: ServerJournalLine[] = [
+      {
+        accountId: cashier.id,
+        accountNameAr: cashier.nameAr,
+        currency: params.currency,
+        debit: totalPaid,
+        credit: 0,
+        note: `مبلغ مستلم من المرسل ${params.senderName.trim()} شاملاً العمولة`,
+      },
+      {
+        accountId: pendingRemittance.id,
+        accountNameAr: pendingRemittance.nameAr,
+        currency: params.currency,
+        debit: 0,
+        credit: params.amount,
+        note: `مستحق للشبكة ${params.networkName.trim()} عن الحوالة ${normalizedNumber}`,
+      },
+    ];
+    if (params.feeAmount > 0 && commissionAccount) {
+      lines.push({
+        accountId: commissionAccount.id,
+        accountNameAr: commissionAccount.nameAr,
+        currency: params.currency,
+        debit: 0,
+        credit: params.feeAmount,
+        note: `عمولة حوالة صادرة ${normalizedNumber}`,
+      });
+    }
+
+    const totalDebit = lines.reduce((sum, line) => sum + line.debit, 0);
+    const totalCredit = lines.reduce((sum, line) => sum + line.credit, 0);
+    if (Math.abs(totalDebit - totalCredit) > 0.001) {
+      cashier.balances[params.currency] = previousCashier;
+      pendingRemittance.balances[params.currency] = previousPending;
+      if (commissionAccount) commissionAccount.balances[params.currency] = previousCommission;
+      if (ownTransactionId) this.cancelFinancialTransaction(ownTransactionId);
+      return { success: false, error: 'القيد المحاسبي للحوالة الصادرة غير متوازن؛ لم تُحفظ العملية.' };
+    }
+
+    const journalEntry: ServerJournalEntry = {
+      id: `jv-out-${crypto.randomUUID()}`,
+      entryNumber,
+      date,
+      time,
+      descriptionAr: `إرسال حوالة صادرة ${normalizedNumber} للمستلم ${params.recipientName.trim()} عبر ${params.networkName.trim()}`,
+      lines,
+      referenceType: 'transfer_send',
+      referenceId: normalizedNumber,
+      branchId: params.branchId || 'br-main',
+      createdBy: params.tellerName,
+      isBalanced: true,
+      idempotencyKey: params.idempotencyKey,
+      voucherNumber,
+    };
+
+    this.journalEntries.unshift(journalEntry);
+    try {
+      safeAtomicWriteJson(ACCOUNTS_FILE, Array.from(this.accounts.values()));
+      safeAtomicWriteJson(JOURNAL_FILE, this.journalEntries);
+    } catch (error: any) {
+      cashier.balances[params.currency] = previousCashier;
+      pendingRemittance.balances[params.currency] = previousPending;
+      if (commissionAccount) commissionAccount.balances[params.currency] = previousCommission;
+      this.journalEntries.shift();
+      this.storageWriteBlocked = true;
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ دفتر الحوالة الصادرة. لا تعاود العملية؛ أوقف النظام وطابق الأرصدة والقيود. ${error.message}`,
+      };
+    }
+
+    if (ownTransactionId) {
+      const completed = this.completeFinancialTransaction(ownTransactionId);
+      if (!completed.success) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          journalEntry,
+          error: completed.error || 'تعذر إغلاق علامة معاملة الحوالة الصادرة.',
+        };
+      }
+    }
+
+    return {
+      success: true,
+      journalEntry,
+      accounts: this.getAccounts(),
+      totalPaid,
+    };
+  }
+
   public executeInternalTransfer(params: {
     fromAccountId: string;
     toAccountId: string;
