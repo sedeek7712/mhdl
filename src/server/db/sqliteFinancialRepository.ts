@@ -41,6 +41,8 @@ export interface SqliteJournalEntryInput {
   targetAmountMilli?: number;
   voucherNumber?: string;
   lines: SqliteJournalLineInput[];
+  /** False only when importing historical entries after seeding the current balance snapshot. */
+  applyBalanceMovements?: boolean;
 }
 
 export interface SqliteRemittanceInput {
@@ -308,7 +310,9 @@ export function insertBalancedJournalEntry(
       if (!Number.isSafeInteger(deltaNumber)) {
         throw new Error('Account balance movement exceeds the safe integer range.');
       }
-      updateBalance.run(deltaNumber, timestamp, accountId, currency);
+      if (entry.applyBalanceMovements !== false) {
+        updateBalance.run(deltaNumber, timestamp, accountId, currency);
+      }
       const balance = db.prepare(
         'SELECT 1 AS found FROM account_balances WHERE account_id = ? AND currency = ?'
       ).get(accountId, currency);
@@ -345,17 +349,37 @@ export function insertSqliteRemittance(
 
   const normalizedNumber = cleanTransferNumber.toUpperCase();
   return withImmediateTransaction(db, () => {
-    db.prepare(`
-      INSERT INTO remittance_number_reservations (
-        number_normalized, number_original, registered_at, registered_by, numbering_mode
-      ) VALUES (?, ?, ?, ?, ?)
-    `).run(
-      normalizedNumber,
-      remittance.transferNumber.trim(),
-      remittance.reservationRegisteredAt,
-      remittance.reservationRegisteredBy,
-      remittance.reservationMode
-    );
+    const priorReservation = db.prepare(`
+      SELECT number_original, registered_at, registered_by, numbering_mode
+      FROM remittance_number_reservations
+      WHERE number_normalized = ?
+    `).get(normalizedNumber) as {
+      number_original: string;
+      registered_at: string;
+      registered_by: string;
+      numbering_mode: string;
+    } | undefined;
+
+    if (priorReservation) {
+      if (priorReservation.number_original !== remittance.transferNumber.trim() ||
+          priorReservation.registered_at !== remittance.reservationRegisteredAt ||
+          priorReservation.registered_by !== remittance.reservationRegisteredBy ||
+          priorReservation.numbering_mode !== remittance.reservationMode) {
+        throw new Error('Existing remittance number reservation does not match the source reservation.');
+      }
+    } else {
+      db.prepare(`
+        INSERT INTO remittance_number_reservations (
+          number_normalized, number_original, registered_at, registered_by, numbering_mode
+        ) VALUES (?, ?, ?, ?, ?)
+      `).run(
+        normalizedNumber,
+        remittance.transferNumber.trim(),
+        remittance.reservationRegisteredAt,
+        remittance.reservationRegisteredBy,
+        remittance.reservationMode
+      );
+    }
 
     db.prepare(`
       INSERT INTO remittances (
