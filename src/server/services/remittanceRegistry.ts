@@ -76,6 +76,8 @@ export interface RemittancePayoutRecord {
 export interface RemittanceMasterRecord {
   id: string;
   tellerRole?: string;
+  tellerId?: string;
+  branchId?: string;
   transferNumber: string;
   direction: 'outgoing' | 'incoming';
   status: TransferStatus;
@@ -601,13 +603,15 @@ export class RemittanceRegistry {
         existingByKey.branchName === params.branchName.trim() &&
         existingByKey.tellerName === params.tellerName.trim() &&
         (existingByKey.tellerRole || '') === params.tellerRole &&
-        (existingByKey.notes || '') === notes &&
-        existingByKey.numberingMode === (existingByKey.numberingMode === 'manual' ? 'manual' : 'automatic');
+        existingByKey.tellerId === params.tellerId &&
+        existingByKey.branchId === params.branchId &&
+        (existingByKey.notes || '') === notes;
       const requestedManual = typeof params.manualTransferNumber === 'string'
         ? params.manualTransferNumber.trim().toUpperCase()
         : '';
-      const sameManualNumber = existingByKey.numberingMode !== 'manual' ||
-        requestedManual === existingByKey.transferNumber;
+      const sameManualNumber = existingByKey.numberingMode === 'manual'
+        ? requestedManual === existingByKey.transferNumber
+        : !requestedManual;
       const cashLine = existingJournal?.lines.find((line) =>
         line.accountId === 'acc-1102' && line.currency === params.currency &&
         Math.abs(line.debit - totalPaid) <= 0.0000001 && line.credit === 0
@@ -770,6 +774,8 @@ export class RemittanceRegistry {
       feeAmount: params.feeAmount,
       totalPaid,
       branchName: params.branchName.trim(),
+      branchId: params.branchId.trim(),
+      tellerId: params.tellerId.trim(),
       tellerName: params.tellerName.trim(),
       tellerRole: params.tellerRole,
       createdAt,
