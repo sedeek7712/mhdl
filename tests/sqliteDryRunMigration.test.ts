@@ -382,3 +382,21 @@ test('authentication accepts a named username and rejects public role-name alias
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('operational dry-run rejects an empty exchange-rate registry', () => {
+  const fixture = createOperationalParityFixture();
+
+  try {
+    writeFixtureJson(fixture.directory, 'exchange_rate_state.json', {
+      schemaVersion: 1,
+      rates: [],
+      auditLogs: [],
+    });
+    const report = runSqliteDryRun(fixture.directory);
+    assert.equal(report.status, 'FAIL');
+    assert.equal(report.validation.temporaryDatabaseRemoved, true);
+    assert.equal(report.validation.completeSystemParity, false);
+  } finally {
+    fs.rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
