@@ -10,6 +10,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Request, Response, NextFunction } from 'express';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
+import { loadOrCreateJwtSecret } from '../security/jwtSecret.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,48 +59,9 @@ export interface AuthTokenPayload {
   exp: number;
 }
 
-/**
- * C1: تأمين مفتاح التشفير JWT ومنع استخدام أي مفتاح افتراضي ثابت في الكود
- * في بيئة الإنتاج: يلزم توفير JWT_SECRET قوي
- * في بيئة التطوير: توليد مفتاح عشوائي مشفر 64 بايت وحفظه محلياً في ملف محمي .jwt_secret
- */
-function initializeJwtSecret(): string {
-  const envSecret = process.env.JWT_SECRET || process.env.APP_SECRET;
+const JWT_SECRET = loadOrCreateJwtSecret(JWT_SECRET_FILE, process.env);
 
-  if (process.env.NODE_ENV === 'production') {
-    if (!envSecret || envSecret.trim().length < 32 || envSecret.includes('dev_mode') || envSecret.includes('default')) {
-      const errMsg = 'FATAL SECURITY: JWT_SECRET environment variable is strictly required in production and must be at least 32 characters long.';
-      console.error(errMsg);
-      throw new Error(errMsg);
-    }
-    return envSecret.trim();
-  }
 
-  // إذا تم تمرير متغير بيئة في التطوير نستخدمه
-  if (envSecret && envSecret.trim().length >= 32) {
-    return envSecret.trim();
-  }
-
-  // التحقق من وجود مفتاح عشوائي محفوظ محلياً
-  try {
-    if (fs.existsSync(JWT_SECRET_FILE)) {
-      const existing = fs.readFileSync(JWT_SECRET_FILE, 'utf-8').trim();
-      if (existing.length >= 64) {
-        return existing;
-      }
-    }
-
-    // توليد مفتاح عشوائي مشفر 64 بايت وحفظه محلياً لمنع تزوير التوكنات
-    const newRandomSecret = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(JWT_SECRET_FILE, newRandomSecret, { encoding: 'utf-8', mode: 0o600 });
-    console.log('[Security Engine] Generated unique local cryptographic JWT Secret.');
-    return newRandomSecret;
-  } catch {
-    return crypto.randomBytes(32).toString('hex');
-  }
-}
-
-const JWT_SECRET = initializeJwtSecret();
 
 /**
  * دالة تجزئة آمنة للمرور/PIN باستخدام PBKDF2 مع Salt فريد
