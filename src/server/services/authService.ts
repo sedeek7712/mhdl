@@ -14,7 +14,7 @@ import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../ut
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../../data');
-const USERS_FILE = path.resolve(DATA_DIR, 'system_users.json');
+const USERS_FILE = path.resolve(DATA_DIR, 'system_users.local.json');
 const JWT_SECRET_FILE = path.resolve(DATA_DIR, '.jwt_secret');
 
 export interface AuthenticatedUser {
