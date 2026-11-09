@@ -132,7 +132,7 @@ async function startServer() {
   });
 
   // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
-  app.get('/api/auth/users', requireAuth, (_req: Request, res: Response) => {
+  app.get('/api/auth/users', requireAuth, requireRoles(['owner', 'general_manager']), (_req: Request, res: Response) => {
     const users = authService.getAllPublicUsers();
     return res.status(200).json({ success: true, users });
   });
