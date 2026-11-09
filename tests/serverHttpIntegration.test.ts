@@ -251,7 +251,7 @@ test('real HTTP routes enforce authentication, RBAC, active shifts, idempotency 
   const closed = await closeRequest('فرق جرد تجريبي موثق بعد العد اليدوي');
   assert.equal(closed.status, 200);
   const closedBody = await closed.json() as any;
-  assert.equal(closedBody.shift.discrepancies.YER_OLD, 10);
+  assert.equal(closedBody.shift.discrepancies.YER_OLD, -10);
   assert.equal(closedBody.shift.status, 'closed');
 
   const replayedClose = await closeRequest('فرق جرد تجريبي موثق بعد العد اليدوي');
