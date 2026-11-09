@@ -14,7 +14,9 @@ import { serverAccountingEngine, ServerJournalEntry, CurrencyCode } from './serv
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.resolve(__dirname, '../../../data');
+const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
+  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
+  : path.resolve(__dirname, '../../../data');
 const SETTINGS_FILE = path.resolve(DATA_DIR, 'remittance_settings.json');
 const NUMBERS_REGISTRY_FILE = path.resolve(DATA_DIR, 'remittance_numbers_registry.json');
 const AUDIT_LOGS_FILE = path.resolve(DATA_DIR, 'remittance_audit_logs.json');
@@ -73,6 +75,7 @@ export interface RemittancePayoutRecord {
 
 export interface RemittanceMasterRecord {
   id: string;
+  tellerRole?: string;
   transferNumber: string;
   direction: 'outgoing' | 'incoming';
   status: TransferStatus;
@@ -116,7 +119,7 @@ export interface ReconciliationResult {
 
 const SUPPORTED_CURRENCIES: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
 
-class RemittanceRegistry {
+export class RemittanceRegistry {
   private settings: RemittanceSettingsRecord;
   private registeredNumbers: Map<string, { number: string; registeredAt: string; registeredBy: string; mode: string }> = new Map();
   private auditLogs: RemittanceAuditRecord[] = [];
@@ -308,58 +311,195 @@ class RemittanceRegistry {
   /**
    * C2 & M1: تسجيل حوالة في السجل المركزي المعتمد مع تدقيق صارم للمبالغ والعملة
    */
-  public registerMasterRemittance(rem: RemittanceMasterRecord): { success: boolean; error?: string; record?: RemittanceMasterRecord } {
-    if (!rem.transferNumber || typeof rem.transferNumber !== 'string' || !rem.transferNumber.trim()) {
-      return { success: false, error: 'رقم الحوالة إلزامي لتسجيل الحوالة في النظام المركزي.' };
+  public registerMasterRemittance(rem: RemittanceMasterRecord): {
+    success: boolean;
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+    record?: RemittanceMasterRecord;
+    replayed?: boolean;
+  } {
+    if (!rem || typeof rem !== 'object') {
+      return { success: false, error: 'بيانات الحوالة غير صالحة.' };
+    }
+    if (typeof rem.transferNumber !== 'string' || !rem.transferNumber.trim() ||
+        rem.transferNumber.trim().length > 64 ||
+        !/^[A-Za-z0-9][A-Za-z0-9-]{2,63}$/.test(rem.transferNumber.trim())) {
+      return { success: false, error: 'رقم الحوالة إلزامي ويجب أن يكون من 3 إلى 64 حرفاً/رقماً أو شرطة.' };
     }
 
     const cleanNum = rem.transferNumber.trim().toUpperCase();
-    if (this.masterRemittances.has(cleanNum)) {
+    if (rem.direction !== 'incoming' && rem.direction !== 'outgoing') {
+      return { success: false, error: 'اتجاه الحوالة غير صالح.' };
+    }
+    if (typeof rem.amount !== 'number' || !Number.isFinite(rem.amount) ||
+        rem.amount <= 0 || Math.abs(rem.amount * 1000 - Math.round(rem.amount * 1000)) > 1e-8) {
+      return { success: false, error: 'مبلغ الحوالة يجب أن يكون موجباً وصالحاً حتى ثلاث منازل عشرية.' };
+    }
+    if (typeof rem.currency !== 'string' || !SUPPORTED_CURRENCIES.includes(rem.currency as CurrencyCode)) {
+      return { success: false, error: `العملة (${String(rem.currency)}) غير مدعومة.` };
+    }
+    if (typeof rem.senderName !== 'string' || !rem.senderName.trim() || rem.senderName.trim().length > 160 ||
+        typeof rem.recipientName !== 'string' || !rem.recipientName.trim() || rem.recipientName.trim().length > 160 ||
+        typeof rem.networkName !== 'string' || !rem.networkName.trim() || rem.networkName.trim().length > 100) {
+      return { success: false, error: 'اسم المرسل والمستفيد والشبكة حقول إلزامية وبأطوال صالحة.' };
+    }
+    const senderPhone = typeof rem.senderPhone === 'string' ? rem.senderPhone.trim() : '';
+    const recipientPhone = typeof rem.recipientPhone === 'string' ? rem.recipientPhone.trim() : '';
+    if (senderPhone.length > 32 || recipientPhone.length > 32) {
+      return { success: false, error: 'رقم هاتف المرسل أو المستفيد أطول من الحد المسموح.' };
+    }
+
+    const feeAmount = rem.feeAmount;
+    if (typeof feeAmount !== 'number' || !Number.isFinite(feeAmount) || feeAmount < 0 ||
+        Math.abs(feeAmount * 1000 - Math.round(feeAmount * 1000)) > 1e-8) {
+      return { success: false, error: 'العمولة يجب أن تكون صفراً أو مبلغاً موجباً حتى ثلاث منازل عشرية.' };
+    }
+    const expectedTotal = rem.amount + feeAmount;
+    if (typeof rem.totalPaid !== 'number' || !Number.isFinite(rem.totalPaid) ||
+        Math.abs(rem.totalPaid - expectedTotal) > 0.001) {
+      return { success: false, error: 'إجمالي المبلغ لا يساوي أصل الحوالة مضافاً إليه العمولة.' };
+    }
+    if (typeof rem.branchName !== 'string' || !rem.branchName.trim() ||
+        typeof rem.tellerName !== 'string' || !rem.tellerName.trim()) {
+      return { success: false, error: 'بيانات الفرع ومنفذ التسجيل مطلوبة.' };
+    }
+    const notes = typeof rem.notes === 'string' ? rem.notes.trim() : '';
+    if (notes.length > 500) {
+      return { success: false, error: 'ملاحظات الحوالة تتجاوز الحد المسموح.' };
+    }
+
+    const existing = this.masterRemittances.get(cleanNum);
+    if (existing) {
+      const sameRequest =
+        existing.direction === rem.direction &&
+        existing.senderName === rem.senderName.trim() &&
+        existing.senderPhone === senderPhone &&
+        existing.recipientName === rem.recipientName.trim() &&
+        existing.recipientPhone === recipientPhone &&
+        existing.networkName === rem.networkName.trim() &&
+        existing.amount === rem.amount &&
+        existing.currency === rem.currency &&
+        existing.feeAmount === feeAmount &&
+        existing.totalPaid === expectedTotal &&
+        existing.branchName === rem.branchName.trim() &&
+        existing.tellerName === rem.tellerName.trim() &&
+        (existing.tellerRole || '') === (rem.tellerRole || '') &&
+        (existing.notes || '') === notes;
+      if (!sameRequest) {
+        return {
+          success: false,
+          error: `رقم الحوالة (${cleanNum}) مسجل مسبقاً ببيانات مختلفة. لم يتم إنشاء سجل جديد.`,
+        };
+      }
+      return { success: true, record: existing, replayed: true };
+    }
+
+    if (this.registeredNumbers.has(cleanNum)) {
       return {
         success: false,
-        error: `رفض النظام: الحوالة رقم ${cleanNum} مسجلة مسبقاً في السجل المركزي (Unique Constraint).`,
+        error: `رقم الحوالة (${cleanNum}) محجوز مسبقاً دون سجل حوالة مطابق. يلزم فحص الحجز السابق قبل التسجيل.`,
       };
     }
 
-    // M1: التحقق من إيجابية المبلغ وعدم تمرير مبالغ سالبة أو صفرية
-    if (typeof rem.amount !== 'number' || rem.amount <= 0 || !Number.isFinite(rem.amount)) {
-      return { success: false, error: 'مبلغ الحوالة يجب أن يكون رقماً موجباً أكبر من الصفر.' };
+    if (serverAccountingEngine.isFinancialWriteBlocked()) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة. أوقف النظام ولا تسجل حوالة جديدة حتى مطابقة الدفاتر.',
+      };
     }
 
-    // M1: التحقق من صحة العملة
-    if (!SUPPORTED_CURRENCIES.includes(rem.currency as CurrencyCode)) {
-      return { success: false, error: `العملة (${rem.currency}) غير مدعومة في نظام الصرافة.` };
-    }
-
-    // M2: التحقق من اسم المستفيد
-    if (!rem.recipientName || typeof rem.recipientName !== 'string' || !rem.recipientName.trim()) {
-      return { success: false, error: 'اسم المستفيد إلزامي لتسجيل الحوالة.' };
-    }
-
+    const createdAt = getYemenDateTimeString();
     const sanitizedRem: RemittanceMasterRecord = {
-      ...rem,
+      id: `rem-master-${crypto.randomUUID()}`,
       transferNumber: cleanNum,
+      direction: rem.direction,
+      status: 'available',
+      senderName: rem.senderName.trim(),
+      senderPhone,
+      recipientName: rem.recipientName.trim(),
+      recipientPhone,
+      networkName: rem.networkName.trim(),
       amount: rem.amount,
       currency: rem.currency,
-      status: 'available', // C2: إجبار الحالة على available من الخادم ومنع التلاعب
-      direction: rem.direction === 'outgoing' ? 'outgoing' : 'incoming',
-      createdAt: rem.createdAt || getYemenDateTimeString(),
+      feeAmount,
+      totalPaid: expectedTotal,
+      branchName: rem.branchName.trim(),
+      tellerName: rem.tellerName.trim(),
+      tellerRole: rem.tellerRole,
+      createdAt,
+      notes,
+      voucherNumber: `V-INC-${crypto.randomUUID().toUpperCase()}`,
+    };
+
+    const transaction = serverAccountingEngine.beginFinancialTransaction({
+      operation: 'remittance_master_registration',
+      referenceId: cleanNum,
+      amount: sanitizedRem.amount,
+      currency: sanitizedRem.currency as CurrencyCode,
+    });
+    if (!transaction.success || !transaction.transactionId) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: transaction.error || 'تعذر بدء معاملة تسجيل الحوالة الآمنة.',
+      };
+    }
+
+    const reservation = {
+      number: cleanNum,
+      registeredAt: createdAt,
+      registeredBy: sanitizedRem.tellerName,
+      mode: rem.numberingMode || 'manual',
+    };
+    const auditRecord: RemittanceAuditRecord = {
+      id: `audit-register-${crypto.randomUUID()}`,
+      category: 'financial',
+      action: sanitizedRem.direction === 'incoming' ? 'تسجيل حوالة واردة في السجل المركزي' : 'تسجيل حوالة صادرة في السجل المركزي',
+      details: `تم تسجيل الحوالة ${cleanNum} بمبلغ ${sanitizedRem.amount} ${sanitizedRem.currency} للمستفيد ${sanitizedRem.recipientName}`,
+      performedBy: sanitizedRem.tellerName,
+      userRole: sanitizedRem.tellerRole || 'owner',
+      timestamp: createdAt,
+      newValue: JSON.stringify({
+        transferNumber: cleanNum,
+        direction: sanitizedRem.direction,
+        amount: sanitizedRem.amount,
+        currency: sanitizedRem.currency,
+        status: 'available',
+      }),
     };
 
     this.masterRemittances.set(cleanNum, sanitizedRem);
-    this.saveMasterRemittancesToDisk();
+    this.registeredNumbers.set(cleanNum, reservation);
+    this.auditLogs.unshift(auditRecord);
 
-    if (!this.registeredNumbers.has(cleanNum)) {
-      this.registeredNumbers.set(cleanNum, {
-        number: cleanNum,
-        registeredAt: sanitizedRem.createdAt,
-        registeredBy: sanitizedRem.tellerName || 'النظام',
-        mode: sanitizedRem.numberingMode || 'automatic',
-      });
+    try {
+      this.saveMasterRemittancesToDisk();
       this.saveNumbersToDisk();
+      this.saveAuditLogsToDisk();
+    } catch (error: any) {
+      this.masterRemittances.delete(cleanNum);
+      this.registeredNumbers.delete(cleanNum);
+      this.auditLogs.shift();
+      serverAccountingEngine.markFinancialRecoveryRequired();
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ أحد سجلات تسجيل الحوالة. لا تعاود التسجيل؛ أوقف النظام وطابق سجل الحوالات والأرقام والتدقيق. ${error.message}`,
+      };
     }
 
-    return { success: true, record: sanitizedRem };
+    const completed = serverAccountingEngine.completeFinancialTransaction(transaction.transactionId);
+    if (!completed.success) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        record: sanitizedRem,
+        error: completed.error || 'تعذر إغلاق علامة تسجيل الحوالة؛ يلزم فحص الدفاتر.',
+      };
+    }
+
+    return { success: true, record: sanitizedRem, replayed: false };
   }
 
   public getMasterRemittance(transferNumber: string): RemittanceMasterRecord | undefined {
