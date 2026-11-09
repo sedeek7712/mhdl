@@ -19,6 +19,7 @@ import {
 } from './src/server/services/authService.js';
 import { serverAccountingEngine, CurrencyCode } from './src/server/services/serverAccountingEngine.js';
 import { serverExchangeRateRegistry } from './src/server/services/serverExchangeRateRegistry.js';
+import { serverCashBoxShiftRegistry } from './src/server/services/serverCashBoxShiftRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,6 +108,29 @@ async function startServer() {
         errorCode: 'FINANCIAL_RECOVERY_REQUIRED',
         doNotRetry: true,
         error: 'النظام في وضع حماية مالية بعد فشل حفظ غير محسوم. توقفت كل العمليات المالية حتى مطابقة الملفات يدوياً.',
+      });
+    }
+    next();
+  });
+
+  // A cashier drawer cannot process money unless the server confirms an active shift.
+  // This check is intentionally server-side; localStorage state is never authoritative.
+  const shiftRequiredWritePaths = new Set([
+    '/api/remittances/payout',
+    '/api/remittances/outgoing',
+    '/api/remittances/incoming',
+    '/api/accounting/exchanges',
+    '/api/accounting/fund-drawer',
+    '/api/accounting/expenses',
+    '/api/accounting/internal-transfers',
+  ]);
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && shiftRequiredWritePaths.has(req.path) &&
+        !serverCashBoxShiftRegistry.getActiveShift()) {
+      return res.status(409).json({
+        success: false,
+        errorCode: 'CASHIER_SHIFT_REQUIRED',
+        error: 'لا توجد وردية مفتوحة على الخادم. افتح وردية جديدة قبل تنفيذ أي عملية مالية.',
       });
     }
     next();
@@ -1008,6 +1032,67 @@ async function startServer() {
         message: 'تم تسجيل الحوالة بنجاح في السجل المركزي المعتمد.',
         record: regResult.record,
       });
+    }
+  );
+
+  // Server-authoritative cashier shift lifecycle. Expected balances always come from the ledger.
+  app.get('/api/accounting/shifts/active', requireAuth, (_req: Request, res: Response) => {
+    return res.status(200).json({
+      success: true,
+      activeShift: serverCashBoxShiftRegistry.getActiveShift(),
+      history: serverCashBoxShiftRegistry.getHistory(),
+    });
+  });
+
+  app.post(
+    '/api/accounting/shifts/open',
+    requireAuth,
+    requireRoles(['owner']),
+    (req: any, res: Response) => {
+      const actor = req.user as AuthenticatedUser;
+      const cashier = serverAccountingEngine.getAccounts().find((account) => account.id === 'acc-1102');
+      if (!cashier) {
+        return res.status(503).json({ success: false, error: 'حساب صندوق الكاشير غير موجود في دفتر الخادم.' });
+      }
+      const result = serverCashBoxShiftRegistry.openShift({
+        idempotencyKey: req.body?.idempotencyKey,
+        balances: cashier.balances,
+        actorId: actor.id,
+        actorName: actor.name,
+        actorRole: actor.role,
+        boxId: cashier.id,
+        boxNameAr: cashier.nameAr,
+      });
+      if (!result.success) {
+        return res.status(result.errorCode === 'SHIFT_SAVE_FAILED' ? 500 : 409).json(result);
+      }
+      return res.status(200).json({ ...result, message: result.replayed ? 'الوردية مفتوحة بالفعل؛ أُعيدت النتيجة السابقة.' : 'تم فتح الوردية واعتماد رصيدها الافتتاحي من دفتر الخادم.' });
+    }
+  );
+
+  app.post(
+    '/api/accounting/shifts/close',
+    requireAuth,
+    requireRoles(['owner']),
+    (req: any, res: Response) => {
+      const actor = req.user as AuthenticatedUser;
+      const cashier = serverAccountingEngine.getAccounts().find((account) => account.id === 'acc-1102');
+      if (!cashier) {
+        return res.status(503).json({ success: false, error: 'حساب صندوق الكاشير غير موجود في دفتر الخادم.' });
+      }
+      const result = serverCashBoxShiftRegistry.closeShift({
+        idempotencyKey: req.body?.idempotencyKey,
+        shiftId: req.body?.shiftId,
+        expectedBalances: cashier.balances,
+        actualBalances: req.body?.actualBalances,
+        notes: req.body?.notes,
+        actorId: actor.id,
+        actorName: actor.name,
+      });
+      if (!result.success) {
+        return res.status(result.errorCode === 'SHIFT_SAVE_FAILED' ? 500 : 409).json(result);
+      }
+      return res.status(200).json({ ...result, message: result.replayed ? 'تم استرجاع محضر الإقفال السابق دون إنشاء محضر جديد.' : 'تم حفظ محضر الجرد وإقفال الوردية على الخادم.' });
     }
   );
 
