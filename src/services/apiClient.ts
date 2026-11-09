@@ -221,6 +221,42 @@ class ApiClient {
     }
   }
 
+  public async executeOperatingExpense(payload: {
+    expenseType: string;
+    amount: number;
+    currency: string;
+    notes: string;
+    idempotencyKey: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    message?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء اعتماد المصروف؛ قد تكون النتيجة غير محسومة.',
+      };
+    }
+  }
+
   public async executeInternalTransfer(payload: {
     fromAccountId: string;
     toAccountId: string;
