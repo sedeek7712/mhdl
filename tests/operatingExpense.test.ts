@@ -108,6 +108,13 @@ test('operating expense posts once to the server ledger and safely replays', asy
     assert.equal(mismatchedReplay.success, false);
     assert.equal(serverAccountingEngine.getJournalEntries().length, 1);
 
+    const changedDescriptionReplay = serverAccountingEngine.executeOperatingExpense({
+      ...request,
+      notes: 'وصف مختلف بنفس المفتاح',
+    });
+    assert.equal(changedDescriptionReplay.success, false);
+    assert.equal(serverAccountingEngine.getJournalEntries().length, 1);
+
     const insufficient = serverAccountingEngine.executeOperatingExpense({
       ...request,
       amount: 1000,
