@@ -469,6 +469,197 @@ class ServerAccountingEngine {
   /**
    * تغذية صندوق الكاشير من الخزينة المركزية بقيد مزدوج موثق
    */
+  public executeInternalTransfer(params: {
+    fromAccountId: string;
+    toAccountId: string;
+    amount: number;
+    currency: CurrencyCode;
+    description: string;
+    operatorId: string;
+    operatorName: string;
+    branchId?: string;
+    idempotencyKey: string;
+  }): {
+    success: boolean;
+    journalEntry?: ServerJournalEntry;
+    accounts?: ServerAccount[];
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+  } {
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    if (typeof params.idempotencyKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(params.idempotencyKey)) {
+      return { success: false, error: 'معرف المناقلة غير صالح. أعد فتح الطلب من الواجهة.' };
+    }
+
+    if (this.storageWriteBlocked || this.activeTransactionId ||
+        fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة أو قيد المعالجة. أوقف النظام ولا تنفذ مناقلة جديدة حتى مطابقة الدفاتر.',
+      };
+    }
+
+    const priorEntry = this.journalEntries.find((entry) =>
+      entry.idempotencyKey === params.idempotencyKey &&
+      entry.referenceType === 'internal_transfer' &&
+      entry.descriptionAr.startsWith('مناقلة داخلية:')
+    );
+    if (priorEntry) {
+      const debitLine = priorEntry.lines.find((line) =>
+        line.accountId === params.toAccountId &&
+        line.currency === params.currency &&
+        Math.abs(line.debit - params.amount) <= 0.001 &&
+        line.credit === 0
+      );
+      const creditLine = priorEntry.lines.find((line) =>
+        line.accountId === params.fromAccountId &&
+        line.currency === params.currency &&
+        Math.abs(line.credit - params.amount) <= 0.001 &&
+        line.debit === 0
+      );
+      const sameDescription = priorEntry.descriptionAr.endsWith(params.description.trim());
+
+      if (!debitLine || !creditLine || !sameDescription) {
+        return {
+          success: false,
+          error: 'معرف المناقلة مستخدم سابقاً ببيانات مختلفة. رُفض الطلب ولم تُنفذ حركة جديدة.',
+        };
+      }
+      return {
+        success: true,
+        journalEntry: priorEntry,
+        accounts: this.getAccounts(),
+      };
+    }
+
+    const fromAccount = this.accounts.get(params.fromAccountId);
+    const toAccount = this.accounts.get(params.toAccountId);
+    if (!fromAccount || !toAccount) {
+      return { success: false, error: 'أحد الحسابين المحددين غير موجود في دليل الحسابات المعتمد.' };
+    }
+    if (fromAccount.id === toAccount.id) {
+      return { success: false, error: 'لا يمكن إجراء مناقلة إلى الحساب نفسه.' };
+    }
+    if (fromAccount.type !== 'asset' || toAccount.type !== 'asset') {
+      return { success: false, error: 'المناقلة الداخلية مسموحة بين حسابات الأصول فقط في هذا المسار.' };
+    }
+    if (!currencies.includes(params.currency)) {
+      return { success: false, error: 'العملة المحددة غير مدعومة.' };
+    }
+    if (typeof params.amount !== 'number' || !Number.isFinite(params.amount) ||
+        params.amount <= 0 || Math.round(params.amount * 1000) !== params.amount * 1000) {
+      return { success: false, error: 'المبلغ يجب أن يكون موجباً وصالحاً حتى ثلاث منازل عشرية.' };
+    }
+    if (typeof params.description !== 'string' || !params.description.trim() ||
+        params.description.trim().length > 240) {
+      return { success: false, error: 'وصف المناقلة إلزامي ولا يتجاوز 240 حرفاً.' };
+    }
+    if (typeof params.operatorId !== 'string' || !params.operatorId.trim() ||
+        typeof params.operatorName !== 'string' || !params.operatorName.trim()) {
+      return { success: false, error: 'بيانات منفذ المناقلة غير صالحة.' };
+    }
+
+    const sourceBalance = fromAccount.balances[params.currency];
+    if (typeof sourceBalance !== 'number' || !Number.isFinite(sourceBalance) ||
+        sourceBalance < params.amount) {
+      return {
+        success: false,
+        error: `رصيد الحساب ${fromAccount.nameAr} غير كافٍ لتنفيذ المناقلة.`,
+      };
+    }
+
+    const started = this.beginFinancialTransaction({
+      operation: 'internal_transfer',
+      referenceId: `${params.fromAccountId}->${params.toAccountId}`,
+      amount: params.amount,
+      currency: params.currency,
+      actorId: params.operatorId,
+    });
+    if (!started.success || !started.transactionId) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: started.error || 'تعذر بدء المعاملة المالية الآمنة.',
+      };
+    }
+
+    const previousSourceBalance = fromAccount.balances[params.currency];
+    const previousTargetBalance = toAccount.balances[params.currency] || 0;
+    fromAccount.balances[params.currency] = previousSourceBalance - params.amount;
+    toAccount.balances[params.currency] = previousTargetBalance + params.amount;
+
+    const yemenTime = getYemenDateTimeString();
+    const [date, time] = yemenTime.split(' ');
+    const voucherNumber = `V-TRF-${crypto.randomUUID().toUpperCase()}`;
+    const entryNumber = `JV-TRF-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const journalEntry: ServerJournalEntry = {
+      id: `jv-trf-${crypto.randomUUID()}`,
+      entryNumber,
+      date,
+      time,
+      descriptionAr: `مناقلة داخلية: ${params.description.trim()}`,
+      lines: [
+        {
+          accountId: toAccount.id,
+          accountNameAr: toAccount.nameAr,
+          currency: params.currency,
+          debit: params.amount,
+          credit: 0,
+          note: 'استلام مناقلة داخلية',
+        },
+        {
+          accountId: fromAccount.id,
+          accountNameAr: fromAccount.nameAr,
+          currency: params.currency,
+          debit: 0,
+          credit: params.amount,
+          note: 'إرسال مناقلة داخلية',
+        },
+      ],
+      referenceType: 'internal_transfer',
+      referenceId: voucherNumber,
+      branchId: params.branchId || 'br-main',
+      createdBy: params.operatorName,
+      isBalanced: true,
+      idempotencyKey: params.idempotencyKey,
+      voucherNumber,
+    };
+
+    this.journalEntries.unshift(journalEntry);
+    try {
+      safeAtomicWriteJson(ACCOUNTS_FILE, Array.from(this.accounts.values()));
+      safeAtomicWriteJson(JOURNAL_FILE, this.journalEntries);
+    } catch (error: any) {
+      fromAccount.balances[params.currency] = previousSourceBalance;
+      toAccount.balances[params.currency] = previousTargetBalance;
+      this.journalEntries.shift();
+      this.storageWriteBlocked = true;
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ المناقلة في الدفاتر. لا تعاود الطلب؛ أوقف النظام وطابق الحسابات والقيود. ${error.message}`,
+      };
+    }
+
+    const completed = this.completeFinancialTransaction(started.transactionId);
+    if (!completed.success) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        journalEntry,
+        error: completed.error || 'تعذر إغلاق علامة المعاملة المالية؛ يلزم فحص الدفاتر.',
+      };
+    }
+
+    return {
+      success: true,
+      journalEntry,
+      accounts: this.getAccounts(),
+    };
+  }
+
   public fundCashierDrawer(params: {
     fromAccountId: string;
     toAccountId: string;
