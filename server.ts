@@ -15,6 +15,8 @@ import {
   requireRoles,
   createRateLimiter,
   authService,
+  sqliteAuthRouter,
+  closeAuthService,
   AuthenticatedUser,
 } from './src/server/services/authService.js';
 import { serverAccountingEngine, CurrencyCode } from './src/server/services/serverAccountingEngine.js';
@@ -83,7 +85,7 @@ export async function startServer(options: { port?: number; host?: string; useVi
       }
     }
 
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hub-Signature-256, X-API-Token');
 
     if (req.method === 'OPTIONS') {
@@ -141,79 +143,86 @@ export async function startServer(options: { port?: number; host?: string; useVi
     next();
   });
 
-  // =========================================================================
-  // Authentication & Session Endpoints (FIND-002, FIND-010, H5)
-  // =========================================================================
-  app.post('/api/auth/login', (req: Request, res: Response) => {
-    const { roleOrUsername, pin } = req.body || {};
-    if (typeof roleOrUsername !== 'string' || !roleOrUsername.trim() ||
-        typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
-      return res.status(400).json({
-        success: false,
-        error: 'اسم المستخدم ورمز PIN المكوّن من 6 أرقام مطلوبان لتسجيل الدخول.',
+  // Choose one complete auth backend. The default remains the existing JSON service.
+  if (sqliteAuthRouter) {
+    app.use('/api/auth', sqliteAuthRouter);
+  } else {
+    // =========================================================================
+    // Authentication & Session Endpoints (FIND-002, FIND-010, H5)
+    // =========================================================================
+    app.post('/api/auth/login', (req: Request, res: Response) => {
+      const { roleOrUsername, pin } = req.body || {};
+      if (typeof roleOrUsername !== 'string' || !roleOrUsername.trim() ||
+          typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
+        return res.status(400).json({
+          success: false,
+          error: 'اسم المستخدم ورمز PIN المكوّن من 6 أرقام مطلوبان لتسجيل الدخول.',
+        });
+      }
+  
+      const clientIp = (req.ip || req.socket.remoteAddress || '127.0.0.1').toString();
+      const authResult = authService.authenticateUser(roleOrUsername, pin, clientIp);
+      if (!authResult.success) {
+        return res.status(authResult.locked ? 429 : 401).json({
+          success: false,
+          error: authResult.error || 'بيانات الاعتماد غير صحيحة أو المستخدم غير موجود',
+        });
+      }
+  
+      return res.status(200).json({
+        success: true,
+        token: authResult.token,
+        user: authResult.user,
       });
-    }
-
-    const clientIp = (req.ip || req.socket.remoteAddress || '127.0.0.1').toString();
-    const authResult = authService.authenticateUser(roleOrUsername, pin, clientIp);
-    if (!authResult.success) {
-      return res.status(authResult.locked ? 429 : 401).json({
-        success: false,
-        error: authResult.error || 'بيانات الاعتماد غير صحيحة أو المستخدم غير موجود',
+    });
+  
+    app.post('/api/auth/change-pin', requireAuth, (req: any, res: Response) => {
+      const { currentPin, newPin } = req.body || {};
+      const result = authService.changePin(req.user.username, currentPin, newPin);
+      return res.status(result.success ? 200 : 400).json(result);
+    });
+  
+    // Owner-managed employee accounts. Staff roles authenticate with their own username and PIN.
+    app.post('/api/auth/users', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
+      const result = authService.createUser(req.body || {});
+      return res.status(result.success ? 201 : 400).json(result);
+    });
+  
+    app.patch('/api/auth/users/:userId/status', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
+      const { isActive } = req.body || {};
+      const result = authService.setUserActive(req.params.userId, isActive);
+      return res.status(result.success ? 200 : 400).json(result);
+    });
+  
+    app.post('/api/auth/users/:userId/reset-pin', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
+      const { newPin } = req.body || {};
+      const result = authService.resetUserPin(req.params.userId, newPin);
+      return res.status(result.success ? 200 : 400).json(result);
+    });
+  
+    app.get('/api/auth/session', requireAuth, (req: any, res: Response) => {
+      return res.status(200).json({
+        success: true,
+        user: req.user,
       });
-    }
-
-    return res.status(200).json({
-      success: true,
-      token: authResult.token,
-      user: authResult.user,
     });
-  });
-
-  app.post('/api/auth/change-pin', requireAuth, (req: any, res: Response) => {
-    const { currentPin, newPin } = req.body || {};
-    const result = authService.changePin(req.user.username, currentPin, newPin);
-    return res.status(result.success ? 200 : 400).json(result);
-  });
-
-  // Owner-managed employee accounts. Staff roles authenticate with their own username and PIN.
-  app.post('/api/auth/users', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
-    const result = authService.createUser(req.body || {});
-    return res.status(result.success ? 201 : 400).json(result);
-  });
-
-  app.patch('/api/auth/users/:userId/status', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
-    const { isActive } = req.body || {};
-    const result = authService.setUserActive(req.params.userId, isActive);
-    return res.status(result.success ? 200 : 400).json(result);
-  });
-
-  app.post('/api/auth/users/:userId/reset-pin', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
-    const { newPin } = req.body || {};
-    const result = authService.resetUserPin(req.params.userId, newPin);
-    return res.status(result.success ? 200 : 400).json(result);
-  });
-
-  app.get('/api/auth/session', requireAuth, (req: any, res: Response) => {
-    return res.status(200).json({
-      success: true,
-      user: req.user,
+  
+    app.get('/api/auth/security-logs', requireAuth, requireRoles(['owner', 'general_manager', 'auditor']), (_req: Request, res: Response) => {
+      const logs = authService.getSecurityLogs();
+      return res.status(200).json({
+        success: true,
+        logs,
+      });
     });
-  });
-
-  app.get('/api/auth/security-logs', requireAuth, requireRoles(['owner', 'general_manager', 'auditor']), (_req: Request, res: Response) => {
-    const logs = authService.getSecurityLogs();
-    return res.status(200).json({
-      success: true,
-      logs,
+  
+    // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
+    app.get('/api/auth/users', requireAuth, requireRoles(['owner', 'general_manager']), (_req: Request, res: Response) => {
+      const users = authService.getAllPublicUsers();
+      return res.status(200).json({ success: true, users });
     });
-  });
-
-  // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
-  app.get('/api/auth/users', requireAuth, requireRoles(['owner', 'general_manager']), (_req: Request, res: Response) => {
-    const users = authService.getAllPublicUsers();
-    return res.status(200).json({ success: true, users });
-  });
+  
+  
+  }
 
   // =========================================================================
   // FIND-008: Sanitized Meta Configuration Status (No reconnaissance leakage)
@@ -1502,6 +1511,7 @@ export async function startServer(options: { port?: number; host?: string; useVi
   });
 
   const httpServer = http.createServer(app);
+  httpServer.once('close', closeAuthService);
 
   // Mount Vite development server as middleware, or serve dist in production
   if (options.useVite === false || process.env.NODE_ENV === 'test') {
