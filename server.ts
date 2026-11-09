@@ -643,7 +643,6 @@ async function startServer() {
         clientAmount,
         clientCurrency,
         cashierDrawerBalance,
-        voucherNumber,
         managerOverride,
         managerOverrideReason,
       } = req.body;
@@ -680,7 +679,6 @@ async function startServer() {
         clientAmount: typeof clientAmount === 'number' ? clientAmount : (typeof amount === 'number' ? amount : undefined),
         clientCurrency: clientCurrency || currency,
         cashierDrawerBalance: typeof cashierDrawerBalance === 'number' ? cashierDrawerBalance : undefined,
-        voucherNumber,
         managerOverride: Boolean(managerOverride),
         managerOverrideReason: managerOverrideReason || (managerOverride ? 'موافقة استثنائية من المدير المباشر' : undefined),
       });
