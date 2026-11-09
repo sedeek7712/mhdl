@@ -6,6 +6,7 @@ import {
   insertBalancedJournalEntry,
   insertSqliteAccount,
   insertSqliteRemittance,
+  toScaledInteger,
   type SqliteJournalEntryInput,
   type SqliteRemittanceInput,
 } from '../src/server/db/sqliteFinancialRepository.js';
@@ -259,15 +260,7 @@ test('remittance insertion rolls back reservation when the remittance row violat
 });
 
 test('scaled decimal conversion accepts thousandths and millionths without float columns', () => {
-  const { toScaledInteger } = requireRepositoryHelpers();
   assert.equal(toScaledInteger(12.345, 1000), 12_345);
   assert.equal(toScaledInteger(535.123456, 1_000_000), 535_123_456);
   assert.throws(() => toScaledInteger(12.3456, 1000), /precision/);
 });
-
-function requireRepositoryHelpers() {
-  // This static import helper keeps this test file free of runtime dynamic imports.
-  return repositoryHelpers;
-}
-
-import * as repositoryHelpers from '../src/server/db/sqliteFinancialRepository.js';
