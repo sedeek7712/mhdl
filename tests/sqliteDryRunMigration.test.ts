@@ -19,6 +19,14 @@ test('checked-in mock JSON dataset imports into disposable SQLite and leaves eve
   assert.equal(report.validation.sourceFilesUnchanged, true);
   assert.equal(report.validation.temporaryDatabaseRemoved, true);
   assert.equal(report.validation.openingBalanceReconciliation, 'NOT_AVAILABLE');
+  // PASS means the core dry-run completed; it must not imply full cutover parity.
+  assert.equal(report.validation.operationalDataImported, false);
+  assert.equal(report.validation.voucherArchivesVerified, true);
+  assert.equal(report.validation.completeSystemParity, false);
+  assert.equal(
+    report.warnings.some((warning) => warning.includes('full system parity is incomplete')),
+    true
+  );
 
   assert.equal(report.imported.accounts, 5);
   assert.equal(report.imported.journalEntries, 2);
