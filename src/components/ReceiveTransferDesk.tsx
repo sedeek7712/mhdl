@@ -20,7 +20,7 @@ interface ReceiveTransferDeskProps {
     amount: number;
     currency: CurrencyCode;
     notes?: string;
-  }) => Remittance;
+  }) => Promise<Remittance | null>;
   onFundDrawer?: (currency: CurrencyCode, amount: number) => void;
 }
 
@@ -47,36 +47,62 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
 
   // Incoming Remittance Quick Register Modal
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
+  const [isSubmittingIncoming, setIsSubmittingIncoming] = useState(false);
   const [regNetwork, setRegNetwork] = useState('شبكة النجم');
-  const [regTransferNum, setRegTransferNum] = useState(`TR-${Math.floor(100000 + Math.random() * 900000)}`);
-  const [regSenderName, setRegSenderName] = useState('محمد قاسم سالم النماري');
-  const [regSenderPhone, setRegSenderPhone] = useState('771234567');
-  const [regRecipientName, setRegRecipientName] = useState('صديق علي محمد الفتاحي');
-  const [regRecipientPhone, setRegRecipientPhone] = useState('771280940');
-  const [regAmount, setRegAmount] = useState(5000);
+  const [regTransferNum, setRegTransferNum] = useState('');
+  const [regSenderName, setRegSenderName] = useState('');
+  const [regSenderPhone, setRegSenderPhone] = useState('');
+  const [regRecipientName, setRegRecipientName] = useState('');
+  const [regRecipientPhone, setRegRecipientPhone] = useState('');
+  const [regAmount, setRegAmount] = useState(0);
   const [regCurrency, setRegCurrency] = useState<CurrencyCode>('SAR');
-  const [regNotes, setRegNotes] = useState('حوالة واردة للتسليم الفوري');
+  const [regNotes, setRegNotes] = useState('');
 
   // Cashier Drawer Account
   const cashierBox = accounts.find((a) => a.id === 'acc-1102') || accounts[1];
 
-  const handleRegisterIncoming = (e: React.FormEvent) => {
+  const handleRegisterIncoming = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!onCreateIncomingRemittance) return;
-    const newRem = onCreateIncomingRemittance({
-      transferNumber: regTransferNum.trim() || `TR-${Math.floor(100000 + Math.random() * 900000)}`,
-      networkName: regNetwork,
-      senderName: regSenderName,
-      senderPhone: regSenderPhone,
-      recipientName: regRecipientName,
-      recipientPhone: regRecipientPhone,
+    if (!onCreateIncomingRemittance || isSubmittingIncoming) return;
+
+    const request = {
+      transferNumber: regTransferNum.trim(),
+      networkName: regNetwork.trim(),
+      senderName: regSenderName.trim(),
+      senderPhone: regSenderPhone.trim(),
+      recipientName: regRecipientName.trim(),
+      recipientPhone: regRecipientPhone.trim(),
       amount: Number(regAmount),
       currency: regCurrency,
-      notes: regNotes,
-    });
-    setSelectedRemittance(newRem);
-    setRecipientActualName(newRem.recipientName);
-    setIsRegisterModalOpen(false);
+      notes: regNotes.trim(),
+    };
+    if (!request.transferNumber || !request.networkName || !request.senderName ||
+        !request.recipientName || !request.recipientPhone ||
+        !Number.isFinite(request.amount) || request.amount <= 0) {
+      toast.warning('أكمل رقم الحوالة وبيانات المرسل والمستفيد والمبلغ قبل التسجيل.');
+      return;
+    }
+
+    setIsSubmittingIncoming(true);
+    try {
+      const registered = await onCreateIncomingRemittance(request);
+      if (!registered) return;
+      setSelectedRemittance(registered);
+      setRecipientActualName(registered.recipientName);
+      setIsRegisterModalOpen(false);
+      setRegTransferNum('');
+      setRegSenderName('');
+      setRegSenderPhone('');
+      setRegRecipientName('');
+      setRegRecipientPhone('');
+      setRegAmount(0);
+      setRegNotes('');
+      toast.success('تم اعتماد الحوالة الواردة', `الحوالة ${registered.transferNumber} أصبحت متاحة للتحقق والصرف.`);
+    } catch (error: any) {
+      toast.error('تعذر تسجيل الحوالة الواردة', error.message || 'لم يتم تأكيد حفظ الحوالة من الخادم.');
+    } finally {
+      setIsSubmittingIncoming(false);
+    }
   };
 
   // Search logic: incoming remittances
@@ -505,7 +531,7 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
       {/* Quick Incoming Transfer Registration Modal */}
       {isRegisterModalOpen && (
         <div
-          onClick={(e) => { if (e.target === e.currentTarget) setIsRegisterModalOpen(false); }}
+          onClick={(e) => { if (!isSubmittingIncoming && e.target === e.currentTarget) setIsRegisterModalOpen(false); }}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto"
         >
           <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
@@ -515,7 +541,8 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
                 <h3 className="text-sm font-bold text-white">تسجيل وصول حوالة واردة جديدة للصرف</h3>
               </div>
               <button
-                onClick={() => setIsRegisterModalOpen(false)}
+                onClick={() => { if (!isSubmittingIncoming) setIsRegisterModalOpen(false); }}
+                disabled={isSubmittingIncoming}
                 aria-label="إغلاق"
                 className="w-10 h-10 min-w-[40px] flex items-center justify-center text-slate-400 hover:text-white rounded-xl bg-slate-800/80 hover:bg-slate-750 cursor-pointer transition-colors"
               >
@@ -544,6 +571,7 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
                   <label className="block text-slate-400 mb-1 font-medium">رقم الحوالة</label>
                   <input
                     type="text"
+                    placeholder="أدخل رقم الحوالة كما ورد من الشبكة"
                     value={regTransferNum}
                     onChange={(e) => setRegTransferNum(e.target.value)}
                     className="w-full bg-slate-850 border border-slate-700 rounded-xl px-3 py-2.5 min-h-[44px] text-white font-mono"
@@ -627,19 +655,32 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
                 </div>
               </div>
 
+              <div>
+                <label className="block text-slate-400 mb-1 font-medium">ملاحظات (اختياري)</label>
+                <input
+                  type="text"
+                  value={regNotes}
+                  onChange={(e) => setRegNotes(e.target.value)}
+                  maxLength={500}
+                  className="w-full bg-slate-850 border border-slate-700 rounded-xl px-3 py-2.5 min-h-[44px] text-white"
+                />
+              </div>
+
               <div className="pt-3 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 border-t border-slate-800">
                 <button
                   type="button"
                   onClick={() => setIsRegisterModalOpen(false)}
+                  disabled={isSubmittingIncoming}
                   className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
+                  disabled={isSubmittingIncoming || !regTransferNum.trim() || !regSenderName.trim() || !regRecipientName.trim() || !regRecipientPhone.trim() || !Number.isFinite(regAmount) || regAmount <= 0}
                   className="min-h-[44px] px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/30 cursor-pointer"
                 >
-                  قيد الحوالة وجلبها للصرف
+                  {isSubmittingIncoming ? 'جارٍ تسجيل الحوالة في الخادم...' : 'تسجيل الحوالة والتحقق منها'}
                 </button>
               </div>
             </form>
