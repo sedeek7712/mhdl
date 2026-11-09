@@ -62,6 +62,7 @@ export interface ServerJournalEntry {
   createdBy: string;
   isBalanced: boolean;
   idempotencyKey?: string;
+  voucherNumber?: string;
 }
 
 class ServerAccountingEngine {
@@ -553,6 +554,7 @@ class ServerAccountingEngine {
       },
     ];
 
+    const voucherNumber = `V-FUND-${crypto.randomUUID().toUpperCase()}`;
     const newJournalEntry: ServerJournalEntry = {
       id: `jv-fund-${Date.now()}-${nextSeq}`,
       entryNumber,
@@ -561,10 +563,12 @@ class ServerAccountingEngine {
       descriptionAr: `تغذية صندوق من ${fromAcc.nameAr} إلى ${toAcc.nameAr}`,
       lines,
       referenceType: 'internal_transfer',
-      referenceId: entryNumber,
+      referenceId: voucherNumber,
       branchId: params.branchId || 'br-main',
       createdBy: params.operatorName,
       isBalanced: true,
+      idempotencyKey: params.idempotencyKey,
+      voucherNumber,
     };
 
     this.journalEntries.unshift(newJournalEntry);
