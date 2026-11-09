@@ -30,6 +30,10 @@ export interface WhatsAppVoucherSnapshot {
   branchName: string;
   tellerName: string;
   referenceNumber: string;
+  sourceJournalEntryId?: string;
+  ledgerVerifiedAt?: string;
+  ledgerVerificationStatus?: 'verified';
+  imageContentStatus?: 'client_rendered_unverified';
   generalNumber?: string;
   receivedAmount?: number;
   receivedCurrency?: string;
