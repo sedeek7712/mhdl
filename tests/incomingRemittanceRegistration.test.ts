@@ -143,7 +143,7 @@ test('incoming remittance registration is idempotent and leaves a recovery marke
       transferNumber: 'TR-100002',
     });
     assert.equal(reservedConflict.success, false);
-    assert.match(reservedConflict.error || '', /محجوزة مسبقاً/);
+    assert.match(reservedConflict.error || '', /محجوز مسبقاً/);
 
     Object.defineProperty(remittanceRegistry, 'saveNumbersToDisk', {
       configurable: true,
