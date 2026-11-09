@@ -15,7 +15,19 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../../data');
 const ACCOUNTS_FILE = path.resolve(DATA_DIR, 'accounts_ledger.json');
 const JOURNAL_FILE = path.resolve(DATA_DIR, 'journal_entries.json');
+const BASELINE_FILE = path.resolve(DATA_DIR, 'financial_baseline_approved.local.json');
 const PENDING_FINANCIAL_TRANSACTION_FILE = path.resolve(DATA_DIR, 'financial_transaction_pending.json');
+
+interface ApprovedFinancialBaseline {
+  schemaVersion: 1;
+  approvedAt: string;
+  approvedBy: string;
+  approvedByUserId: string;
+  openingBalances: Record<string, {
+    type: ServerAccount['type'];
+    balances: Record<CurrencyCode, number>;
+  }>;
+}
 
 export type CurrencyCode = 'YER_OLD' | 'YER_NEW' | 'SAR' | 'USD';
 
@@ -144,6 +156,74 @@ class ServerAccountingEngine {
           );
         })) {
       throw new Error('توقف آمن: ملف قيود اليومية يحتوي سجلات غير مكتملة أو قيوداً غير متوازنة حسب العملة.');
+    }
+
+    // Opening balances must be explicitly approved by the owner after physical cash/network reconciliation.
+    const baseline = safeReadJson<ApprovedFinancialBaseline>(BASELINE_FILE, null as any, {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!baseline || baseline.schemaVersion !== 1 ||
+        typeof baseline.approvedAt !== 'string' || !baseline.approvedAt.trim() ||
+        typeof baseline.approvedBy !== 'string' || !baseline.approvedBy.trim() ||
+        typeof baseline.approvedByUserId !== 'string' || !baseline.approvedByUserId.trim() ||
+        !baseline.openingBalances || typeof baseline.openingBalances !== 'object') {
+      throw new Error('توقف آمن: لم يتم اعتماد الأرصدة الافتتاحية. بعد مطابقة النقد الفعلي وكشوف الشبكات شغّل npm run setup:financial-baseline.');
+    }
+
+    const localUsers = safeReadJson<Array<{ id: string; name: string; role: string; isActive: boolean }>>(
+      path.resolve(DATA_DIR, 'system_users.local.json'),
+      [],
+      { failOnCorruption: true, failOnMissing: true }
+    );
+    if (localUsers.length !== 1 || localUsers[0].role !== 'owner' ||
+        localUsers[0].isActive !== true ||
+        baseline.approvedByUserId !== localUsers[0].id ||
+        baseline.approvedBy !== localUsers[0].name) {
+      throw new Error('توقف آمن: اعتماد الأرصدة لا يطابق حساب المالك المحلي النشط. أعد اعتماد خط الأساس بواسطة المالك الحالي.');
+    }
+
+    const baselineIds = Object.keys(baseline.openingBalances);
+    if (baselineIds.length !== loadedAccounts.length ||
+        loadedAccounts.some((account) => !baseline.openingBalances[account.id] ||
+          baseline.openingBalances[account.id].type !== account.type)) {
+      throw new Error('توقف آمن: حسابات الدفتر لا تطابق حسابات خط الأساس المعتمد. يلزم إعادة مطابقة واعتماد الأرصدة.');
+    }
+
+    const accountMap = new Map(loadedAccounts.map((account) => [account.id, account]));
+    const movements = new Map<string, Record<CurrencyCode, number>>();
+    for (const account of loadedAccounts) {
+      movements.set(account.id, { YER_OLD: 0, YER_NEW: 0, SAR: 0, USD: 0 });
+      const approved = baseline.openingBalances[account.id];
+      for (const currency of currencies) {
+        if (typeof approved.balances?.[currency] !== 'number' ||
+            !Number.isFinite(approved.balances[currency])) {
+          throw new Error(`توقف آمن: رصيد افتتاحي غير صالح في الاعتماد للحساب (${account.id}) والعملة (${currency}).`);
+        }
+      }
+    }
+
+    for (const entry of loadedJournalEntries) {
+      for (const line of entry.lines) {
+        const account = accountMap.get(line.accountId);
+        if (!account) {
+          throw new Error(`توقف آمن: القيد (${entry.entryNumber}) يشير إلى حساب غير موجود (${line.accountId}).`);
+        }
+        const normalSign = account.type === 'asset' || account.type === 'expense' ? 1 : -1;
+        const accountMovements = movements.get(account.id)!;
+        accountMovements[line.currency] += normalSign * (line.debit - line.credit);
+      }
+    }
+
+    for (const account of loadedAccounts) {
+      const approved = baseline.openingBalances[account.id];
+      const accountMovements = movements.get(account.id)!;
+      for (const currency of currencies) {
+        const expected = approved.balances[currency] + accountMovements[currency];
+        if (Math.abs(expected - account.balances[currency]) > 0.001) {
+          throw new Error(`توقف آمن: رصيد الحساب (${account.id}) بالعملة (${currency}) لا يطابق خط الأساس الافتتاحي مضافاً إليه القيود. المتوقع (${expected}) والمحفوظ (${account.balances[currency]}). يلزم فحص الدفتر قبل التشغيل.`);
+        }
+      }
     }
 
     this.accounts.clear();
