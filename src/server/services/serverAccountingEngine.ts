@@ -12,7 +12,10 @@ import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../ut
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = path.resolve(__dirname, '../../../data');
+// Tests may provide an isolated temporary directory; production always uses the app data directory.
+const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
+  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
+  : path.resolve(__dirname, '../../../data');
 const ACCOUNTS_FILE = path.resolve(DATA_DIR, 'accounts_ledger.json');
 const JOURNAL_FILE = path.resolve(DATA_DIR, 'journal_entries.json');
 const BASELINE_FILE = path.resolve(DATA_DIR, 'financial_baseline_approved.local.json');
