@@ -99,6 +99,7 @@ export interface RemittanceMasterRecord {
   cashMovementReference?: string;
   payoutRecordId?: string;
   numberingMode?: RemittanceNumberingMode;
+  idempotencyKey?: string;
   notes?: string;
 }
 
@@ -328,8 +329,11 @@ export class RemittanceRegistry {
     }
 
     const cleanNum = rem.transferNumber.trim().toUpperCase();
-    if (rem.direction !== 'incoming' && rem.direction !== 'outgoing') {
-      return { success: false, error: 'اتجاه الحوالة غير صالح.' };
+    if (rem.direction !== 'incoming') {
+      return {
+        success: false,
+        error: 'لا يمكن تسجيل حوالة صادرة دون القيد المحاسبي المتكامل. استخدم مسار تسجيل الحوالة الصادرة المعتمد.',
+      };
     }
     if (typeof rem.amount !== 'number' || !Number.isFinite(rem.amount) ||
         rem.amount <= 0 || Math.abs(rem.amount * 1000 - Math.round(rem.amount * 1000)) > 1e-8) {
