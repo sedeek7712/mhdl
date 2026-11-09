@@ -87,6 +87,8 @@ export function safeReadJson<T>(
   defaultData: T,
   options: { failOnCorruption?: boolean; failOnMissing?: boolean } = { failOnCorruption: true }
 ): T {
+  const failOnCorruption = options.failOnCorruption !== false;
+
   if (!fs.existsSync(filePath)) {
     if (options.failOnMissing === true) {
       throw new Error(
@@ -116,7 +118,7 @@ export function safeReadJson<T>(
       // Ignore
     }
 
-    if (options.failOnCorruption) {
+    if (failOnCorruption) {
       throw new Error(
         `خطأ حرج في سلامة البيانات: الملف ${path.basename(filePath)} تالف أو غير صالح كـ JSON. تم إيقاف النظام لمنع تصفير البيانات أو إعادة الترقيم الافتراضي.`
       );
