@@ -482,6 +482,15 @@ class ServerAccountingEngine {
       return { success: false, error: 'مفتاح العملية غير صالح. أعد فتح الطلب من الواجهة.' };
     }
 
+    if (this.storageWriteBlocked || this.activeTransactionId ||
+        fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة أو قيد المعالجة. أوقف النظام ولا تعاود التغذية حتى مطابقة الدفاتر.',
+      };
+    }
+
     // Safe retry: if the original request committed but its HTTP response was lost,
     // return the original journal entry without applying the balances a second time.
     const priorEntry = this.journalEntries.find((entry) =>
@@ -511,10 +520,6 @@ class ServerAccountingEngine {
       }
 
       return { success: true, journalEntry: priorEntry };
-    }
-
-    if (this.storageWriteBlocked) {
-      return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: 'الكتابة المالية متوقفة بسبب معاملة سابقة غير محسومة. لا تعاود العملية؛ يلزم إيقاف النظام ومطابقة الدفاتر.' };
     }
 
     const fromAcc = this.accounts.get(params.fromAccountId);
