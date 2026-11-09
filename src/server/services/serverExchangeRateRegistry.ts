@@ -24,6 +24,7 @@ export interface ServerExchangeRateAuditLog {
   newSellRate: number;
   changedAt: string;
   changedBy: string;
+  changedById: string;
   note: string;
 }
 
@@ -125,6 +126,7 @@ class ServerExchangeRateRegistry {
       newSellRate: params.sellRate,
       changedAt: updatedAt,
       changedBy: params.actorName.trim(),
+      changedById: params.actorId.trim(),
       note: params.note.trim(),
     };
     const nextState: ExchangeRateState = {
