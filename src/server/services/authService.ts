@@ -318,7 +318,7 @@ class AuthService {
       return { success: false, error: 'هذا الحساب معطل. راجع مالك النظام لإعادة تفعيله.' };
     }
 
-    if (!pin || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
+    if (typeof pin !== 'string' || !/^\\d{6}$/.test(pin) || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
       const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'رمز PIN غير مطابق للتجزئة المعتمدة');
       return {
         success: false,
