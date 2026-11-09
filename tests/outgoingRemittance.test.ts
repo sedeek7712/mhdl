@@ -146,7 +146,11 @@ test('outgoing remittance posts cash, network payable and commission once; repla
     assert.equal(afterFirst.find((account) => account.id === 'acc-2201')?.balances.SAR, 100);
     assert.equal(afterFirst.find((account) => account.id === 'acc-4101')?.balances.SAR, 5);
 
-    const replay = registry.registerOutgoingRemittance(request);
+    // Recreate the registry from disk to verify startup reconciliation before a retry.
+    const registryAfterRestart = new RemittanceRegistry();
+    assert.equal(registryAfterRestart.getMasterRemittance('OUT-001001')?.id, first.record?.id);
+
+    const replay = registryAfterRestart.registerOutgoingRemittance(request);
     assert.equal(replay.success, true);
     assert.equal(replay.replayed, true);
     assert.equal(replay.record?.id, first.record?.id);
@@ -154,7 +158,7 @@ test('outgoing remittance posts cash, network payable and commission once; repla
     assert.equal(serverAccountingEngine.getJournalEntries().length, 1);
     assert.equal(serverAccountingEngine.getAccounts().find((account) => account.id === 'acc-1102')?.balances.SAR, 605);
 
-    const changedAmount = registry.registerOutgoingRemittance({
+    const changedAmount = registryAfterRestart.registerOutgoingRemittance({
       ...request,
       amount: 110,
     });
@@ -163,11 +167,11 @@ test('outgoing remittance posts cash, network payable and commission once; repla
     assert.equal(serverAccountingEngine.getJournalEntries().length, 1);
 
     // A retry remains valid even if numbering settings were changed after the original commit.
-    (registry as any).settings = {
+    (registryAfterRestart as any).settings = {
       ...(registry as any).settings,
       numberingMode: 'manual',
     };
-    const replayAfterSettingsChange = registry.registerOutgoingRemittance(request);
+    const replayAfterSettingsChange = registryAfterRestart.registerOutgoingRemittance(request);
     assert.equal(replayAfterSettingsChange.success, true);
     assert.equal(replayAfterSettingsChange.replayed, true);
     assert.equal(replayAfterSettingsChange.record?.transferNumber, 'OUT-001001');
@@ -187,10 +191,10 @@ test('outgoing remittance posts cash, network payable and commission once; repla
     assert.equal(fs.existsSync(path.join(dataDirectory, 'financial_transaction_pending.json')), false);
 
     // Inject a later registry save failure after the ledger and master/number files were written.
-    (registry as any).saveAuditLogsToDisk = () => {
+    (registryAfterRestart as any).saveAuditLogsToDisk = () => {
       throw new Error('injected outgoing audit write failure');
     };
-    const failedSecond = registry.registerOutgoingRemittance({
+    const failedSecond = registryAfterRestart.registerOutgoingRemittance({
       ...request,
       idempotencyKey: crypto.randomUUID(),
       manualTransferNumber: 'OUT-MANUAL-0002',
@@ -200,7 +204,7 @@ test('outgoing remittance posts cash, network payable and commission once; repla
     });
     assert.equal(failedSecond.success, false);
     assert.equal(failedSecond.errorCode, 'COMMIT_PENDING_RECOVERY');
-    assert.equal(registry.getMasterRemittance('OUT-MANUAL-0002'), undefined);
+    assert.equal(registryAfterRestart.getMasterRemittance('OUT-MANUAL-0002'), undefined);
     assert.equal(serverAccountingEngine.isFinancialWriteBlocked(), true);
     assert.equal(fs.existsSync(path.join(dataDirectory, 'financial_transaction_pending.json')), true);
   } finally {
