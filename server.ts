@@ -89,6 +89,28 @@ async function startServer() {
     next();
   });
 
+  // Block all financial write endpoints after any uncertain multi-file commit.
+  // Read-only reports and authentication remain available for diagnosis.
+  app.use((req, res, next) => {
+    const isNonFinancialPost =
+      req.path.startsWith('/api/auth/') ||
+      req.path.startsWith('/api/whatsapp/');
+    if (
+      req.method === 'POST' &&
+      req.path.startsWith('/api/') &&
+      !isNonFinancialPost &&
+      serverAccountingEngine.isFinancialWriteBlocked()
+    ) {
+      return res.status(503).json({
+        success: false,
+        errorCode: 'FINANCIAL_RECOVERY_REQUIRED',
+        doNotRetry: true,
+        error: 'النظام في وضع حماية مالية بعد فشل حفظ غير محسوم. توقفت كل العمليات المالية حتى مطابقة الملفات يدوياً.',
+      });
+    }
+    next();
+  });
+
   // =========================================================================
   // Authentication & Session Endpoints (FIND-002, FIND-010, H5)
   // =========================================================================
@@ -892,7 +914,12 @@ async function startServer() {
 
   // Public health check endpoint
   app.get('/api/health', (_req: Request, res: Response) => {
-    return res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+    const recoveryRequired = serverAccountingEngine.isFinancialWriteBlocked();
+    return res.status(recoveryRequired ? 503 : 200).json({
+      status: recoveryRequired ? 'financial_recovery_required' : 'healthy',
+      financialWritesEnabled: !recoveryRequired,
+      timestamp: new Date().toISOString(),
+    });
   });
 
   const httpServer = http.createServer(app);
