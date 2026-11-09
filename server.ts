@@ -169,6 +169,30 @@ export async function startServer(options: { port?: number; host?: string; useVi
     });
   });
 
+  app.post('/api/auth/change-pin', requireAuth, (req: any, res: Response) => {
+    const { currentPin, newPin } = req.body || {};
+    const result = authService.changePin(req.user.username, currentPin, newPin);
+    return res.status(result.success ? 200 : 400).json(result);
+  });
+
+  // Owner-managed employee accounts. Staff roles authenticate with their own username and PIN.
+  app.post('/api/auth/users', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
+    const result = authService.createUser(req.body || {});
+    return res.status(result.success ? 201 : 400).json(result);
+  });
+
+  app.patch('/api/auth/users/:userId/status', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
+    const { isActive } = req.body || {};
+    const result = authService.setUserActive(req.params.userId, isActive);
+    return res.status(result.success ? 200 : 400).json(result);
+  });
+
+  app.post('/api/auth/users/:userId/reset-pin', requireAuth, requireRoles(['owner']), (req: any, res: Response) => {
+    const { newPin } = req.body || {};
+    const result = authService.resetUserPin(req.params.userId, newPin);
+    return res.status(result.success ? 200 : 400).json(result);
+  });
+
   app.get('/api/auth/session', requireAuth, (req: any, res: Response) => {
     return res.status(200).json({
       success: true,
