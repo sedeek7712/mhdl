@@ -99,7 +99,7 @@ function remittance(overrides: Partial<SqliteRemittanceInput> = {}): SqliteRemit
   };
 }
 
-test('actual financial schema applies and creates all first-phase tables', (t) => {
+test('actual financial schema applies both migrations and creates financial and operational tables', (t) => {
   const db = createDatabase(t);
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -112,10 +112,12 @@ test('actual financial schema applies and creates all first-phase tables', (t) =
     'remittances', 'remittance_payouts', 'remittance_audit_logs',
     'exchange_rates', 'exchange_rate_audit', 'cashier_shifts',
     'cashier_shift_balances', 'cashier_shift_events',
+    'app_users', 'security_events', 'whatsapp_dispatches',
+    'whatsapp_webhook_events', 'voucher_attachments',
   ]) assert.equal(names.has(name), true, `Missing table ${name}`);
 
   const migrationCount = db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number };
-  assert.equal(migrationCount.count, 1);
+  assert.equal(Number(migrationCount.count), 2);
 });
 
 test('balanced journal is persisted atomically and updates account balances in thousandths', (t) => {
