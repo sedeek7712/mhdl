@@ -16,6 +16,7 @@ import {
 type JsonRecord = Record<string, unknown>;
 
 interface SourceFileSnapshot {
+  kind: 'json' | 'binary';
   name: string;
   bytes: number;
   sha256: string;
@@ -44,6 +45,7 @@ export interface SqliteDryRunReport {
     remittancePayoutsReconciled: boolean;
     operationalDataImported: boolean;
     voucherArchivesVerified: boolean;
+    completeSystemParity: boolean;
     sourceFilesUnchanged: boolean;
     temporaryDatabaseRemoved: boolean;
   };
@@ -61,6 +63,12 @@ const REQUIRED_FILES = [
   'remittance_audit_logs.json',
   'remittance_payouts_registry.json',
   'remittances_master.json',
+] as const;
+
+const REQUIRED_OPERATIONAL_FILES = [
+  'system_users.local.json',
+  'exchange_rate_state.json',
+  'cash_box_shift_state.json',
 ] as const;
 
 const OPTIONAL_FILES = [
@@ -150,11 +158,23 @@ function addSnapshot(
   disposition: SourceFileSnapshot['disposition']
 ): void {
   snapshots.push({
+    kind: 'json',
     name,
     bytes: loaded?.bytes ?? 0,
     sha256: loaded?.sha256 ?? '',
     records: loaded ? safeFileCount(loaded.payload) : 0,
     disposition: loaded ? disposition : 'optional_missing',
+  });
+}
+
+function addBinarySnapshot(snapshots: SourceFileSnapshot[], name: string, raw: Buffer): void {
+  snapshots.push({
+    kind: 'binary',
+    name,
+    bytes: raw.length,
+    sha256: sha256Buffer(raw),
+    records: 1,
+    disposition: 'imported',
   });
 }
 
@@ -452,8 +472,11 @@ function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, valu
       balanceInsert.run(id, kind, currency, groups[kind][currency]);
       balanceCount += 1;
     }
-    eventInsert.run(`${id}:opened`, id, 'opened', shift.tellerId, shift.tellerName,
-      shift.openedAt, JSON.stringify({ boxId: shift.boxId, openIdempotencyKey: openKey }));
+    eventInsert.run(`${id}:opened`, id, 'opened',
+      stringValue(shift.tellerId, 'shift.tellerId'),
+      stringValue(shift.tellerName, 'shift.tellerName'),
+      stringValue(shift.openedAt, 'shift.openedAt'),
+      JSON.stringify({ boxId: shift.boxId, openIdempotencyKey: openKey }));
     eventCount += 1;
     if (status === 'closed') {
       const closedAt = stringValue(shift.closedAt, 'shift.closedAt');
@@ -515,7 +538,7 @@ function importLocalUsers(db: ReturnType<typeof openSqliteDatabase>, value: unkn
 
 function importWhatsAppDispatches(
   db: ReturnType<typeof openSqliteDatabase>, value: unknown, sourceDirectory: string
-): { dispatches: number; webhookEvents: number; attachments: number } {
+): { dispatches: number; webhookEvents: number; attachments: number; archiveSnapshots: SourceFileSnapshot[] } {
   const dispatches = records(value, 'whatsapp_dispatch_registry.json');
   const allowedStatuses = ['PENDING', 'GENERATING', 'GENERATED', 'UPLOADING', 'UPLOADED', 'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'RETRY_PENDING'];
   const ids = new Set<string>();
@@ -525,6 +548,7 @@ function importWhatsAppDispatches(
   const insertAttachment = db.prepare('INSERT INTO voucher_attachments (id, dispatch_id, voucher_number, transaction_id, storage_key, relative_path, sha256, file_size_bytes, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   let eventCount = 0;
   let attachmentCount = 0;
+  const archiveSnapshots: SourceFileSnapshot[] = [];
   const archiveRoot = path.resolve(sourceDirectory, 'archived_vouchers');
   for (const dispatch of dispatches) {
     const id = stringValue(dispatch.id, 'dispatch.id');
@@ -563,7 +587,8 @@ function importWhatsAppDispatches(
       if (!timestamp.trim()) throw new Error('WhatsApp webhook event timestamp is missing.');
       const eventKey = optionalText(event, 'id') ?? sha256(JSON.stringify(event));
       const eventId = sha256(`${id}\u0000${eventKey}\u0000${eventStatus}\u0000${timestamp}`);
-      insertEvent.run(eventId, id, messageId, eventKey, eventStatus, timestamp,
+      insertEvent.run(eventId, id, stringValue(messageId, 'dispatch.whatsappMessageId'),
+        eventKey, eventStatus, timestamp,
         optionalText(event, 'recipient_id') ?? null, JSON.stringify(event));
       eventCount += 1;
     }
@@ -580,12 +605,15 @@ function importWhatsAppDispatches(
     const png = image.length >= 8 && image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     const jpeg = image.length >= 3 && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff;
     if (!png && !jpeg) throw new Error('Voucher archive image is not a PNG or JPEG file.');
-    insertAttachment.run(`attachment:${id}`, id, dispatch.voucherNumber, dispatch.transactionId,
+    insertAttachment.run(`attachment:${id}`, id,
+      stringValue(dispatch.voucherNumber, 'dispatch.voucherNumber'),
+      stringValue(dispatch.transactionId, 'dispatch.transactionId'),
       storageKey, `archived_vouchers/${storageKey}`, hash, size,
       png ? 'image/png' : 'image/jpeg', stringValue(dispatch.createdAt, 'dispatch.createdAt'));
+    addBinarySnapshot(archiveSnapshots, `archived_vouchers/${storageKey}`, image);
     attachmentCount += 1;
   }
-  return { dispatches: dispatches.length, webhookEvents: eventCount, attachments: attachmentCount };
+  return { dispatches: dispatches.length, webhookEvents: eventCount, attachments: attachmentCount, archiveSnapshots };
 }
 function compareRemittancePayouts(
   masters: JsonRecord[],
@@ -677,9 +705,15 @@ function assertSourceUnchanged(snapshots: SourceFileSnapshot[], sourceDirectory:
       if (fs.existsSync(filePath)) return false;
       continue;
     }
-    const current = fs.readFileSync(filePath, 'utf8');
-    if (Buffer.byteLength(current, 'utf8') !== snapshot.bytes || sha256(current) !== snapshot.sha256) {
-      return false;
+    if (snapshot.kind === 'binary') {
+      if (!fs.existsSync(filePath) || !fs.lstatSync(filePath).isFile()) return false;
+      const current = fs.readFileSync(filePath);
+      if (current.length !== snapshot.bytes || sha256Buffer(current) !== snapshot.sha256) return false;
+    } else {
+      const current = fs.readFileSync(filePath, 'utf8');
+      if (Buffer.byteLength(current, 'utf8') !== snapshot.bytes || sha256(current) !== snapshot.sha256) {
+        return false;
+      }
     }
   }
   return true;
@@ -711,6 +745,7 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       remittancePayoutsReconciled: false,
       operationalDataImported: false,
       voucherArchivesVerified: false,
+      completeSystemParity: false,
       sourceFilesUnchanged: false,
       temporaryDatabaseRemoved: false,
     },
@@ -919,10 +954,19 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       report.imported.whatsappDispatches = result.dispatches;
       report.imported.whatsappWebhookEvents = result.webhookEvents;
       report.imported.voucherAttachments = result.attachments;
+      report.sourceFiles.push(...result.archiveSnapshots);
     }
 
-    report.validation.operationalDataImported = true;
-    report.validation.voucherArchivesVerified = true;
+    report.validation.operationalDataImported =
+      REQUIRED_OPERATIONAL_FILES.every((name) => loaded.has(name));
+    report.validation.voucherArchivesVerified = Boolean(whatsApp);
+    if (!report.validation.operationalDataImported) {
+      const missing = REQUIRED_OPERATIONAL_FILES.filter((name) => !loaded.has(name));
+      report.warnings.push(`Operational data is incomplete; missing required datasets: ${missing.join(', ')}.`);
+    }
+    if (!report.validation.voucherArchivesVerified) {
+      report.warnings.push('WhatsApp dispatch registry is missing; voucher archive parity was not verified.');
+    }
 
     let snapshotMatches = true;
     const balanceRows = db.prepare(
@@ -1009,15 +1053,26 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       message: 'Temporary database cleanup could not be verified.',
     });
   }
-  if ((!report.validation.sourceFilesUnchanged ||
-       !report.validation.operationalDataImported ||
-       !report.validation.voucherArchivesVerified) && report.status === 'PASS') {
+  if (!report.validation.sourceFilesUnchanged && report.status === 'PASS') {
     report.status = 'FAIL';
     report.issues.push({
-      file: 'operational-data',
-      code: 'OPERATIONAL_PARITY_VALIDATION_FAILED',
-      message: 'One or more operational datasets or voucher archives could not be verified.',
+      file: 'source-data',
+      code: 'SOURCE_DATA_CHANGED_DURING_DRY_RUN',
+      message: 'One or more source files changed while the dry run was executing.',
     });
+  }
+
+  report.validation.completeSystemParity =
+    report.validation.operationalDataImported &&
+    report.validation.voucherArchivesVerified &&
+    report.validation.openingBalanceReconciliation === 'MATCHED' &&
+    report.validation.sourceFilesUnchanged &&
+    report.validation.sqliteIntegrity === 'ok' &&
+    report.validation.foreignKeyViolations === 0 &&
+    report.validation.temporaryDatabaseRemoved;
+
+  if (!report.validation.completeSystemParity && report.status === 'PASS') {
+    report.warnings.push('Core SQLite dry run passed, but full system parity is incomplete. Do not cut over until all operational datasets, voucher archives, and the approved opening-balance reconciliation are verified.');
   }
 
   return report;
