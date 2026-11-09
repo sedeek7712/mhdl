@@ -70,6 +70,9 @@ export interface ServerJournalEntry {
   isBalanced: boolean;
   idempotencyKey?: string;
   requestFingerprint?: string;
+  exchangeRate?: number;
+  grossTargetAmount?: number;
+  targetAmount?: number;
   voucherNumber?: string;
 }
 
@@ -845,18 +848,17 @@ class ServerAccountingEngine {
       if (!priorSourceLine) {
         return { success: false, error: 'تعذر مطابقة القيد السابق مع طلب إعادة الصرافة.' };
       }
-      const rateUsed = Number(priorEntry.descriptionAr.match(/سعر ([0-9.]+)/)?.[1]);
       return {
         success: true,
         journalEntry: priorEntry,
         accounts: this.getAccounts(),
-        effectiveRate: Number.isFinite(rateUsed) ? rateUsed : undefined,
+        effectiveRate: priorEntry.exchangeRate,
         grossTargetAmount: priorEntry.lines.find((line) =>
           line.accountId === 'acc-2101' && line.currency === params.targetCurrency && line.debit > 0
-        )?.debit,
+        )?.debit ?? priorEntry.grossTargetAmount,
         targetAmount: priorEntry.lines.find((line) =>
           line.accountId === 'acc-1102' && line.currency === params.targetCurrency && line.credit > 0
-        )?.credit,
+        )?.credit ?? priorEntry.targetAmount,
       };
     }
 
@@ -963,6 +965,9 @@ class ServerAccountingEngine {
       isBalanced: true,
       idempotencyKey: params.idempotencyKey,
       requestFingerprint,
+      exchangeRate: effectiveRate,
+      grossTargetAmount,
+      targetAmount,
       voucherNumber,
     };
 
