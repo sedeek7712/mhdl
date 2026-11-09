@@ -364,6 +364,7 @@ function importExchangeRateState(db: ReturnType<typeof openSqliteDatabase>, valu
   if (state.schemaVersion !== 1) throw new Error('Unsupported exchange-rate state schema version.');
   const rates = records(state.rates, 'exchange rates');
   const logs = records(state.auditLogs, 'exchange-rate audit logs');
+  if (rates.length === 0) throw new Error('Exchange-rate state must contain at least one active currency pair.');
   const seenIds = new Set<string>();
   const seenPairs = new Set<string>();
   const rateByPair = new Map<string, string>();
