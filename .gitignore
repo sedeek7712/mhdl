@@ -19,3 +19,5 @@ data/financial_baseline_approved.local.json
 data/accounts_ledger.json.before-chart-reconcile.*.bak
 data/exchange_rate_state.json
 data/exchange_rate_state.json.*.bak
+data/cash_box_shift_state.json
+data/cash_box_shift_state.json.*.bak
