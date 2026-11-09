@@ -512,6 +512,81 @@ function importLocalUsers(db: ReturnType<typeof openSqliteDatabase>, value: unkn
   }
   return users.length;
 }
+
+function importWhatsAppDispatches(
+  db: ReturnType<typeof openSqliteDatabase>, value: unknown, sourceDirectory: string
+): { dispatches: number; webhookEvents: number; attachments: number } {
+  const dispatches = records(value, 'whatsapp_dispatch_registry.json');
+  const allowedStatuses = ['PENDING', 'GENERATING', 'GENERATED', 'UPLOADING', 'UPLOADED', 'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'RETRY_PENDING'];
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  const insertDispatch = db.prepare('INSERT INTO whatsapp_dispatches (id, transaction_id, voucher_number, voucher_type, recipient_phone, sha256, file_size_bytes, meta_media_id, whatsapp_message_id, status, caption, created_at, uploaded_at, sent_at, delivered_at, read_at, failed_at, attempts_count, last_error, employee_id, employee_name, idempotency_key, snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insertEvent = db.prepare('INSERT INTO whatsapp_webhook_events (id, dispatch_id, message_id, event_key, status, occurred_at, recipient_id, raw_event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  const insertAttachment = db.prepare('INSERT INTO voucher_attachments (id, dispatch_id, voucher_number, transaction_id, storage_key, relative_path, sha256, file_size_bytes, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  let eventCount = 0;
+  let attachmentCount = 0;
+  const archiveRoot = path.resolve(sourceDirectory, 'archived_vouchers');
+  for (const dispatch of dispatches) {
+    const id = stringValue(dispatch.id, 'dispatch.id');
+    const key = stringValue(dispatch.idempotencyKey, 'dispatch.idempotencyKey');
+    const status = stringValue(dispatch.status, 'dispatch.status');
+    const hash = stringValue(dispatch.sha256, 'dispatch.sha256').toLowerCase();
+    if (ids.has(id) || keys.has(key) || !allowedStatuses.includes(status) || !/^[a-f0-9]{64}$/.test(hash)) {
+      throw new Error('WhatsApp dispatch contains a duplicate identifier or invalid status/hash.');
+    }
+    ids.add(id); keys.add(key);
+    const size = numberValue(dispatch.fileSizeBytes, 'dispatch.fileSizeBytes', 1);
+    if (!Number.isSafeInteger(size)) throw new Error('WhatsApp image size is not an integer.');
+    const messageId = optionalText(dispatch, 'whatsappMessageId');
+    const snapshot = record(dispatch.snapshot, 'dispatch.snapshot');
+    const events = dispatch.rawWebhookEvents === undefined ? [] : records(dispatch.rawWebhookEvents, 'dispatch.rawWebhookEvents');
+    if (events.length && !messageId) throw new Error('Webhook history is not linked to a WhatsApp message ID.');
+    insertDispatch.run(
+      id, stringValue(dispatch.transactionId, 'dispatch.transactionId'),
+      stringValue(dispatch.voucherNumber, 'dispatch.voucherNumber'),
+      stringValue(dispatch.voucherType, 'dispatch.voucherType'),
+      stringValue(dispatch.recipientPhone, 'dispatch.recipientPhone'), hash, size,
+      optionalText(dispatch, 'metaMediaId') ?? null, messageId ?? null, status,
+      stringValue(dispatch.caption, 'dispatch.caption', true),
+      stringValue(dispatch.createdAt, 'dispatch.createdAt'),
+      optionalText(dispatch, 'uploadedAt') ?? null, optionalText(dispatch, 'sentAt') ?? null,
+      optionalText(dispatch, 'deliveredAt') ?? null, optionalText(dispatch, 'readAt') ?? null,
+      optionalText(dispatch, 'failedAt') ?? null,
+      numberValue(dispatch.attemptsCount, 'dispatch.attemptsCount'),
+      optionalText(dispatch, 'lastError') ?? null, optionalText(dispatch, 'employeeId') ?? null,
+      optionalText(dispatch, 'employeeName') ?? null, key, JSON.stringify(snapshot)
+    );
+    for (const event of events) {
+      const eventStatus = stringValue(event.status, 'webhook.status');
+      if (!['sent', 'delivered', 'read', 'failed'].includes(eventStatus)) throw new Error('Unsupported WhatsApp webhook status.');
+      const timestamp = String(event.timestamp ?? '');
+      if (!timestamp.trim()) throw new Error('WhatsApp webhook event timestamp is missing.');
+      const eventKey = optionalText(event, 'id') ?? sha256(JSON.stringify(event));
+      const eventId = sha256(`${id}\u0000${eventKey}\u0000${eventStatus}\u0000${timestamp}`);
+      insertEvent.run(eventId, id, messageId, eventKey, eventStatus, timestamp,
+        optionalText(event, 'recipient_id') ?? null, JSON.stringify(event));
+      eventCount += 1;
+    }
+    const storageKey = stringValue(dispatch.storageKey, 'dispatch.storageKey');
+    if (path.basename(storageKey) !== storageKey || storageKey.includes('/') || storageKey.includes('\\')) {
+      throw new Error('Voucher archive key is not a safe filename.');
+    }
+    const imagePath = path.resolve(archiveRoot, storageKey);
+    if (!imagePath.startsWith(`${archiveRoot}${path.sep}`) || !fs.existsSync(imagePath) || !fs.lstatSync(imagePath).isFile()) {
+      throw new Error('Voucher archive image is missing or is not a regular file.');
+    }
+    const image = fs.readFileSync(imagePath);
+    if (image.length !== size || sha256Buffer(image) !== hash) throw new Error('Voucher archive image size/hash does not match its record.');
+    const png = image.length >= 8 && image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const jpeg = image.length >= 3 && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff;
+    if (!png && !jpeg) throw new Error('Voucher archive image is not a PNG or JPEG file.');
+    insertAttachment.run(`attachment:${id}`, id, dispatch.voucherNumber, dispatch.transactionId,
+      storageKey, `archived_vouchers/${storageKey}`, hash, size,
+      png ? 'image/png' : 'image/jpeg', stringValue(dispatch.createdAt, 'dispatch.createdAt'));
+    attachmentCount += 1;
+  }
+  return { dispatches: dispatches.length, webhookEvents: eventCount, attachments: attachmentCount };
+}
 function compareRemittancePayouts(
   masters: JsonRecord[],
   payouts: JsonRecord[],
