@@ -735,11 +735,7 @@ class ServerAccountingEngine {
     const expectedDescription = `مصروف تشغيلي: ${params.expenseType.trim()} - ${params.notes.trim()}`;
     const priorEntry = this.journalEntries.find((entry) =>
       entry.idempotencyKey === params.idempotencyKey &&
-      entry.referenceType === 'expense' &&
-      typeof entry.descriptionAr === 'string' &&
-      entry.descriptionAr === expectedDescription &&
-      entry.createdBy === params.operatorName &&
-      entry.branchId === (params.branchId || 'br-main')
+      entry.referenceType === 'expense'
     );
     if (priorEntry) {
       const debitLine = priorEntry.lines.find((line) =>
@@ -754,10 +750,14 @@ class ServerAccountingEngine {
         Math.abs(line.credit - params.amount) <= 0.0000001 &&
         line.debit === 0
       );
-      if (!debitLine || !creditLine) {
+      const sameRequest = priorEntry.descriptionAr === expectedDescription &&
+        priorEntry.createdBy === params.operatorName &&
+        priorEntry.branchId === (params.branchId || 'br-main');
+
+      if (!debitLine || !creditLine || !sameRequest) {
         return {
           success: false,
-          error: 'معرف المصروف مستخدم سابقاً مع مبلغ أو عملة مختلفة. رُفض الطلب دون تنفيذ حركة جديدة.',
+          error: 'معرف المصروف مستخدم سابقاً مع بيانات مختلفة أو منفذ/فرع مختلف. رُفض الطلب دون تنفيذ حركة جديدة.',
         };
       }
       return {
@@ -920,10 +920,12 @@ class ServerAccountingEngine {
         line.debit === 0
       );
 
-      if (!debitLine || !creditLine) {
+      const sameOperator = priorEntry.createdBy === params.operatorName &&
+        priorEntry.branchId === (params.branchId || 'br-main');
+      if (!debitLine || !creditLine || !sameOperator) {
         return {
           success: false,
-          error: 'مفتاح العملية مستخدم سابقاً مع مبلغ أو عملة أو حسابات مختلفة. رُفض الطلب ولم تُنفذ حركة مالية جديدة.',
+          error: 'مفتاح العملية مستخدم سابقاً مع مبلغ أو عملة أو حسابات أو منفذ مختلف. رُفض الطلب ولم تُنفذ حركة مالية جديدة.',
         };
       }
 
