@@ -684,6 +684,17 @@ async function startServer() {
       });
 
       if (!payoutResult.success) {
+        if (payoutResult.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: payoutResult.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: payoutResult.error || 'حالة الصرف غير محسومة. أوقف النظام ولا تعاود العملية حتى مطابقة الدفاتر.',
+            record: payoutResult.record,
+            journalEntry: payoutResult.journalEntry,
+          });
+        }
         return res.status(409).json({
           success: false,
           isDuplicate: remittanceRegistry.isRemittancePaid(transferNumber),
@@ -841,6 +852,15 @@ async function startServer() {
       });
 
       if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة تغذية الصندوق غير محسومة. أوقف النظام ولا تعاود العملية حتى مطابقة الدفاتر.',
+          });
+        }
         return res.status(400).json({
           success: false,
           error: result.error,
