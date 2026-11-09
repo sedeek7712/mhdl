@@ -12,6 +12,9 @@ type AccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
 interface AccountRecord {
   id: string;
   nameAr: string;
+  name?: string;
+  code?: string;
+  category?: string;
   type: AccountType;
   balances: Record<CurrencyCode, number>;
 }
@@ -149,10 +152,24 @@ async function main(): Promise<void> {
     throw new Error('PIN المالك غير صحيح. لم يتم اعتماد الأرصدة.');
   }
 
-  const accounts = safeReadJson<AccountRecord[]>(ACCOUNTS_FILE, [], {
+  const rawAccounts = safeReadJson<unknown[]>(ACCOUNTS_FILE, [], {
     failOnCorruption: true,
     failOnMissing: true,
   });
+  const accounts: AccountRecord[] = Array.isArray(rawAccounts)
+    ? rawAccounts.map((rawAccount) => {
+        if (!rawAccount || typeof rawAccount !== 'object' || Array.isArray(rawAccount)) {
+          return rawAccount as AccountRecord;
+        }
+        const record = rawAccount as Record<string, unknown>;
+        const nameAr = typeof record.nameAr === 'string' && record.nameAr.trim()
+          ? record.nameAr
+          : typeof record.name === 'string'
+            ? record.name
+            : '';
+        return { ...record, nameAr } as unknown as AccountRecord;
+      })
+    : rawAccounts as AccountRecord[];
   const journalEntries = safeReadJson<JournalEntry[]>(JOURNAL_FILE, [], {
     failOnCorruption: true,
     failOnMissing: true,
