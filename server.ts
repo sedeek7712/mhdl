@@ -94,7 +94,7 @@ async function startServer() {
   app.post('/api/auth/login', (req: Request, res: Response) => {
     const { roleOrUsername, pin } = req.body || {};
     if (typeof roleOrUsername !== 'string' || !roleOrUsername.trim() ||
-        typeof pin !== 'string' || !/^\\d{6}$/.test(pin)) {
+        typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
       return res.status(400).json({
         success: false,
         error: 'اسم المستخدم ورمز PIN المكوّن من 6 أرقام مطلوبان لتسجيل الدخول.',
