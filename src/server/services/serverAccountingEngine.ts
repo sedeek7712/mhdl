@@ -64,6 +64,7 @@ export interface ServerJournalEntry {
   referenceId: string;
   branchId: string;
   createdBy: string;
+  createdById?: string;
   isBalanced: boolean;
   idempotencyKey?: string;
   voucherNumber?: string;
@@ -551,6 +552,7 @@ class ServerAccountingEngine {
     if (priorEntry) {
       const sameTransfer = priorEntry.referenceId === params.transferNumber.trim().toUpperCase() &&
         priorEntry.createdBy === params.tellerName &&
+        priorEntry.createdById === params.tellerId &&
         priorEntry.branchId === (params.branchId || 'br-main') &&
         priorEntry.descriptionAr === `إرسال حوالة صادرة ${params.transferNumber.trim().toUpperCase()} للمستلم ${params.recipientName.trim()} عبر ${params.networkName.trim()}`;
       const cashLine = priorEntry.lines.find((line) =>
@@ -688,6 +690,7 @@ class ServerAccountingEngine {
       referenceId: normalizedNumber,
       branchId: params.branchId || 'br-main',
       createdBy: params.tellerName,
+      createdById: params.tellerId,
       isBalanced: true,
       idempotencyKey: params.idempotencyKey,
       voucherNumber,
