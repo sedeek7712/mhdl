@@ -425,7 +425,8 @@ function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, valu
     const output = {} as Record<SqliteCurrency, number>;
     for (const currency of currencies) {
       const amount = source[currency];
-      if (typeof amount !== 'number' || !Number.isFinite(amount) || (!signed && amount < 0)) {
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || (!signed && amount < 0) ||
+          Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
         throw new Error(`Invalid shift balance: ${field}.${currency}.`);
       }
       output[currency] = toScaledInteger(amount, 1000, `${field}.${currency}`);
@@ -442,18 +443,19 @@ function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, valu
     ids.add(id);
     const openKey = stringValue(shift.openIdempotencyKey, 'shift.openIdempotencyKey');
     const closeKey = optionalText(shift, 'closeIdempotencyKey');
-    if (!/^[a-f0-9-]{36}$/i.test(openKey) || openKeys.has(openKey) ||
-        (closeKey && (!/^[a-f0-9-]{36}$/i.test(closeKey) || closeKeys.has(closeKey)))) {
+    if (!/^[a-f0-9-]{36}$/i.test(openKey) || openKeys.has(openKey) || closeKeys.has(openKey) ||
+        (closeKey && (!/^[a-f0-9-]{36}$/i.test(closeKey) || closeKeys.has(closeKey) || openKeys.has(closeKey)))) {
       throw new Error('Invalid or duplicate cashier-shift idempotency key.');
+    }
+    const openFingerprint = optionalText(shift, 'openRequestFingerprint');
+    const closeFingerprint = optionalText(shift, 'closeRequestFingerprint');
+    if (!openFingerprint || !/^[a-f0-9]{64}$/i.test(openFingerprint) ||
+        (status === 'closed' && (!closeKey || !closeFingerprint || !/^[a-f0-9]{64}$/i.test(closeFingerprint))) ||
+        (status === 'open' && (closeKey !== undefined || closeFingerprint !== undefined))) {
+      throw new Error('Cashier-shift replay fingerprints are missing or inconsistent.');
     }
     openKeys.add(openKey);
     if (closeKey) closeKeys.add(closeKey);
-    const openFingerprint = optionalText(shift, 'openRequestFingerprint');
-    const closeFingerprint = optionalText(shift, 'closeRequestFingerprint');
-    if ((openFingerprint && !/^[a-f0-9]{64}$/i.test(openFingerprint)) ||
-        (closeFingerprint && !/^[a-f0-9]{64}$/i.test(closeFingerprint))) {
-      throw new Error('Invalid cashier-shift request fingerprint.');
-    }
     shiftInsert.run(
       id, stringValue(shift.boxId, 'shift.boxId'), stringValue(shift.boxNameAr, 'shift.boxNameAr'),
       stringValue(shift.tellerId, 'shift.tellerId'), stringValue(shift.tellerName, 'shift.tellerName'),
@@ -468,6 +470,23 @@ function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, valu
       actual: balancesFor(shift.actualBalances, 'shift.actualBalances'),
       discrepancy: balancesFor(shift.discrepancies, 'shift.discrepancies', true),
     };
+    if (status === 'closed') {
+      let hasVariance = false;
+      for (const currency of currencies) {
+        const expectedMilli = groups.expected[currency];
+        const actualMilli = groups.actual[currency];
+        const recordedDiscrepancyMilli = groups.discrepancy[currency];
+        const calculatedDiscrepancyMilli = Math.round((actualMilli - expectedMilli) / 10) * 10;
+        if (calculatedDiscrepancyMilli !== recordedDiscrepancyMilli) {
+          throw new Error('Closed cashier shift discrepancy does not reconcile with expected and actual balances.');
+        }
+        if (recordedDiscrepancyMilli !== 0) hasVariance = true;
+      }
+      const notes = optionalText(shift, 'notes') ?? '';
+      if (hasVariance && notes.length < 10) {
+        throw new Error('Closed cashier shift with a variance is missing its required explanatory note.');
+      }
+    }
     for (const kind of kinds) for (const currency of currencies) {
       balanceInsert.run(id, kind, currency, groups[kind][currency]);
       balanceCount += 1;
@@ -485,8 +504,7 @@ function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, valu
       eventInsert.run(`${id}:closed`, id, 'closed', closedById, closedBy, closedAt,
         JSON.stringify({ closeIdempotencyKey: closeKey, notes: optionalText(shift, 'notes') ?? '', discrepancies: shift.discrepancies }));
       eventCount += 1;
-      const hasVariance = currencies.some((currency) =>
-        Math.abs(Number((shift.discrepancies as Record<string, unknown>)[currency])) >= 0.01);
+      const hasVariance = currencies.some((currency) => groups.discrepancy[currency] !== 0);
       if (hasVariance) {
         eventInsert.run(`${id}:variance`, id, 'variance_noted', closedById, closedBy, closedAt,
           JSON.stringify({ notes: optionalText(shift, 'notes') ?? '', discrepancies: shift.discrepancies }));
