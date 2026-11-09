@@ -197,7 +197,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
               isLoading={isLoading}
               icon={<UserCheck className="w-4 h-4" />}
             >
-              تأكيد المصادقة وتغيير الدور
+              {isRequired ? 'تسجيل الدخول والمتابعة' : 'تأكيد المصادقة وتغيير الدور'}
             </Button>
           </div>
         </form>
