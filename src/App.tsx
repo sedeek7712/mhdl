@@ -1014,101 +1014,160 @@ function AppContent() {
   };
 
   // 5. Internal Financial Transfers (البند 3.3: التحويلات المالية الداخلية وتغذية الصناديق)
-  const handleExecuteInternalTransfer = (data: {
+  const handleExecuteInternalTransfer = async (data: {
     fromAccountId: string;
     toAccountId: string;
     currency: CurrencyCode;
     amount: number;
     description: string;
-  }) => {
-    const entryNum = `JV-TRF-${Date.now().toString().slice(-4)}`;
-    const voucherNum = `V-TRF-${Date.now().toString().slice(-4)}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+  }): Promise<boolean> => {
+    if (!Number.isFinite(data.amount) || data.amount <= 0 ||
+        data.fromAccountId === data.toAccountId || !data.description.trim()) {
+      toast.warning('بيانات المناقلة غير مكتملة أو غير صالحة.');
+      return false;
+    }
 
-    const fromAcc = accounts.find((a) => a.id === data.fromAccountId);
-    const toAcc = accounts.find((a) => a.id === data.toAccountId);
+    const pendingStorageKey = 'alnamari_pending_internal_transfer_v1';
+    let idempotencyKey: string;
 
-    // Update balances
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === data.fromAccountId) {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) - data.amount,
-            },
-          };
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          fromAccountId?: string;
+          toAccountId?: string;
+          currency?: string;
+          amount?: number;
+          description?: string;
+        };
+
+        if (!pending.idempotencyKey ||
+            pending.fromAccountId !== data.fromAccountId ||
+            pending.toAccountId !== data.toAccountId ||
+            pending.currency !== data.currency ||
+            pending.amount !== data.amount ||
+            pending.description !== data.description.trim()) {
+          toast.warning(
+            'توجد مناقلة سابقة لم تُحسم',
+            'لا تنفذ مناقلة مختلفة الآن. أعد نفس المناقلة السابقة بالبيانات نفسها لاسترجاع نتيجتها أو اطلب مطابقة الدفتر.'
+          );
+          return false;
         }
-        if (acc.id === data.toAccountId) {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + data.amount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          fromAccountId: data.fromAccountId,
+          toAccountId: data.toAccountId,
+          currency: data.currency,
+          amount: data.amount,
+          description: data.description.trim(),
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error(
+        'تعذر حفظ معرف المناقلة',
+        'أوقِف العملية؛ لا يمكن ضمان منع التكرار دون حفظ معرف ثابت محلياً قبل إرسال الطلب.'
+      );
+      return false;
+    }
 
-    // Balanced Journal Entry
-    const newEntry: JournalEntry = {
-      id: `jv-itrf-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `${data.description} (من ${fromAcc?.nameAr} إلى ${toAcc?.nameAr})`,
-      lines: [
-        {
-          accountId: data.toAccountId,
-          accountNameAr: toAcc?.nameAr || 'الحساب المستلم',
-          currency: data.currency,
-          debit: data.amount,
-          credit: 0,
-          note: 'استلام تحويل داخلي',
-        },
-        {
-          accountId: data.fromAccountId,
-          accountNameAr: fromAcc?.nameAr || 'الحساب المحول',
-          currency: data.currency,
-          debit: 0,
-          credit: data.amount,
-          note: 'إرسال تحويل داخلي',
-        },
-      ],
-      referenceType: 'expense',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
+    const result = await apiClient.executeInternalTransfer({
+      fromAccountId: data.fromAccountId,
+      toAccountId: data.toAccountId,
+      currency: data.currency,
+      amount: data.amount,
+      description: data.description.trim(),
+      idempotencyKey,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'المناقلة غير محسومة محاسبياً',
+          result.error || 'أوقف النظام ولا تعاود المناقلة. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return false;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد نفس المناقلة بالبيانات نفسها لاسترجاع النتيجة باستخدام معرفها السابق.'
+        );
+        return false;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // A stale key is harmless; a different request remains blocked until it is resolved.
+      }
+      toast.error('رفض الخادم المناقلة', result.error || 'لم يتم تنفيذ العملية.');
+      return false;
+    }
+
+    const journalEntry = result.journalEntry;
+    if (!Array.isArray(result.accounts) || !journalEntry ||
+        journalEntry.referenceType !== 'internal_transfer' ||
+        journalEntry.idempotencyKey !== idempotencyKey ||
+        typeof journalEntry.entryNumber !== 'string' ||
+        typeof journalEntry.voucherNumber !== 'string' ||
+        !Array.isArray(journalEntry.lines) || journalEntry.lines.length !== 2) {
+      toast.error(
+        'استجابة المناقلة غير مكتملة',
+        'لم يتم تحديث الشاشة أو إزالة معرف العملية. لا تبدأ مناقلة جديدة حتى تتم مطابقة دفتر الخادم.'
+      );
+      return false;
+    }
+
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((entry) =>
+        entry.id === journalEntry.id || entry.entryNumber === journalEntry.entryNumber
+      );
+      return exists ? previous : [journalEntry as JournalEntry, ...previous];
+    });
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // A repeated request remains safe because the server stores the idempotency key in the journal.
+    }
+
+    const fromAccount = (result.accounts as Account[]).find((account) => account.id === data.fromAccountId);
+    const toAccount = (result.accounts as Account[]).find((account) => account.id === data.toAccountId);
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${journalEntry.id}`,
+      category: 'financial',
+      timestamp: `${journalEntry.date} ${journalEntry.time}`,
+      action: 'مناقلة مالية داخلية',
+      details: `اعتمد الخادم مناقلة ${formatMoney(data.amount, data.currency)} من ${fromAccount?.nameAr || data.fromAccountId} إلى ${toAccount?.nameAr || data.toAccountId} بالقيد ${journalEntry.entryNumber}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
     };
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
 
-    setJournalEntries((prev) => [...prev, newEntry]);
-
-    // Create Voucher
-    const transferVoucher: OfficialVoucher = {
-      id: `vouch-${Date.now()}`,
-      voucherNumber: voucherNum,
-      type: 'payment',
-      date: dateStr,
-      time: timeStr,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      partyName: toAcc?.nameAr || 'الصندوق المستلم',
-      partyPhone: '',
+    const voucher = voucherEngine.createInternalTransferVoucher({
+      voucherNumber: journalEntry.voucherNumber,
+      fromAccountName: fromAccount?.nameAr || 'الحساب المحول',
+      toAccountName: toAccount?.nameAr || 'الحساب المستلم',
       amount: data.amount,
       currency: data.currency,
-      amountInWordsAr: tafqeetArabic(data.amount, data.currency),
-      referenceNumber: entryNum,
-      qrCodeData: voucherNum,
-      notes: data.description,
-    };
+      tellerName: currentUser.name,
+      branchName: currentUser.branchName,
+      reason: data.description.trim(),
+    });
+    setActiveVoucher(voucher);
 
-    setActiveVoucher(transferVoucher);
+    toast.success(
+      'تم اعتماد المناقلة من الخادم',
+      `تم اعتماد ${formatMoney(data.amount, data.currency)} بالقيد ${journalEntry.entryNumber}. الأرصدة المعروضة من دفتر الخادم.`
+    );
+    return true;
   };
 
   // 6. Record Operating Expense (البند 7.3: إثبات سند صرف مصروف تشغيلي)
