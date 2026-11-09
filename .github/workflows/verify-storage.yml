@@ -52,6 +52,9 @@ jobs:
       - name: Run exchange-rate registry tests
         run: bun run test:exchange-rate-registry
 
+      - name: Run server exchange tests
+        run: bun run test:server-exchange
+
       - name: TypeScript validation
         run: bun run lint
 
