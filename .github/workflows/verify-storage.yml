@@ -58,6 +58,9 @@ jobs:
       - name: Run cashier shift lifecycle tests
         run: bun run test:cashier-shifts
 
+      - name: Run authenticated HTTP integration tests
+        run: bun run test:http-integration
+
       - name: TypeScript validation
         run: bun run lint
 
