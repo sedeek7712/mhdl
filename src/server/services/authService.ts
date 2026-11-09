@@ -254,7 +254,15 @@ class AuthService {
     try {
       const payload: AuthTokenPayload = JSON.parse(Buffer.from(data, 'base64url').toString('utf-8'));
       const now = Math.floor(Date.now() / 1000);
-      if (payload.exp && payload.exp < now) {
+      if (!payload || typeof payload.userId !== 'string' || typeof payload.username !== 'string' ||
+          typeof payload.role !== 'string' || !Number.isSafeInteger(payload.exp) || payload.exp <= now) {
+        return null;
+      }
+
+      // إيقاف الجلسات فور تعطيل الحساب أو تغير هويته/صلاحياته في ملف المستخدمين.
+      const currentUser = this.users.get(payload.username);
+      if (!currentUser || !currentUser.isActive || currentUser.id !== payload.userId ||
+          currentUser.role !== payload.role || currentUser.branchId !== payload.branchId) {
         return null;
       }
       return payload;
@@ -297,6 +305,16 @@ class AuthService {
           ? 'تم حظر محاولات الدخول مؤقتاً لتجاوز الحد المسموح من الأخطاء (5 محاولات). يرجى المحاولة بعد 5 دقائق.'
           : 'المستخدم أو الدور غير موجود في النظام المالي المعتمد',
       };
+    }
+
+    if (!user.isActive) {
+      this.recordSecurityEvent({
+        event: 'LOGIN_FAILED',
+        usernameOrRole: user.username,
+        ip,
+        details: 'تم رفض تسجيل الدخول لأن حساب المستخدم معطل.',
+      });
+      return { success: false, error: 'هذا الحساب معطل. راجع مالك النظام لإعادة تفعيله.' };
     }
 
     if (!pin || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
