@@ -417,8 +417,11 @@ function compareOpeningBalances(
 
 function assertSourceUnchanged(snapshots: SourceFileSnapshot[], sourceDirectory: string): boolean {
   for (const snapshot of snapshots) {
-    if (snapshot.disposition === 'optional_missing') continue;
     const filePath = path.join(sourceDirectory, snapshot.name);
+    if (snapshot.disposition === 'optional_missing') {
+      if (fs.existsSync(filePath)) return false;
+      continue;
+    }
     const current = fs.readFileSync(filePath, 'utf8');
     if (Buffer.byteLength(current, 'utf8') !== snapshot.bytes || sha256(current) !== snapshot.sha256) {
       return false;
@@ -478,7 +481,8 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
         loaded.set(name, item);
         payloads.set(name, item.payload);
         const deferred = name.startsWith('system_users') || name === 'whatsapp_dispatch_registry.json' || name === 'exchange_rate_state.json' || name === 'cash_box_shift_state.json';
-        addSnapshot(report.sourceFiles, name, item, deferred ? 'deferred' : 'imported');
+        const validatedOnly = name === 'financial_baseline_approved.local.json';
+        addSnapshot(report.sourceFiles, name, item, deferred ? 'deferred' : validatedOnly ? 'validated_only' : 'imported');
       } else {
         addSnapshot(report.sourceFiles, name, null, 'optional_missing');
       }
