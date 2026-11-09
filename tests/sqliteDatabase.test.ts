@@ -41,17 +41,26 @@ function makeTempDirectory(t: { after: (fn: () => void) => void }): string {
   return directory;
 }
 
-test('default database path is outside the application directory and uses Windows user data', () => {
+test('default database path is outside the application directory and prefers Windows local user data', () => {
   const databasePath = getDefaultSqliteDatabasePath(
-    { APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming' },
+    {
+      APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\Tester\\AppData\\Local',
+    },
     'win32',
     'C:\\Users\\Tester'
   );
 
-  assert.match(databasePath, /AmroAlnamariExchange[\\/]exchange\.sqlite$/);
-  assert.match(databasePath, /AppData[\\/]Roaming/);
-});
+  assert.match(databasePath, /AmroAlnamariExchange[\\/]exchange\\.sqlite$/);
+  assert.match(databasePath, /AppData[\\/]Local/);
 
+  const fallbackPath = getDefaultSqliteDatabasePath(
+    { APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming' },
+    'win32',
+    'C:\\Users\\Tester'
+  );
+  assert.match(fallbackPath, /AppData[\\/]Roaming/);
+});
 test('SQLite enables foreign keys, FULL synchronous mode, WAL, and configured busy timeout', (t) => {
   const directory = makeTempDirectory(t);
   const databasePath = path.join(directory, 'exchange.sqlite');
