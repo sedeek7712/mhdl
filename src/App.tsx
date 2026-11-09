@@ -186,6 +186,27 @@ function AppContent() {
     };
   }, []);
 
+  // Exchange rates and their audit history are server-owned; never trust stale localStorage rates.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let cancelled = false;
+    apiClient.getExchangeRates().then((result) => {
+      if (cancelled) return;
+      if (result.success && Array.isArray(result.rates) && Array.isArray(result.auditLogs)) {
+        setExchangeRates(result.rates as ExchangeRate[]);
+        setAuditLogs(result.auditLogs as ExchangeRateAuditLog[]);
+      } else {
+        setExchangeRates([]);
+        setAuditLogs([]);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
+
   // Load server-owned settings only after the owner session has been verified.
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -1579,40 +1600,22 @@ function AppContent() {
   };
 
   // 7. Update Exchange Rates with Audit Trail
-  const handleUpdateExchangeRate = (rateId: string, newBuyRate: number, newSellRate: number, note?: string) => {
-    const targetRate = exchangeRates.find((r) => r.id === rateId);
-    if (!targetRate) return;
-
-    const now = new Date();
-    const timeStr = now.toISOString().replace('T', ' ').substring(0, 16);
-
-    const newLog: ExchangeRateAuditLog = {
-      id: `audit-${Date.now()}`,
-      currencyPair: `${targetRate.fromCurrency} / ${targetRate.toCurrency}`,
-      oldBuyRate: targetRate.buyRate,
-      newBuyRate,
-      oldSellRate: targetRate.sellRate,
-      newSellRate,
-      changedAt: timeStr,
-      changedBy: `${currentUser.name} (${currentUser.roleTitleAr})`,
+  const handleUpdateExchangeRate = async (rateId: string, newBuyRate: number, newSellRate: number, note?: string) => {
+    const result = await apiClient.updateExchangeRate({
+      rateId,
+      buyRate: newBuyRate,
+      sellRate: newSellRate,
       note: note || 'تعديل أسعار الصرف المعتمدة',
-    };
+    });
 
-    setAuditLogs((prev) => [newLog, ...prev]);
+    if (!result.success || !Array.isArray(result.rates) || !Array.isArray(result.auditLogs)) {
+      toast.error('تعذر اعتماد سعر الصرف', result.error || 'لم يتم حفظ السعر في الخادم.');
+      return;
+    }
 
-    setExchangeRates((prev) =>
-      prev.map((r) =>
-        r.id === rateId
-          ? {
-              ...r,
-              buyRate: newBuyRate,
-              sellRate: newSellRate,
-              updatedAt: timeStr,
-              updatedBy: currentUser.name,
-            }
-          : r
-      )
-    );
+    setExchangeRates(result.rates as ExchangeRate[]);
+    setAuditLogs(result.auditLogs as ExchangeRateAuditLog[]);
+    toast.success('تم اعتماد سعر الصرف', 'تم حفظ السعر وسجل التعديل في الخادم.');
   };
 
   // 8. Close Shift (إقفال الوردية)
