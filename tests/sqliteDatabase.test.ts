@@ -35,10 +35,8 @@ const baseMigrations: SqliteMigration[] = [
   },
 ];
 
-function makeTempDirectory(t: { after: (fn: () => void) => void }): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mhdl-sqlite-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  return directory;
+function makeTempDirectory(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'mhdl-sqlite-'));
 }
 
 test('default database path is outside the application directory and prefers Windows local user data', () => {
@@ -67,10 +65,13 @@ test('default database path is outside the application directory and prefers Win
   );
 });
 test('SQLite enables foreign keys, FULL synchronous mode, WAL, and configured busy timeout', (t) => {
-  const directory = makeTempDirectory(t);
+  const directory = makeTempDirectory();
   const databasePath = path.join(directory, 'exchange.sqlite');
   const db = openSqliteDatabase({ filePath: databasePath, busyTimeoutMs: 2500 });
-  t.after(() => db.close());
+  t.after(() => {
+    db.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
 
   assert.equal((db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
   assert.equal((db.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous, 2);
@@ -125,7 +126,7 @@ test('changing an already applied migration is rejected', (t) => {
 });
 
 test('database contents survive close and reopen', (t) => {
-  const directory = makeTempDirectory(t);
+  const directory = makeTempDirectory();
   const databasePath = path.join(directory, 'persistent.sqlite');
 
   const first = openSqliteDatabase({ filePath: databasePath });
@@ -134,7 +135,10 @@ test('database contents survive close and reopen', (t) => {
   first.close();
 
   const second = openSqliteDatabase({ filePath: databasePath });
-  t.after(() => second.close());
+  t.after(() => {
+    second.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
   const row = second.prepare('SELECT name FROM accounts WHERE id = ?').get('main-cash') as { name: string };
   assert.equal(row.name, 'Main cash');
 });

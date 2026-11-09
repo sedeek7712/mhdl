@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -35,4 +37,27 @@ test('checked-in mock JSON dataset imports into disposable SQLite and leaves eve
 
 test('dry-run rejects a missing or non-directory source path', () => {
   assert.throws(() => runSqliteDryRun(path.join(process.cwd(), 'data', 'does-not-exist')));
+});
+
+
+test('dry-run blocks before creating a database when an unresolved financial transaction marker exists', () => {
+  const sourceDirectory = path.resolve(process.cwd(), 'data');
+  const isolatedSource = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-pending-marker-test-'));
+
+  try {
+    fs.cpSync(sourceDirectory, isolatedSource, { recursive: true });
+    fs.writeFileSync(
+      path.join(isolatedSource, 'financial_transaction_pending.json'),
+      JSON.stringify({ transactionId: 'fixture-only-pending-transaction' }),
+      'utf8'
+    );
+
+    const report = runSqliteDryRun(isolatedSource);
+    assert.equal(report.status, 'FAIL');
+    assert.equal(report.issues.some((issue) => issue.code === 'PENDING_FINANCIAL_TRANSACTION'), true);
+    assert.equal(report.validation.temporaryDatabaseRemoved, true);
+    assert.equal(JSON.stringify(report).includes('fixture-only-pending-transaction'), false);
+  } finally {
+    fs.rmSync(isolatedSource, { recursive: true, force: true });
+  }
 });
