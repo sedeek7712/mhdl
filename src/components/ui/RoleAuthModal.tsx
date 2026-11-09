@@ -160,7 +160,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
             <div className="relative">
               <input
                 type="password"
-                maxLength={6}
+                maxLength={64}
                 autoFocus
                 placeholder="••••"
                 value={pin}

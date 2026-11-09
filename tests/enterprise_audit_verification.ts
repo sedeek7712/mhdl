@@ -6,7 +6,7 @@
  */
 
 import crypto from 'crypto';
-import { authService } from '../src/server/services/authService.js';
+import { authService, createPinCredentials, migrateLegacyUsers, hashPinWithSalt, verifyPinHash, isWeakPin, requireAuth } from '../src/server/services/authService.js';
 import { remittanceRegistry } from '../src/server/services/remittanceRegistry.js';
 import { serverAccountingEngine } from '../src/server/services/serverAccountingEngine.js';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../src/server/utils/atomicFileStorage.js';
@@ -69,7 +69,16 @@ async function runTestSuite() {
     );
 
     // توثيق دخول المالك برمز PIN الصحيح والتأكد من قبول التوكن الأصلي فقط
-    const realLogin = authService.authenticateUser('owner', '1234', '127.0.0.1');
+    // N3: لا رموز ثابتة؛ نهيّئ رمز اختبار في الذاكرة فقط (لا يُحفظ على القرص)
+    const legacyTry = authService.authenticateUser('owner', '1234', '10.9.9.9');
+    assert(
+      legacyTry.success === false,
+      'N3: رمز المالك القديم (1234) مرفوض',
+      'المرحلة 2 (الأمان)',
+      'لم يعد أي رمز ثابت معروف يفتح النظام.'
+    );
+    Object.assign(authService.findUser('owner')!, createPinCredentials('Test-Owner-Pin-2026'));
+    const realLogin = authService.authenticateUser('owner', 'Test-Owner-Pin-2026', '127.0.0.1');
     assert(
       realLogin.success === true && !!realLogin.token,
       'C1: اختبار إصدار وقبول التوكن الشرعي عبر المفتاح الديناميكي المحمي',
@@ -633,6 +642,79 @@ async function runTestSuite() {
     );
   } catch (err: any) {
     assert(false, 'اختبارات المرحلة 1-ب', 'المرحلة 1-ب', err.message);
+  }
+
+  // =========================================================================
+  // 3-E. اختبارات المرحلة 2 (N3 / N10): الرموز، الترحيل، إبطال الجلسات، تعطيل الحساب
+  // =========================================================================
+  try {
+    // ترحيل سجل قديم (PBKDF2 + رمز 1234) → scrypt + كلمة مرور عشوائية + tokenVersion
+    const legacySalt = crypto.randomBytes(16).toString('hex');
+    const legacyRec: any = {
+      id: 'u-legacy', name: 'قديم', username: 'legacy', role: 'teller', branchId: 'b', branchName: 'b',
+      pinSalt: legacySalt, pinHash: hashPinWithSalt('1234', legacySalt, 'pbkdf2'), isActive: true, createdAt: 'x',
+    };
+    const modernCreds = createPinCredentials('Modern-Pin-Keep-1');
+    const modernRec: any = { ...legacyRec, id: 'u-modern', username: 'modern', ...modernCreds, tokenVersion: 3 };
+    const mig = migrateLegacyUsers([legacyRec, modernRec]);
+    const [m0, m1] = mig.users;
+    assert(
+      m0.pinAlgo === 'scrypt' && !verifyPinHash('1234', m0.pinSalt, m0.pinHash, 'scrypt') &&
+        m0.tokenVersion === 1 && mig.issued.length === 1 && mig.issued[0].password.length === 12 &&
+        verifyPinHash(mig.issued[0].password, m0.pinSalt, m0.pinHash, 'scrypt') &&
+        m1.pinHash === modernRec.pinHash && m1.tokenVersion === 3,
+      'N3: ترحيل السجل القديم إلى scrypt بكلمة مرور عشوائية وترك الحديث كما هو',
+      'المرحلة 2 (الأمان)',
+      'الرمز القديم 1234 لا يعمل بعد الترحيل، والسجلات الحديثة لا تُمَسّ.'
+    );
+
+    assert(
+      isWeakPin('1234') && isWeakPin('11111111') && isWeakPin('12345678') && !isWeakPin('Kx92-pLm41'),
+      'N3: سياسة الرمز الضعيف (قصير/مكرر/شائع)',
+      'المرحلة 2 (الأمان)',
+      'يُرفض القصير والمكرر والشائع ويُقبل الرمز القوي.'
+    );
+
+    // تغيير الرمز يُبطل الجلسات القديمة (بدون الكتابة على ملف المستخدمين الحقيقي)
+    const svc: any = authService;
+    const origSave = svc.saveUsersToDisk.bind(svc);
+    svc.saveUsersToDisk = () => {};
+    try {
+      const teller = authService.findUser('teller')!;
+      Object.assign(teller, createPinCredentials('Teller-Test-Pin-1'));
+      const loginA = authService.authenticateUser('sedeek', 'Teller-Test-Pin-1', '10.1.1.1');
+      const oldPayload = authService.verifyToken(loginA.token!)!;
+      const shortRes = authService.changePin('sedeek', 'Teller-Test-Pin-1', 'abc12');
+      const weakRes = authService.changePin('sedeek', 'Teller-Test-Pin-1', '11111111');
+      const wrongRes = authService.changePin('sedeek', 'bad-current-1', 'Another-Pin-2027');
+      const okRes = authService.changePin('sedeek', 'Teller-Test-Pin-1', 'Another-Pin-2027');
+      const newPayload = okRes.token ? authService.verifyToken(okRes.token)! : null;
+      let status = 0;
+      requireAuth({ headers: { authorization: `Bearer ${loginA.token}` } } as any, { status(c: number) { status = c; return { json() {} }; } } as any, () => { status = 200; });
+      assert(
+        shortRes.success === false && weakRes.success === false && wrongRes.success === false && okRes.success === true &&
+          authService.validateSession(oldPayload) === false && !!newPayload && authService.validateSession(newPayload) === true && status === 401,
+        'N10: تغيير الرمز يرفض القصير والضعيف والخاطئ ويُبطل التوكن القديم',
+        'المرحلة 2 (الأمان)',
+        'التوكن القديم يُرفض بـ 401 والتوكن الجديد صالح.'
+      );
+
+      // الحساب المعطّل لا يدخل ولا تصلح جلسته
+      teller.isActive = false;
+      const disabledLogin = authService.authenticateUser('sedeek', 'Another-Pin-2027', '10.2.2.2');
+      const disabledSession = newPayload ? authService.validateSession(newPayload) : true;
+      teller.isActive = true;
+      assert(
+        disabledLogin.success === false && disabledSession === false,
+        'N10: الحساب المعطّل (isActive=false) لا يدخل ولا تصلح جلسته',
+        'المرحلة 2 (الأمان)',
+        'تم رفض الدخول والجلسة للحساب المعطّل.'
+      );
+    } finally {
+      svc.saveUsersToDisk = origSave;
+    }
+  } catch (err: any) {
+    assert(false, 'اختبارات المرحلة 2', 'المرحلة 2 (الأمان)', err.message);
   }
 
   console.log('===============================================================');

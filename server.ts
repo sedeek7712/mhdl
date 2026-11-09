@@ -116,6 +116,14 @@ async function startServer() {
     });
   });
 
+  // N3: تغيير الرمز السري (الرمز الحالي + 8 خانات فأكثر)، ويُرجع توكناً جديداً ويبطل القديم
+  const changePinRateLimiter = createRateLimiter(10, 60);
+  app.post('/api/auth/change-pin', requireAuth, changePinRateLimiter, (req: any, res: Response) => {
+    const { currentPin, newPin } = req.body || {};
+    const result = authService.changePin(req.user.username, currentPin, newPin);
+    return res.status(result.success ? 200 : 400).json(result);
+  });
+
   app.get('/api/auth/session', requireAuth, (req: any, res: Response) => {
     return res.status(200).json({
       success: true,
@@ -132,7 +140,7 @@ async function startServer() {
   });
 
   // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
-  app.get('/api/auth/users', requireAuth, (_req: Request, res: Response) => {
+  app.get('/api/auth/users', requireAuth, requireRoles(['owner', 'general_manager']), (_req: Request, res: Response) => {
     const users = authService.getAllPublicUsers();
     return res.status(200).json({ success: true, users });
   });
@@ -902,8 +910,10 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Amro Alnamari Production Server] Running securely on http://0.0.0.0:${PORT}`);
+  // N6: محلي فقط افتراضياً (جهاز واحد). للتغيير الصريح: HOST=0.0.0.0
+  const HOST = process.env.HOST || '127.0.0.1';
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`[Amro Alnamari Production Server] Running on http://${HOST}:${PORT}`);
   });
 }
 
