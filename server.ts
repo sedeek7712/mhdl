@@ -5,6 +5,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import crypto from 'node:crypto';
 import { metaWhatsAppService, getMetaConfig, isValidMetaToken } from './src/server/services/metaWhatsAppService.js';
 import { dispatchRegistry } from './src/server/services/dispatchRegistry.js';
 import { remittanceRegistry } from './src/server/services/remittanceRegistry.js';
@@ -645,7 +646,6 @@ async function startServer() {
         voucherNumber,
         managerOverride,
         managerOverrideReason,
-        idempotencyKey,
       } = req.body;
 
       const authenticatedUser = req.user as AuthenticatedUser;
@@ -657,10 +657,16 @@ async function startServer() {
         });
       }
 
-      const effectiveIdempotencyKey = idempotencyKey || (req.headers['x-idempotency-key'] as string);
+      // Stable server-owned idempotency key: retries for the same teller + transfer reuse the same key.
+      // Ignore client-generated timestamps so a network retry cannot become a second financial operation.
+      const normalizedTransferNumber = transferNumber.trim().toUpperCase();
+      const stableIdempotencyKey = crypto
+        .createHash('sha256')
+        .update(`remittance-payout:${authenticatedUser.id}:${normalizedTransferNumber}`)
+        .digest('hex');
 
       const payoutResult = remittanceRegistry.payoutRemittance({
-        idempotencyKey: effectiveIdempotencyKey,
+        idempotencyKey: stableIdempotencyKey,
         transferId: transferId || transferNumber,
         transferNumber,
         recipientIdType: recipientIdType || 'national_id',
