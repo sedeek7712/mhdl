@@ -49,6 +49,9 @@ test('runtime fails closed when the database has no active owner and releases th
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-auth-runtime-empty-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const databaseFile = path.join(directory, 'empty.sqlite');
+  const emptyDb = openSqliteDatabase({ filePath: databaseFile });
+  runSqliteMigrations(emptyDb, SQLITE_MIGRATIONS);
+  emptyDb.close();
 
   assert.throws(
     () => createSqliteAuthRuntime({
@@ -103,4 +106,20 @@ test('runtime reuses the shared secret file when no environment secret is config
   assert.equal(second.service.verifyToken(login.token as string)?.userId, owner.id);
   second.close();
   assert.match(fs.readFileSync(secretFile, 'utf8'), /^[a-f0-9]{64}$/);
+});
+
+
+test('runtime refuses a missing database path without creating an empty file', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-auth-runtime-missing-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const databaseFile = path.join(directory, 'missing.sqlite');
+
+  assert.throws(
+    () => createSqliteAuthRuntime({
+      databaseFile,
+      jwtSecret: 'runtime-jwt-secret-which-is-at-least-32-characters',
+    }),
+    /database file does not exist/
+  );
+  assert.equal(fs.existsSync(databaseFile), false);
 });
