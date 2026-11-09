@@ -107,8 +107,7 @@ function selectUserById(db: DatabaseSync, userId: string): SqliteUserRecord | un
   return mapUser(row);
 }
 
-/** Creates one account in a transaction. The schema's partial unique index permits one owner only. */
-export function insertSqliteUser(db: DatabaseSync, user: SqliteUserRecord): SqlitePublicUser {
+function validateSqliteUser(user: SqliteUserRecord): void {
   assertText(user.id, 'user.id');
   assertText(user.name, 'user.name', 120);
   assertText(user.branchId, 'user.branchId');
@@ -126,22 +125,78 @@ export function insertSqliteUser(db: DatabaseSync, user: SqliteUserRecord): Sqli
     throw new Error('User status fields must be boolean values.');
   }
   assertCredentialMaterial(user.pinSalt, user.pinHash, user.sessionVersion);
+}
+
+function insertUserRow(db: DatabaseSync, user: SqliteUserRecord): SqliteUserRecord {
+  const username = user.username.trim().toLowerCase();
+  db.prepare(`
+    INSERT INTO app_users (
+      id, username, name, role, branch_id, branch_name, pin_salt, pin_hash,
+      is_active, must_change_pin, session_version, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    user.id.trim(), username, user.name.trim(), user.role,
+    user.branchId.trim(), user.branchName.trim(), user.pinSalt.toLowerCase(),
+    user.pinHash.toLowerCase(), user.isActive ? 1 : 0,
+    user.mustChangePin ? 1 : 0, user.sessionVersion.toLowerCase(), user.createdAt.trim()
+  );
+  const created = selectUserById(db, user.id.trim());
+  if (!created) throw new Error('Inserted user could not be read back.');
+  return created;
+}
+
+/** Creates one account in a transaction. The schema's partial unique index permits one owner only. */
+export function insertSqliteUser(db: DatabaseSync, user: SqliteUserRecord): SqlitePublicUser {
+  validateSqliteUser(user);
+  return withImmediateTransaction(db, () => toPublicUser(insertUserRow(db, user)));
+}
+
+/**
+ * Imports a complete legacy user set atomically.
+ * Refuses partial owner sets and refuses to mix imported users with existing accounts.
+ */
+export function importSqliteUsers(
+  db: DatabaseSync,
+  users: SqliteUserRecord[]
+): SqlitePublicUser[] {
+  if (!Array.isArray(users) || users.length === 0) {
+    throw new Error('User import requires a non-empty user list.');
+  }
+  users.forEach(validateSqliteUser);
+
+  const owners = users.filter((user) => user.role === 'owner');
+  if (owners.length !== 1 || owners[0].isActive !== true) {
+    throw new Error('User import requires exactly one active owner account.');
+  }
+
+  const usernames = new Set<string>();
+  const userIds = new Set<string>();
+  for (const user of users) {
+    const username = user.username.trim().toLowerCase();
+    const id = user.id.trim();
+    if (usernames.has(username) || userIds.has(id)) {
+      throw new Error('User import contains duplicate usernames or user IDs.');
+    }
+    usernames.add(username);
+    userIds.add(id);
+  }
 
   return withImmediateTransaction(db, () => {
-    db.prepare(`
-      INSERT INTO app_users (
-        id, username, name, role, branch_id, branch_name, pin_salt, pin_hash,
-        is_active, must_change_pin, session_version, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      user.id.trim(), username, user.name.trim(), user.role,
-      user.branchId.trim(), user.branchName.trim(), user.pinSalt.toLowerCase(),
-      user.pinHash.toLowerCase(), user.isActive ? 1 : 0,
-      user.mustChangePin ? 1 : 0, user.sessionVersion.toLowerCase(), user.createdAt.trim()
-    );
-    const created = selectUserById(db, user.id.trim());
-    if (!created) throw new Error('Inserted user could not be read back.');
-    return toPublicUser(created);
+    const existing = db.prepare('SELECT COUNT(*) AS count FROM app_users').get() as
+      | { count: number }
+      | undefined;
+    if (Number(existing?.count ?? 0) !== 0) {
+      throw new Error('User import refused because SQLite already contains user accounts.');
+    }
+
+    const imported = users.map((user) => toPublicUser(insertUserRow(db, user)));
+    const ownerCount = db.prepare(
+      "SELECT COUNT(*) AS count FROM app_users WHERE role = 'owner' AND is_active = 1"
+    ).get() as { count: number };
+    if (Number(ownerCount.count) !== 1) {
+      throw new Error('Imported SQLite users failed the active-owner integrity check.');
+    }
+    return imported;
   });
 }
 
