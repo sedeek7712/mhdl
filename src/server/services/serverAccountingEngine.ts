@@ -74,6 +74,7 @@ export interface ServerJournalEntry {
   grossTargetAmount?: number;
   targetAmount?: number;
   voucherNumber?: string;
+  customerPhone?: string;
 }
 
 class ServerAccountingEngine {
@@ -962,6 +963,7 @@ class ServerAccountingEngine {
       branchId: params.branchId || 'br-main',
       createdBy: params.operatorName.trim(),
       createdById: params.operatorId,
+      customerPhone: params.customerPhone.trim(),
       isBalanced: true,
       idempotencyKey: params.idempotencyKey,
       requestFingerprint,
