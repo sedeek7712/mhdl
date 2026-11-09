@@ -368,6 +368,7 @@ function importExchangeRateState(db: ReturnType<typeof openSqliteDatabase>, valu
   const seenIds = new Set<string>();
   const seenPairs = new Set<string>();
   const rateByPair = new Map<string, string>();
+  let activeRateCount = 0;
   const insertRate = db.prepare('INSERT INTO exchange_rates (id, from_currency, to_currency, buy_rate_micro, sell_rate_micro, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)');
   for (const item of rates) {
     const id = stringValue(item.id, 'rate.id');
@@ -377,12 +378,27 @@ function importExchangeRateState(db: ReturnType<typeof openSqliteDatabase>, valu
     const pair = `${from} / ${to}`;
     if (seenIds.has(id) || seenPairs.has(pair)) throw new Error('Duplicate exchange-rate ID or currency pair.');
     seenIds.add(id); seenPairs.add(pair);
+    const buyRate = numberValue(item.buyRate, 'rate.buyRate');
+    const sellRate = numberValue(item.sellRate, 'rate.sellRate');
+    for (const rate of [buyRate, sellRate]) {
+      if (rate < 0 || rate > 1_000_000_000 ||
+          Math.abs(rate * 1_000_000 - Math.round(rate * 1_000_000)) > 1e-7) {
+        throw new Error('Exchange rates must be non-negative, bounded, and precise to six decimal places.');
+      }
+    }
+    if ((buyRate === 0) !== (sellRate === 0)) {
+      throw new Error('A currency pair cannot have only one of its buy/sell rates configured.');
+    }
+    if (buyRate > 0 && sellRate > 0) activeRateCount += 1;
     insertRate.run(id, from, to,
-      toScaledInteger(numberValue(item.buyRate, 'rate.buyRate'), 1_000_000, 'rate.buyRate'),
-      toScaledInteger(numberValue(item.sellRate, 'rate.sellRate'), 1_000_000, 'rate.sellRate'),
+      toScaledInteger(buyRate, 1_000_000, 'rate.buyRate'),
+      toScaledInteger(sellRate, 1_000_000, 'rate.sellRate'),
       stringValue(item.updatedAt, 'rate.updatedAt', true),
       stringValue(item.updatedBy, 'rate.updatedBy'));
     rateByPair.set(pair, id);
+  }
+  if (activeRateCount === 0) {
+    throw new Error('At least one currency pair must have approved positive buy and sell rates.');
   }
   const insertLog = db.prepare('INSERT INTO exchange_rate_audit (id, rate_id, old_buy_rate_micro, new_buy_rate_micro, old_sell_rate_micro, new_sell_rate_micro, changed_at, changed_by, changed_by_id, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const logIds = new Set<string>();
