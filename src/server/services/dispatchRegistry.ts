@@ -8,6 +8,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { WhatsAppDispatchRecord, WhatsAppLifecycleStatus, WhatsAppVoucherSnapshot } from '../types/whatsapp.js';
+import { safeAtomicWriteJson } from '../utils/atomicFileStorage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,34 +37,72 @@ class DispatchRegistry {
     this.loadFromDisk();
   }
 
-  private loadFromDisk() {
-    try {
-      if (fs.existsSync(REGISTRY_FILE)) {
-        const raw = fs.readFileSync(REGISTRY_FILE, 'utf-8');
-        const list: WhatsAppDispatchRecord[] = JSON.parse(raw);
-        for (const item of list) {
-          this.records.set(item.id, item);
-          if (item.voucherNumber) {
-            this.voucherToRecordId.set(item.voucherNumber, item.id);
-          }
-          if (item.whatsappMessageId) {
-            this.messageIdToRecordId.set(item.whatsappMessageId, item.id);
-          }
-        }
-        console.log(`[WhatsApp Registry] Loaded ${this.records.size} dispatch records from disk.`);
+  private buildIndexes(list: WhatsAppDispatchRecord[]) {
+    if (!Array.isArray(list)) throw new Error('توقف آمن: سجل WhatsApp يجب أن يكون مصفوفة سجلات.');
+    const records = new Map<string, WhatsAppDispatchRecord>();
+    const voucherToRecordId = new Map<string, string>();
+    const messageIdToRecordId = new Map<string, string>();
+    const idempotencyKeys = new Set<string>();
+    const statuses: WhatsAppLifecycleStatus[] = [
+      'PENDING', 'GENERATING', 'GENERATED', 'UPLOADING', 'UPLOADED',
+      'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'RETRY_PENDING',
+    ];
+
+    for (const item of list) {
+      if (!item || typeof item !== 'object' ||
+          typeof item.id !== 'string' || !item.id.trim() ||
+          typeof item.voucherNumber !== 'string' || !item.voucherNumber.trim() ||
+          typeof item.transactionId !== 'string' || !item.transactionId.trim() ||
+          typeof item.createdAt !== 'string' || !Number.isFinite(Date.parse(item.createdAt)) ||
+          typeof item.idempotencyKey !== 'string' || !item.idempotencyKey.trim() ||
+          typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(item.sha256) ||
+          !Number.isSafeInteger(item.fileSizeBytes) || item.fileSizeBytes <= 0 ||
+          !statuses.includes(item.status) ||
+          !item.snapshot || typeof item.snapshot !== 'object' || Array.isArray(item.snapshot) ||
+          (item.rawWebhookEvents !== undefined && !Array.isArray(item.rawWebhookEvents))) {
+        throw new Error('توقف آمن: سجل WhatsApp يحتوي على سجل ناقص أو غير صالح؛ لم يتم تحميل سجل فارغ.');
       }
-    } catch (err) {
-      console.warn('[WhatsApp Registry] Could not load registry from disk, starting empty:', err);
+      if (records.has(item.id) || voucherToRecordId.has(item.voucherNumber) ||
+          idempotencyKeys.has(item.idempotencyKey) ||
+          (item.whatsappMessageId && messageIdToRecordId.has(item.whatsappMessageId))) {
+        throw new Error('توقف آمن: سجل WhatsApp يحتوي على معرف أو رقم سند أو مفتاح تكرار أو رسالة مكررة.');
+      }
+      records.set(item.id, item);
+      voucherToRecordId.set(item.voucherNumber, item.id);
+      idempotencyKeys.add(item.idempotencyKey);
+      if (item.whatsappMessageId) messageIdToRecordId.set(item.whatsappMessageId, item.id);
     }
+    return { records, voucherToRecordId, messageIdToRecordId };
   }
 
-  private saveToDisk() {
-    try {
-      const list = Array.from(this.records.values());
-      fs.writeFileSync(REGISTRY_FILE, JSON.stringify(list, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('[WhatsApp Registry] Failed to persist registry to disk:', err);
-    }
+  private applyIndexes(indexes: ReturnType<DispatchRegistry['buildIndexes']>): void {
+    this.records = indexes.records;
+    this.voucherToRecordId = indexes.voucherToRecordId;
+    this.messageIdToRecordId = indexes.messageIdToRecordId;
+  }
+
+  private loadFromDisk(): void {
+    if (!fs.existsSync(REGISTRY_FILE)) return;
+    const raw = fs.readFileSync(REGISTRY_FILE, 'utf-8');
+    if (!raw.trim()) throw new Error('توقف آمن: سجل WhatsApp فارغ أو مقطوع.');
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('توقف آمن: بنية سجل WhatsApp غير صالحة.');
+    const indexes = this.buildIndexes(parsed as WhatsAppDispatchRecord[]);
+    this.applyIndexes(indexes);
+    console.log(`[WhatsApp Registry] Loaded ${this.records.size} validated dispatch records from disk.`);
+  }
+
+  private persistRecords(nextRecords: WhatsAppDispatchRecord[]): void {
+    const indexes = this.buildIndexes(nextRecords);
+    // Persist first. In-memory indexes are replaced only after the atomic disk write succeeds.
+    safeAtomicWriteJson(REGISTRY_FILE, nextRecords);
+    this.applyIndexes(indexes);
+  }
+
+  private persistRecord(nextRecord: WhatsAppDispatchRecord): void {
+    const nextRecords = Array.from(this.records.values()).filter((item) => item.id !== nextRecord.id);
+    nextRecords.push(nextRecord);
+    this.persistRecords(nextRecords);
   }
 
   /**
@@ -77,11 +116,49 @@ class DispatchRegistry {
    * حفظ نسخة أرشيفية دائمة لصورة السند على القرص مرتبطة بالبصمة
    */
   public archiveVoucherImage(buffer: Buffer, voucherNumber: string, sha256: string): string {
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > 2.5 * 1024 * 1024) {
+      throw new Error('حجم صورة السند غير صالح للأرشفة.');
+    }
+    if (typeof voucherNumber !== 'string' || !voucherNumber.trim() ||
+        typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(sha256) ||
+        this.calculateSha256(buffer) !== sha256.toLowerCase()) {
+      throw new Error('بصمة صورة السند أو رقم السند غير صالح.');
+    }
+
+    const isPng = buffer.length >= 8 &&
+      buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const isJpeg = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    if (!isPng && !isJpeg) throw new Error('لا يمكن أرشفة ملف ليس PNG أو JPEG.');
     const cleanNum = voucherNumber.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `${cleanNum}_${sha256.substring(0, 12)}.png`;
+    const extension = isPng ? 'png' : 'jpg';
+    const filename = `${cleanNum}_${sha256.substring(0, 12)}.${extension}`;
     const filepath = path.resolve(ARCHIVE_DIR, filename);
-    fs.writeFileSync(filepath, buffer);
-    return filename;
+
+    if (fs.existsSync(filepath)) {
+      const existing = fs.readFileSync(filepath);
+      if (this.calculateSha256(existing) !== sha256.toLowerCase()) {
+        throw new Error('تعارض في ملف أرشيف السند الموجود مسبقاً.');
+      }
+      return filename;
+    }
+
+    const tempPath = `${filepath}.tmp.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(tempPath, 'wx', 0o600);
+      fs.writeFileSync(fd, buffer);
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      fs.renameSync(tempPath, filepath);
+      return filename;
+    } catch (error) {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch { /* best-effort descriptor cleanup */ }
+      }
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch { /* best-effort temp cleanup */ }
+      throw new Error(`تعذر حفظ أرشيف صورة السند ذرياً: ${error instanceof Error ? error.message : 'خطأ تخزين غير معروف'}`);
+    }
   }
 
   /**
@@ -176,11 +253,8 @@ class DispatchRegistry {
       rawWebhookEvents: existing?.rawWebhookEvents || [],
     };
 
-    this.records.set(recordId, record);
-    this.voucherToRecordId.set(params.voucherNumber, recordId);
-    this.saveToDisk();
-
-    return record;
+    this.persistRecord(record);
+    return { ...record, rawWebhookEvents: [...(record.rawWebhookEvents || [])] };
   }
 
   /**
@@ -190,10 +264,12 @@ class DispatchRegistry {
     const record = this.records.get(recordId);
     if (!record) return;
 
-    record.metaMediaId = metaMediaId;
-    record.uploadedAt = new Date().toISOString();
-    record.status = 'SENDING';
-    this.saveToDisk();
+    this.persistRecord({
+      ...record,
+      metaMediaId,
+      uploadedAt: new Date().toISOString(),
+      status: 'SENDING',
+    });
   }
 
   /**
@@ -203,11 +279,12 @@ class DispatchRegistry {
     const record = this.records.get(recordId);
     if (!record) return;
 
-    record.whatsappMessageId = whatsappMessageId;
-    record.sentAt = new Date().toISOString();
-    record.status = 'SENT'; // ملاحظة: لا تسجل DELIVERED هنا، التسليم يأتي فقط من Webhook!
-    this.messageIdToRecordId.set(whatsappMessageId, recordId);
-    this.saveToDisk();
+    this.persistRecord({
+      ...record,
+      whatsappMessageId,
+      sentAt: new Date().toISOString(),
+      status: 'SENT', // Meta acceptance only; delivery is confirmed by webhook.
+    });
     console.log(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as SENT. Message ID: ${whatsappMessageId}`);
   }
 
@@ -233,26 +310,24 @@ class DispatchRegistry {
       return true;
     }
 
-    if (!record.rawWebhookEvents) record.rawWebhookEvents = [];
-    record.rawWebhookEvents.push(rawEvent);
-
     const now = new Date().toISOString();
+    const updated: WhatsAppDispatchRecord = {
+      ...record,
+      rawWebhookEvents: [...(record.rawWebhookEvents || []), rawEvent],
+    };
     if (status === 'delivered') {
-      record.status = 'DELIVERED';
-      record.deliveredAt = now;
-      console.log(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as DELIVERED via Webhook!`);
+      updated.status = 'DELIVERED';
+      updated.deliveredAt = now;
     } else if (status === 'read') {
-      record.status = 'READ';
-      record.readAt = now;
-      console.log(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as READ via Webhook!`);
+      updated.status = 'READ';
+      updated.readAt = now;
     } else if (status === 'failed') {
-      record.status = 'FAILED';
-      record.failedAt = now;
-      record.lastError = JSON.stringify(rawEvent.errors || 'Webhook delivery failed');
-      console.error(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as FAILED via Webhook!`);
+      updated.status = 'FAILED';
+      updated.failedAt = now;
+      updated.lastError = JSON.stringify(rawEvent.errors || 'Webhook delivery failed');
     }
 
-    this.saveToDisk();
+    this.persistRecord(updated);
     return true;
   }
 
@@ -263,11 +338,13 @@ class DispatchRegistry {
     const record = this.records.get(recordId);
     if (!record) return;
 
-    record.status = 'FAILED';
-    record.lastError = error;
-    record.failedAt = new Date().toISOString();
-    this.saveToDisk();
-    console.warn(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as FAILED: ${error}`);
+    this.persistRecord({
+      ...record,
+      status: 'FAILED',
+      lastError: error,
+      failedAt: new Date().toISOString(),
+    });
+    console.warn(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as FAILED.`);
   }
 
   /**
