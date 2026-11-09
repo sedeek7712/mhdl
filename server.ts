@@ -92,11 +92,12 @@ async function startServer() {
   // Authentication & Session Endpoints (FIND-002, FIND-010, H5)
   // =========================================================================
   app.post('/api/auth/login', (req: Request, res: Response) => {
-    const { roleOrUsername, pin } = req.body;
-    if (!roleOrUsername) {
+    const { roleOrUsername, pin } = req.body || {};
+    if (typeof roleOrUsername !== 'string' || !roleOrUsername.trim() ||
+        typeof pin !== 'string' || !/^\\d{6}$/.test(pin)) {
       return res.status(400).json({
         success: false,
-        error: 'اسم المستخدم أو الدور مطلوب لتسجيل الدخول',
+        error: 'اسم المستخدم ورمز PIN المكوّن من 6 أرقام مطلوبان لتسجيل الدخول.',
       });
     }
 
