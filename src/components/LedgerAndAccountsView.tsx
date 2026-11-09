@@ -589,7 +589,7 @@ export const LedgerAndAccountsView: React.FC<LedgerAndAccountsViewProps> = ({
                   type="button"
                   onClick={() => setIsExpenseModalOpen(false)}
                   disabled={isSubmittingExpense}
-                  className="min-h-[44px" px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 rounded-xl text-xs font-semibold cursor-pointer"
+                  className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   إلغاء
                 </button>
