@@ -214,14 +214,11 @@ class AuthService {
     }));
   }
 
-  public findUser(usernameOrRole: string): StoredUserRecord | undefined {
-    const key = String(usernameOrRole || '').trim().toLowerCase();
-    const direct = this.users.get(key);
-    if (direct) return direct;
-    // Backward compatibility only when a role has exactly one account. Shared role aliases
-    // are intentionally rejected so one employee cannot authenticate as another.
-    const matches = Array.from(this.users.values()).filter((user) => user.role === key);
-    return matches.length === 1 ? matches[0] : undefined;
+  public findUser(username: string): StoredUserRecord | undefined {
+    const key = String(username || '').trim().toLowerCase();
+    if (!key) return undefined;
+    // Role names are public labels, never login identifiers. Authentication is username-only.
+    return this.users.get(key);
   }
 
   private persistUserSet(nextUsers: StoredUserRecord[]): void {
@@ -425,13 +422,12 @@ class AuthService {
   }
 
   public authenticateUser(
-    roleOrUsername: string,
+    username: string,
     pin?: string,
     ip = '127.0.0.1'
   ): { success: boolean; token?: string; user?: AuthenticatedUser; error?: string; locked?: boolean } {
-    const user = this.findUser(roleOrUsername);
-    // Bind aliases (for example, "owner" and the owner's username) to one lockout counter.
-    const lockIdentity = user?.id || String(roleOrUsername).trim().toLowerCase();
+    const user = this.findUser(username);
+    const lockIdentity = user?.id || String(username).trim().toLowerCase();
     const lockKey = `${lockIdentity}:${ip}`;
     const now = Date.now();
     const failRecord = this.failedLogins.get(lockKey);
@@ -440,7 +436,7 @@ class AuthService {
       const remainingSec = Math.ceil((failRecord.lockUntil - now) / 1000);
       this.recordSecurityEvent({
         event: 'BRUTE_FORCE_BLOCKED',
-        usernameOrRole: roleOrUsername,
+        usernameOrRole: username,
         ip,
         details: `محاولة دخول خلال فترة الحظر المؤقت. متبقي ${remainingSec} ثانية.`,
       });
@@ -452,13 +448,13 @@ class AuthService {
     }
 
     if (!user) {
-      const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'المستخدم غير مسجل في النظام');
+      const isLocked = this.recordFailedAttempt(lockKey, username, ip, 'اسم المستخدم غير مسجل في النظام');
       return {
         success: false,
         locked: isLocked,
         error: isLocked
           ? 'تم حظر محاولات الدخول مؤقتاً لتجاوز الحد المسموح من الأخطاء (5 محاولات). يرجى المحاولة بعد 5 دقائق.'
-          : 'المستخدم أو الدور غير موجود في النظام المالي المعتمد',
+          : 'اسم المستخدم غير موجود في النظام المالي المعتمد',
       };
     }
 
@@ -473,7 +469,7 @@ class AuthService {
     }
 
     if (typeof pin !== 'string' || !/^\d{6}$/.test(pin) || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
-      const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'رمز PIN غير مطابق للتجزئة المعتمدة');
+      const isLocked = this.recordFailedAttempt(lockKey, username, ip, 'رمز PIN غير مطابق للتجزئة المعتمدة');
       return {
         success: false,
         locked: isLocked,
