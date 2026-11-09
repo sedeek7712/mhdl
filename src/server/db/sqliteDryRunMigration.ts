@@ -955,6 +955,15 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       remittances: 'remittances',
       remittancePayouts: 'remittance_payouts',
       remittanceAuditLogs: 'remittance_audit_logs',
+      localUsersImported: 'app_users',
+      exchangeRates: 'exchange_rates',
+      exchangeRateAuditLogs: 'exchange_rate_audit',
+      cashierShifts: 'cashier_shifts',
+      cashierShiftBalances: 'cashier_shift_balances',
+      cashierShiftEvents: 'cashier_shift_events',
+      whatsappDispatches: 'whatsapp_dispatches',
+      whatsappWebhookEvents: 'whatsapp_webhook_events',
+      voucherAttachments: 'voucher_attachments',
     };
     for (const [key, table] of Object.entries(expectedCounts)) {
       const result = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
@@ -1000,8 +1009,15 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       message: 'Temporary database cleanup could not be verified.',
     });
   }
-  if (!report.validation.sourceFilesUnchanged && report.status === 'PASS') {
+  if ((!report.validation.sourceFilesUnchanged ||
+       !report.validation.operationalDataImported ||
+       !report.validation.voucherArchivesVerified) && report.status === 'PASS') {
     report.status = 'FAIL';
+    report.issues.push({
+      file: 'operational-data',
+      code: 'OPERATIONAL_PARITY_VALIDATION_FAILED',
+      message: 'One or more operational datasets or voucher archives could not be verified.',
+    });
   }
 
   return report;
