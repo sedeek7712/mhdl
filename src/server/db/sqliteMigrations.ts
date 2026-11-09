@@ -100,7 +100,7 @@ CREATE TABLE remittance_settings (
 ) STRICT;
 
 CREATE TABLE remittance_number_reservations (
-  number_normalized TEXT PRIMARY KEY CHECK (length(trim(number_normalized)) > 0),
+  number_normalized TEXT PRIMARY KEY COLLATE NOCASE CHECK (length(trim(number_normalized)) > 0),
   number_original TEXT NOT NULL CHECK (length(trim(number_original)) > 0),
   registered_at TEXT NOT NULL,
   registered_by TEXT NOT NULL,
@@ -110,7 +110,7 @@ CREATE TABLE remittance_number_reservations (
 CREATE TABLE remittances (
   id TEXT PRIMARY KEY,
   transfer_number TEXT NOT NULL,
-  transfer_number_normalized TEXT NOT NULL UNIQUE
+  transfer_number_normalized TEXT NOT NULL UNIQUE COLLATE NOCASE
     REFERENCES remittance_number_reservations(number_normalized) ON UPDATE RESTRICT ON DELETE RESTRICT,
   direction TEXT NOT NULL CHECK (direction IN ('outgoing', 'incoming')),
   status TEXT NOT NULL CHECK (status IN ('draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending')),
@@ -137,7 +137,7 @@ CREATE TABLE remittances (
   cash_movement_reference TEXT,
   payout_record_id TEXT,
   numbering_mode TEXT CHECK (numbering_mode IS NULL OR numbering_mode IN ('automatic', 'manual')),
-  idempotency_key TEXT,
+  idempotency_key TEXT UNIQUE,
   notes TEXT
 ) STRICT;
 
