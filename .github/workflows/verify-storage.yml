@@ -43,6 +43,9 @@ jobs:
       - name: Run incoming remittance registration tests
         run: bun run test:incoming-remittances
 
+      - name: Run outgoing remittance tests
+        run: bun run test:outgoing-remittances
+
       - name: TypeScript validation
         run: bun run lint
 
