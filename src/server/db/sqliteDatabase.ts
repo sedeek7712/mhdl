@@ -161,7 +161,13 @@ export function runSqliteMigrations(db: DatabaseSync, migrations: SqliteMigratio
     }
   }
 
-  return db.prepare(
+  const rows = db.prepare(
     'SELECT version, name, checksum FROM schema_migrations ORDER BY version'
-  ).all() as AppliedMigration[];
+  ).all();
+
+  return rows.map((row) => ({
+    version: Number(row.version),
+    name: String(row.name),
+    checksum: String(row.checksum),
+  }));
 }
