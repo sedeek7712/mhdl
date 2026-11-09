@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Account, CurrencyCode, Remittance, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { formatMoney, tafqeetArabic } from '../services/accountingEngine';
 import { ArrowDownLeft, CheckCircle2, DollarSign, IdCard, KeyRound, Loader2, MessageCircle, Phone, Plus, Printer, Receipt, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, UserCheck, Vault, X } from 'lucide-react';
@@ -44,6 +44,45 @@ export const ReceiveTransferDesk: React.FC<ReceiveTransferDeskProps> = ({
   const [hasVerifiedOriginalId, setHasVerifiedOriginalId] = useState(false);
   const [isManagerOverride, setIsManagerOverride] = useState(false);
   const toast = useToast();
+
+  // Restore the exact pending registration request after an app/browser restart.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('alnamari_pending_incoming_remittance_v1');
+      if (!raw) return;
+
+      const pending = JSON.parse(raw);
+      const supportedCurrencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+      if (!pending ||
+          typeof pending.transferNumber !== 'string' ||
+          typeof pending.networkName !== 'string' ||
+          typeof pending.senderName !== 'string' ||
+          typeof pending.senderPhone !== 'string' ||
+          typeof pending.recipientName !== 'string' ||
+          typeof pending.recipientPhone !== 'string' ||
+          typeof pending.amount !== 'number' || !Number.isFinite(pending.amount) ||
+          !supportedCurrencies.includes(pending.currency)) {
+        return;
+      }
+
+      setRegTransferNum(pending.transferNumber);
+      setRegNetwork(pending.networkName);
+      setRegSenderName(pending.senderName);
+      setRegSenderPhone(pending.senderPhone);
+      setRegRecipientName(pending.recipientName);
+      setRegRecipientPhone(pending.recipientPhone);
+      setRegAmount(pending.amount);
+      setRegCurrency(pending.currency);
+      setRegNotes(typeof pending.notes === 'string' ? pending.notes : '');
+      setIsRegisterModalOpen(true);
+      toast.warning(
+        'تم استرجاع محاولة تسجيل حوالة غير محسومة',
+        'راجع البيانات المستعادة ثم أعد إرسالها كما هي لاسترجاع نتيجة الخادم دون تكرار السجل.'
+      );
+    } catch {
+      // Corrupt or unavailable local pending state is not used to create a remittance.
+    }
+  }, []);
 
   // Incoming Remittance Quick Register Modal
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
