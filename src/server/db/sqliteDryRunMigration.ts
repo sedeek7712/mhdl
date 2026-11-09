@@ -461,6 +461,19 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
     issues: [],
   };
 
+  // Never migrate while the source ledger says a prior financial transaction is unresolved.
+  // The marker contents can contain operational details, so only its presence is reported.
+  const pendingTransactionMarker = path.join(absoluteSource, 'financial_transaction_pending.json');
+  if (fs.existsSync(pendingTransactionMarker)) {
+    report.issues.push({
+      file: 'financial_transaction_pending.json',
+      code: 'PENDING_FINANCIAL_TRANSACTION',
+      message: 'Dry run blocked: an unresolved financial transaction marker exists. Reconcile the ledger manually before retrying.',
+    });
+    report.validation.temporaryDatabaseRemoved = true;
+    return report;
+  }
+
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-sqlite-dry-run-'));
   const databasePath = path.join(temporaryDirectory, 'dry-run.sqlite');
   let db: ReturnType<typeof openSqliteDatabase> | undefined;
