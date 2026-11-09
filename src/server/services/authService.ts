@@ -138,16 +138,12 @@ class AuthService {
   }
 
   private loadUsersFromDisk(): void {
-    // لا توجد حسابات أو PIN افتراضية في الكود؛ ملف المستخدمين جزء إلزامي من بيانات التشغيل.
+    // Keep one active owner, while allowing the operational roles required by an exchange office.
+    // Users authenticate by username; a role is never a shared credential.
     const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, [], {
       failOnCorruption: true,
       failOnMissing: true,
     });
-
-    if (!Array.isArray(loadedUsers) || loadedUsers.length !== 1) {
-      throw new Error('توقف آمن: يجب أن يحتوي النظام على حساب مالك واحد فقط. شغّل الأمر npm run setup:owner لإنشاء حساب واحد بأمان مع حفظ نسخة احتياطية من الحسابات السابقة.');
-    }
-
     const allowedRoles: AuthenticatedUser['role'][] = [
       'owner',
       'general_manager',
@@ -157,33 +153,46 @@ class AuthService {
       'accountant',
       'compliance_officer',
     ];
-    const usernames = new Set<string>();
+    if (!Array.isArray(loadedUsers) || loadedUsers.length === 0) {
+      throw new Error('توقف آمن: ملف المستخدمين فارغ أو غير صالح. يلزم إعداد حساب مالك قبل التشغيل.');
+    }
 
+    const usernames = new Set<string>();
+    const userIds = new Set<string>();
+    let ownerCount = 0;
+    let activeOwnerCount = 0;
     for (const user of loadedUsers) {
       if (!user || typeof user.id !== 'string' || !user.id.trim() ||
           typeof user.name !== 'string' || !user.name.trim() ||
-          typeof user.username !== 'string' || !user.username.trim() ||
+          typeof user.username !== 'string' || !/^[a-zA-Z0-9._-]{3,32}$/.test(user.username.trim()) ||
           !allowedRoles.includes(user.role) ||
           typeof user.branchId !== 'string' || !user.branchId.trim() ||
           typeof user.branchName !== 'string' || !user.branchName.trim() ||
           typeof user.pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(user.pinSalt) ||
           typeof user.pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(user.pinHash) ||
           typeof user.sessionVersion !== 'string' || !/^[a-f0-9]{32}$/i.test(user.sessionVersion) ||
-          user.role !== 'owner' || user.isActive !== true || user.mustChangePin !== false) {
-        throw new Error('توقف آمن: حساب المالك غير مهيأ أو ما زال يستخدم بيانات اعتماد قديمة. شغّل npm run setup:owner لتغيير PIN وإيقاف الحسابات الأخرى مع حفظ نسخة احتياطية محلية.');
+          typeof user.isActive !== 'boolean' || typeof user.mustChangePin !== 'boolean' ||
+          typeof user.createdAt !== 'string' || !user.createdAt.trim()) {
+        throw new Error('توقف آمن: يوجد حساب مستخدم غير مكتمل أو ببيانات اعتماد قديمة. أعد تهيئة بيانات الحساب بصورة آمنة قبل التشغيل.');
       }
-
       const normalizedUsername = user.username.trim().toLowerCase();
-      if (usernames.has(normalizedUsername)) {
-        throw new Error(`توقف آمن: اسم المستخدم مكرر في ملف الحسابات (${normalizedUsername}).`);
+      if (usernames.has(normalizedUsername) || userIds.has(user.id)) {
+        throw new Error('توقف آمن: اسم المستخدم أو معرف الحساب مكرر في ملف المستخدمين.');
       }
       usernames.add(normalizedUsername);
+      userIds.add(user.id);
+      if (user.role === 'owner') {
+        ownerCount += 1;
+        if (user.isActive) activeOwnerCount += 1;
+      }
+    }
+    if (ownerCount !== 1 || activeOwnerCount !== 1) {
+      throw new Error('توقف آمن: يجب وجود حساب مالك واحد بالضبط، ويجب أن يكون نشطاً. لم يتم تحميل حسابات الموظفين.');
     }
 
     this.users.clear();
     for (const user of loadedUsers) {
-      this.users.set(user.username, user);
-      this.users.set(user.role, user);
+      this.users.set(user.username.trim().toLowerCase(), user);
     }
   }
   public saveUsersToDisk(): void {
@@ -205,8 +214,141 @@ class AuthService {
     }));
   }
 
-  public findUser(roleOrUsername: string): StoredUserRecord | undefined {
-    return this.users.get(roleOrUsername);
+  public findUser(usernameOrRole: string): StoredUserRecord | undefined {
+    const key = String(usernameOrRole || '').trim().toLowerCase();
+    const direct = this.users.get(key);
+    if (direct) return direct;
+    // Backward compatibility only when a role has exactly one account. Shared role aliases
+    // are intentionally rejected so one employee cannot authenticate as another.
+    const matches = Array.from(this.users.values()).filter((user) => user.role === key);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
+  private persistUserSet(nextUsers: StoredUserRecord[]): void {
+    safeAtomicWriteJson(USERS_FILE, nextUsers);
+    this.users.clear();
+    for (const user of nextUsers) this.users.set(user.username.trim().toLowerCase(), user);
+  }
+
+  private validStrongPin(pin: string): boolean {
+    return /^\\d{6}$/.test(pin) &&
+      !/^(\\d)\\1+$/.test(pin) &&
+      !['123456', '654321', '000000', '111111', '222222', '123321'].includes(pin);
+  }
+
+  public createUser(params: {
+    username: string; name: string; role: AuthenticatedUser['role'];
+    branchId: string; branchName: string; pin: string;
+  }): { success: boolean; user?: Omit<StoredUserRecord, 'pinSalt' | 'pinHash' | 'mustChangePin' | 'sessionVersion'>; error?: string } {
+    const username = String(params.username || '').trim().toLowerCase();
+    const name = String(params.name || '').trim();
+    const branchId = String(params.branchId || '').trim();
+    const branchName = String(params.branchName || '').trim();
+    const roles: AuthenticatedUser['role'][] = [
+      'general_manager', 'branch_manager', 'teller', 'accountant', 'auditor', 'compliance_officer',
+    ];
+    if (!/^[a-z0-9._-]{3,32}$/.test(username) || !name || name.length > 120 ||
+        !branchId || !branchName || !roles.includes(params.role)) {
+      return { success: false, error: 'بيانات الموظف أو اسم الدخول أو الدور أو الفرع غير صالحة.' };
+    }
+    if (this.users.has(username) || Array.from(this.users.values()).some((user) => user.id === username)) {
+      return { success: false, error: 'اسم المستخدم مستخدم مسبقاً.' };
+    }
+    if (!this.validStrongPin(params.pin)) {
+      return { success: false, error: 'يجب أن يكون PIN ستة أرقام وألا يكون متسلسلاً أو مكرراً أو شائعاً.' };
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const created: StoredUserRecord = {
+      id: `usr-${crypto.randomUUID()}`,
+      name, username, role: params.role, branchId, branchName,
+      pinSalt: salt,
+      pinHash: hashPinWithSalt(params.pin, salt),
+      isActive: true,
+      mustChangePin: false,
+      sessionVersion: crypto.randomBytes(16).toString('hex'),
+      createdAt: getYemenDateTimeString(),
+    };
+    const next = [...this.users.values(), created];
+    try {
+      this.persistUserSet(next);
+      return { success: true, user: this.toPublicUser(created) };
+    } catch (error) {
+      return { success: false, error: `تعذر حفظ حساب الموظف: ${error instanceof Error ? error.message : 'خطأ تخزين غير معروف'}` };
+    }
+  }
+
+  public setUserActive(userId: string, isActive: boolean): { success: boolean; user?: ReturnType<AuthService['toPublicUser']>; error?: string } {
+    const target = Array.from(this.users.values()).find((user) => user.id === userId);
+    if (!target) return { success: false, error: 'حساب المستخدم غير موجود.' };
+    if (typeof isActive !== 'boolean') return { success: false, error: 'حالة تفعيل الحساب غير صالحة.' };
+    if (target.role === 'owner' && !isActive) {
+      return { success: false, error: 'لا يمكن تعطيل حساب المالك الوحيد من هذه الواجهة.' };
+    }
+    const updated = { ...target, isActive, sessionVersion: crypto.randomBytes(16).toString('hex') };
+    const next = Array.from(this.users.values()).map((user) => user.id === userId ? updated : user);
+    try {
+      this.persistUserSet(next);
+      return { success: true, user: this.toPublicUser(updated) };
+    } catch (error) {
+      return { success: false, error: `تعذر حفظ حالة الحساب: ${error instanceof Error ? error.message : 'خطأ تخزين غير معروف'}` };
+    }
+  }
+
+  public resetUserPin(userId: string, newPin: string): { success: boolean; user?: ReturnType<AuthService['toPublicUser']>; error?: string } {
+    const target = Array.from(this.users.values()).find((user) => user.id === userId);
+    if (!target) return { success: false, error: 'حساب المستخدم غير موجود.' };
+    if (target.role === 'owner') return { success: false, error: 'غيّر PIN المالك من جلسة المالك نفسها.' };
+    if (!this.validStrongPin(newPin)) return { success: false, error: 'PIN الجديد ضعيف أو غير صالح.' };
+    const salt = crypto.randomBytes(16).toString('hex');
+    const updated = {
+      ...target,
+      pinSalt: salt,
+      pinHash: hashPinWithSalt(newPin, salt),
+      mustChangePin: false,
+      sessionVersion: crypto.randomBytes(16).toString('hex'),
+    };
+    const next = Array.from(this.users.values()).map((user) => user.id === userId ? updated : user);
+    try {
+      this.persistUserSet(next);
+      return { success: true, user: this.toPublicUser(updated) };
+    } catch (error) {
+      return { success: false, error: `تعذر حفظ PIN الجديد: ${error instanceof Error ? error.message : 'خطأ تخزين غير معروف'}` };
+    }
+  }
+
+  public changePin(username: string, currentPin: string, newPin: string): { success: boolean; token?: string; user?: AuthenticatedUser; error?: string } {
+    const target = this.findUser(username);
+    if (!target || !target.isActive || !verifyPinHash(currentPin, target.pinSalt, target.pinHash)) {
+      return { success: false, error: 'رمز PIN الحالي غير صحيح.' };
+    }
+    if (!this.validStrongPin(newPin)) return { success: false, error: 'PIN الجديد ضعيف أو غير صالح.' };
+    if (verifyPinHash(newPin, target.pinSalt, target.pinHash)) {
+      return { success: false, error: 'اختر PIN مختلفاً عن الرمز الحالي.' };
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const updated = {
+      ...target,
+      pinSalt: salt,
+      pinHash: hashPinWithSalt(newPin, salt),
+      mustChangePin: false,
+      sessionVersion: crypto.randomBytes(16).toString('hex'),
+    };
+    const next = Array.from(this.users.values()).map((user) => user.id === target.id ? updated : user);
+    try {
+      this.persistUserSet(next);
+      const user: AuthenticatedUser = {
+        id: updated.id, name: updated.name, role: updated.role, username: updated.username,
+        branchId: updated.branchId, branchName: updated.branchName,
+      };
+      return { success: true, token: this.generateToken(updated), user };
+    } catch (error) {
+      return { success: false, error: `تعذر حفظ PIN الجديد: ${error instanceof Error ? error.message : 'خطأ تخزين غير معروف'}` };
+    }
+  }
+
+  private toPublicUser(user: StoredUserRecord): Omit<StoredUserRecord, 'pinSalt' | 'pinHash' | 'mustChangePin' | 'sessionVersion'> {
+    const { pinSalt: _salt, pinHash: _hash, mustChangePin: _change, sessionVersion: _version, ...publicUser } = user;
+    return publicUser;
   }
 
   public generateToken(user: StoredUserRecord): string {
@@ -268,7 +410,7 @@ class AuthService {
       }
 
       // إيقاف الجلسات فور تعطيل الحساب أو تغير هويته/صلاحياته في ملف المستخدمين.
-      const currentUser = this.users.get(payload.username);
+      const currentUser = this.users.get(payload.username.trim().toLowerCase());
       if (!currentUser || !currentUser.isActive || currentUser.id !== payload.userId ||
           currentUser.role !== payload.role || currentUser.branchId !== payload.branchId ||
           currentUser.sessionVersion !== payload.sessionVersion) {
