@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -329,5 +330,55 @@ test('operational dry-run rejects unbalanced closed-shift discrepancies and undo
     } finally {
       fs.rmSync(fixture.directory, { recursive: true, force: true });
     }
+  }
+});
+
+test('authentication accepts a named username and rejects public role-name aliases', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-auth-username-only-test-'));
+  const salt = 'a'.repeat(32);
+  const pin = '849263';
+  const pinHash = crypto.pbkdf2Sync(pin, salt, 100000, 32, 'sha256').toString('hex');
+
+  try {
+    writeFixtureJson(directory, 'system_users.local.json', [{
+      id: 'fixture-auth-owner',
+      name: 'Fixture owner',
+      role: 'owner',
+      username: 'fixture_owner',
+      branchId: 'fixture-branch',
+      branchName: 'Fixture branch',
+      pinSalt: salt,
+      pinHash,
+      isActive: true,
+      mustChangePin: false,
+      sessionVersion: 'c'.repeat(32),
+      createdAt: '2026-11-10 08:00',
+    }]);
+
+    const source = [
+      "import { authService } from './src/server/services/authService.ts';",
+      "const roleAlias = authService.authenticateUser('owner', '849263', '127.0.0.1');",
+      "if (roleAlias.success) process.exit(10);",
+      "const namedUser = authService.authenticateUser('fixture_owner', '849263', '127.0.0.2');",
+      "if (!namedUser.success || namedUser.user?.username !== 'fixture_owner') process.exit(11);",
+    ].join('\n');
+    const child = spawnSync(process.execPath, [
+      '--import', 'tsx',
+      '--input-type=module',
+      '--eval', source,
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        ALNAMARI_TEST_DATA_DIR: directory,
+        JWT_SECRET: 'auth-username-only-test-secret-with-at-least-32-characters',
+      },
+    });
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
