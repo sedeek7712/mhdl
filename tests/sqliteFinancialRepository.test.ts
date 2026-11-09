@@ -122,6 +122,24 @@ test('actual financial schema applies all migrations and creates financial and o
   assert.equal(journalColumns.some((column) => column.name === 'customer_phone'), true);
 });
 
+test('v3 adds journal customer phone without rewriting the v1 or v2 migration history', (t) => {
+  const db = openSqliteDatabase({ filePath: ':memory:' });
+  t.after(() => db.close());
+
+  runSqliteMigrations(db, SQLITE_MIGRATIONS.slice(0, 2));
+  const before = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
+  assert.equal(before.some((column) => column.name === 'customer_phone'), false);
+
+  runSqliteMigrations(db, SQLITE_MIGRATIONS);
+  const after = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
+  assert.equal(after.some((column) => column.name === 'customer_phone'), true);
+
+  const history = db.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as Array<{ version: number; name: string }>;
+  assert.deepEqual(history.map((row) => row.version), [1, 2, 3]);
+  assert.equal(history[0].name, 'financial_core_ledger_remittances_rates_and_shifts');
+  assert.equal(history[1].name, 'operational_parity_users_whatsapp_and_shift_replay');
+});
+
 test('balanced journal is persisted atomically and updates account balances in thousandths', (t) => {
   const db = createDatabase(t);
   seedAccounts(db);
