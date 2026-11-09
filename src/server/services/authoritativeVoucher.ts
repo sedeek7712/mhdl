@@ -146,7 +146,7 @@ function normalizeNumber(value: string): string {
 }
 
 function normalizePhone(value: string): string {
-  return value.replace(/\\D/g, '');
+  return value.replace(/\D/g, '');
 }
 
 function assertRecipientBinding(input: AuthoritativeVoucherInput, snapshot: AuthoritativeVoucherResult): void {
