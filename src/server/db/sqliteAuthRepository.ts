@@ -1,0 +1,306 @@
+import type { DatabaseSync } from 'node:sqlite';
+
+export type SqliteUserRole =
+  | 'owner'
+  | 'general_manager'
+  | 'branch_manager'
+  | 'teller'
+  | 'auditor'
+  | 'accountant'
+  | 'compliance_officer';
+
+export type SqliteSecurityEventType =
+  | 'LOGIN_SUCCESS'
+  | 'LOGIN_FAILED'
+  | 'ROLE_ACCESS_DENIED'
+  | 'RATE_LIMIT_EXCEEDED'
+  | 'BRUTE_FORCE_BLOCKED';
+
+export interface SqliteUserRecord {
+  id: string;
+  username: string;
+  name: string;
+  role: SqliteUserRole;
+  branchId: string;
+  branchName: string;
+  pinSalt: string;
+  pinHash: string;
+  isActive: boolean;
+  mustChangePin: boolean;
+  sessionVersion: string;
+  createdAt: string;
+}
+
+export type SqlitePublicUser = Omit<
+  SqliteUserRecord,
+  'pinSalt' | 'pinHash' | 'mustChangePin' | 'sessionVersion'
+>;
+
+export interface SqliteSecurityEventInput {
+  id: string;
+  occurredAt: string;
+  eventType: SqliteSecurityEventType;
+  usernameOrRole: string;
+  ipAddress: string;
+  details: string;
+}
+
+export interface SqliteSecurityEvent extends SqliteSecurityEventInput {}
+
+const ROLES: SqliteUserRole[] = [
+  'owner', 'general_manager', 'branch_manager', 'teller',
+  'auditor', 'accountant', 'compliance_officer',
+];
+
+function assertText(value: string, field: string, maxLength = 200): void {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > maxLength) {
+    throw new Error(`${field} must be a non-empty string of at most ${maxLength} characters.`);
+  }
+}
+
+function assertCredentialMaterial(salt: string, hash: string, sessionVersion: string): void {
+  if (!/^[a-f0-9]{32}$/i.test(salt)) throw new Error('PIN salt must be 32 hexadecimal characters.');
+  if (!/^[a-f0-9]{64}$/i.test(hash)) throw new Error('PIN hash must be 64 hexadecimal characters.');
+  if (!/^[a-f0-9]{32}$/i.test(sessionVersion)) {
+    throw new Error('Session version must be 32 hexadecimal characters.');
+  }
+}
+
+function withImmediateTransaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = operation();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Preserve the original failure.
+    }
+    throw error;
+  }
+}
+
+function mapUser(row: Record<string, unknown> | undefined): SqliteUserRecord | undefined {
+  if (!row) return undefined;
+  return {
+    id: String(row.id),
+    username: String(row.username),
+    name: String(row.name),
+    role: String(row.role) as SqliteUserRole,
+    branchId: String(row.branch_id),
+    branchName: String(row.branch_name),
+    pinSalt: String(row.pin_salt),
+    pinHash: String(row.pin_hash),
+    isActive: Number(row.is_active) === 1,
+    mustChangePin: Number(row.must_change_pin) === 1,
+    sessionVersion: String(row.session_version),
+    createdAt: String(row.created_at),
+  };
+}
+
+function selectUserById(db: DatabaseSync, userId: string): SqliteUserRecord | undefined {
+  const row = db.prepare('SELECT * FROM app_users WHERE id = ?').get(userId) as
+    | Record<string, unknown>
+    | undefined;
+  return mapUser(row);
+}
+
+/** Creates one account in a transaction. The schema's partial unique index permits one owner only. */
+export function insertSqliteUser(db: DatabaseSync, user: SqliteUserRecord): SqlitePublicUser {
+  assertText(user.id, 'user.id');
+  assertText(user.name, 'user.name', 120);
+  assertText(user.branchId, 'user.branchId');
+  assertText(user.branchName, 'user.branchName');
+  assertText(user.createdAt, 'user.createdAt');
+  const username = String(user.username || '').trim().toLowerCase();
+  if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+    throw new Error('Username must contain 3 to 32 letters, digits, dots, underscores, or hyphens.');
+  }
+  if (!ROLES.includes(user.role)) throw new Error('Unsupported user role.');
+  if (user.role === 'owner' && user.isActive !== true) {
+    throw new Error('The owner account must be active when it is created.');
+  }
+  if (typeof user.isActive !== 'boolean' || typeof user.mustChangePin !== 'boolean') {
+    throw new Error('User status fields must be boolean values.');
+  }
+  assertCredentialMaterial(user.pinSalt, user.pinHash, user.sessionVersion);
+
+  return withImmediateTransaction(db, () => {
+    db.prepare(`
+      INSERT INTO app_users (
+        id, username, name, role, branch_id, branch_name, pin_salt, pin_hash,
+        is_active, must_change_pin, session_version, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      user.id.trim(), username, user.name.trim(), user.role,
+      user.branchId.trim(), user.branchName.trim(), user.pinSalt.toLowerCase(),
+      user.pinHash.toLowerCase(), user.isActive ? 1 : 0,
+      user.mustChangePin ? 1 : 0, user.sessionVersion.toLowerCase(), user.createdAt.trim()
+    );
+    const created = selectUserById(db, user.id.trim());
+    if (!created) throw new Error('Inserted user could not be read back.');
+    return toPublicUser(created);
+  });
+}
+
+export function getSqliteUserByUsername(
+  db: DatabaseSync,
+  username: string
+): SqliteUserRecord | undefined {
+  const normalized = String(username || '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  const row = db.prepare('SELECT * FROM app_users WHERE username = ? COLLATE NOCASE').get(normalized) as
+    | Record<string, unknown>
+    | undefined;
+  return mapUser(row);
+}
+
+export function listSqlitePublicUsers(db: DatabaseSync): SqlitePublicUser[] {
+  const rows = db.prepare(`
+    SELECT id, username, name, role, branch_id, branch_name, is_active, created_at
+    FROM app_users
+    ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, name COLLATE NOCASE
+  `).all() as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id),
+    username: String(row.username),
+    name: String(row.name),
+    role: String(row.role) as SqliteUserRole,
+    branchId: String(row.branch_id),
+    branchName: String(row.branch_name),
+    isActive: Number(row.is_active) === 1,
+    createdAt: String(row.created_at),
+  }));
+}
+
+/** Status changes rotate the session version so previously issued JWTs become invalid. */
+export function setSqliteUserActive(
+  db: DatabaseSync,
+  userId: string,
+  isActive: boolean,
+  nextSessionVersion: string
+): SqlitePublicUser {
+  assertText(userId, 'userId');
+  if (typeof isActive !== 'boolean') throw new Error('isActive must be boolean.');
+  if (!/^[a-f0-9]{32}$/i.test(nextSessionVersion)) throw new Error('Invalid session version.');
+
+  return withImmediateTransaction(db, () => {
+    const current = selectUserById(db, userId);
+    if (!current) throw new Error('User does not exist.');
+    if (current.role === 'owner' && !isActive) throw new Error('The only owner account cannot be disabled.');
+    db.prepare(`
+      UPDATE app_users SET is_active = ?, session_version = ? WHERE id = ?
+    `).run(isActive ? 1 : 0, nextSessionVersion.toLowerCase(), userId);
+    const updated = selectUserById(db, userId);
+    if (!updated) throw new Error('Updated user could not be read back.');
+    return toPublicUser(updated);
+  });
+}
+
+/** PIN reset is owner-managed for staff accounts; the owner changes their own PIN in-session. */
+export function resetSqliteStaffPin(
+  db: DatabaseSync,
+  userId: string,
+  pinSalt: string,
+  pinHash: string,
+  nextSessionVersion: string
+): SqlitePublicUser {
+  assertCredentialMaterial(pinSalt, pinHash, nextSessionVersion);
+  return withImmediateTransaction(db, () => {
+    const current = selectUserById(db, userId);
+    if (!current) throw new Error('User does not exist.');
+    if (current.role === 'owner') throw new Error('Owner PIN must be changed from the owner session.');
+    db.prepare(`
+      UPDATE app_users
+      SET pin_salt = ?, pin_hash = ?, is_active = 1, must_change_pin = 0, session_version = ?
+      WHERE id = ?
+    `).run(pinSalt.toLowerCase(), pinHash.toLowerCase(), nextSessionVersion.toLowerCase(), userId);
+    const updated = selectUserById(db, userId);
+    if (!updated) throw new Error('Reset user could not be read back.');
+    return toPublicUser(updated);
+  });
+}
+
+/** Compare-and-swap session version prevents a stale request from overwriting newer credentials. */
+export function changeSqliteUserPin(
+  db: DatabaseSync,
+  userId: string,
+  expectedSessionVersion: string,
+  pinSalt: string,
+  pinHash: string,
+  nextSessionVersion: string
+): void {
+  assertCredentialMaterial(pinSalt, pinHash, nextSessionVersion);
+  if (!/^[a-f0-9]{32}$/i.test(expectedSessionVersion)) throw new Error('Invalid expected session version.');
+  withImmediateTransaction(db, () => {
+    const result = db.prepare(`
+      UPDATE app_users
+      SET pin_salt = ?, pin_hash = ?, must_change_pin = 0, session_version = ?
+      WHERE id = ? AND is_active = 1 AND session_version = ?
+    `).run(
+      pinSalt.toLowerCase(), pinHash.toLowerCase(), nextSessionVersion.toLowerCase(),
+      userId, expectedSessionVersion.toLowerCase()
+    );
+    if (Number(result.changes) !== 1) {
+      throw new Error('User is inactive, missing, or its credentials changed concurrently.');
+    }
+  });
+}
+
+export function appendSqliteSecurityEvent(db: DatabaseSync, event: SqliteSecurityEventInput): void {
+  assertText(event.id, 'event.id', 160);
+  assertText(event.occurredAt, 'event.occurredAt');
+  assertText(event.usernameOrRole, 'event.usernameOrRole', 120);
+  assertText(event.ipAddress, 'event.ipAddress', 64);
+  assertText(event.details, 'event.details', 2000);
+  const allowed: SqliteSecurityEventType[] = [
+    'LOGIN_SUCCESS', 'LOGIN_FAILED', 'ROLE_ACCESS_DENIED',
+    'RATE_LIMIT_EXCEEDED', 'BRUTE_FORCE_BLOCKED',
+  ];
+  if (!allowed.includes(event.eventType)) throw new Error('Unsupported security event type.');
+  db.prepare(`
+    INSERT INTO security_events (id, occurred_at, event_type, username_or_role, ip_address, details)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    event.id.trim(), event.occurredAt.trim(), event.eventType,
+    event.usernameOrRole.trim(), event.ipAddress.trim(), event.details.trim()
+  );
+}
+
+export function listSqliteSecurityEvents(
+  db: DatabaseSync,
+  limit = 100
+): SqliteSecurityEvent[] {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+    throw new Error('Security event limit must be an integer between 1 and 1000.');
+  }
+  const rows = db.prepare(`
+    SELECT id, occurred_at, event_type, username_or_role, ip_address, details
+    FROM security_events
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id),
+    occurredAt: String(row.occurred_at),
+    eventType: String(row.event_type) as SqliteSecurityEventType,
+    usernameOrRole: String(row.username_or_role),
+    ipAddress: String(row.ip_address),
+    details: String(row.details),
+  }));
+}
+
+function toPublicUser(user: SqliteUserRecord): SqlitePublicUser {
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    role: user.role,
+    branchId: user.branchId,
+    branchName: user.branchName,
+    isActive: user.isActive,
+    createdAt: user.createdAt,
+  };
+}
