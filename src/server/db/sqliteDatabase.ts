@@ -36,9 +36,9 @@ export function getDefaultSqliteDatabasePath(
   homeDirectory = os.homedir()
 ): string {
   if (platform === 'win32') {
-    const roaming = env.APPDATA?.trim();
     const local = env.LOCALAPPDATA?.trim();
-    const baseDirectory = roaming || local || path.join(homeDirectory, 'AppData', 'Roaming');
+    const roaming = env.APPDATA?.trim();
+    const baseDirectory = local || roaming || path.join(homeDirectory, 'AppData', 'Local');
     return path.join(baseDirectory, 'AmroAlnamariExchange', 'exchange.sqlite');
   }
 
