@@ -183,7 +183,7 @@ export class SqliteAuthService {
         error: 'تم حظر محاولات الدخول مؤقتاً بعد تجاوز عدد المحاولات المسموح. يرجى المحاولة بعد 5 دقائق.',
       };
     }
-    return { success: false, locked: false, error: 'بيانات الاعتماد أو الرمز السري غير صحيح' };
+    return { success: false, error: 'بيانات الاعتماد أو الرمز السري غير صحيح' };
   }
 
   generateToken(user: SqliteUserRecord): string {
