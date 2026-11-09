@@ -492,6 +492,29 @@ class ServerAccountingEngine {
       return { success: false, error: 'معرف المناقلة غير صالح. أعد فتح الطلب من الواجهة.' };
     }
 
+    if (typeof params.fromAccountId !== 'string' || !params.fromAccountId.trim() ||
+        typeof params.toAccountId !== 'string' || !params.toAccountId.trim()) {
+      return { success: false, error: 'يجب تحديد حساب التحويل والحساب المستلم.' };
+    }
+    if (params.fromAccountId === params.toAccountId) {
+      return { success: false, error: 'لا يمكن إجراء مناقلة إلى الحساب نفسه.' };
+    }
+    if (!currencies.includes(params.currency)) {
+      return { success: false, error: 'العملة المحددة غير مدعومة.' };
+    }
+    if (typeof params.amount !== 'number' || !Number.isFinite(params.amount) ||
+        params.amount <= 0 || Math.abs(params.amount * 1000 - Math.round(params.amount * 1000)) > 1e-8) {
+      return { success: false, error: 'المبلغ يجب أن يكون موجباً وصالحاً حتى ثلاث منازل عشرية.' };
+    }
+    if (typeof params.description !== 'string' || !params.description.trim() ||
+        params.description.trim().length > 240) {
+      return { success: false, error: 'وصف المناقلة إلزامي ولا يتجاوز 240 حرفاً.' };
+    }
+    if (typeof params.operatorId !== 'string' || !params.operatorId.trim() ||
+        typeof params.operatorName !== 'string' || !params.operatorName.trim()) {
+      return { success: false, error: 'بيانات منفذ المناقلة غير صالحة.' };
+    }
+
     if (this.storageWriteBlocked || this.activeTransactionId ||
         fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
       return {
@@ -519,7 +542,9 @@ class ServerAccountingEngine {
         Math.abs(line.credit - params.amount) <= 0.001 &&
         line.debit === 0
       );
-      const sameDescription = priorEntry.descriptionAr.endsWith(params.description.trim());
+      const sameDescription = priorEntry.descriptionAr === `مناقلة داخلية: ${params.description.trim()}` &&
+        priorEntry.createdBy === params.operatorName &&
+        priorEntry.branchId === (params.branchId || 'br-main');
 
       if (!debitLine || !creditLine || !sameDescription) {
         return {
@@ -539,28 +564,9 @@ class ServerAccountingEngine {
     if (!fromAccount || !toAccount) {
       return { success: false, error: 'أحد الحسابين المحددين غير موجود في دليل الحسابات المعتمد.' };
     }
-    if (fromAccount.id === toAccount.id) {
-      return { success: false, error: 'لا يمكن إجراء مناقلة إلى الحساب نفسه.' };
-    }
     if (fromAccount.type !== 'asset' || toAccount.type !== 'asset') {
       return { success: false, error: 'المناقلة الداخلية مسموحة بين حسابات الأصول فقط في هذا المسار.' };
     }
-    if (!currencies.includes(params.currency)) {
-      return { success: false, error: 'العملة المحددة غير مدعومة.' };
-    }
-    if (typeof params.amount !== 'number' || !Number.isFinite(params.amount) ||
-        params.amount <= 0 || Math.round(params.amount * 1000) !== params.amount * 1000) {
-      return { success: false, error: 'المبلغ يجب أن يكون موجباً وصالحاً حتى ثلاث منازل عشرية.' };
-    }
-    if (typeof params.description !== 'string' || !params.description.trim() ||
-        params.description.trim().length > 240) {
-      return { success: false, error: 'وصف المناقلة إلزامي ولا يتجاوز 240 حرفاً.' };
-    }
-    if (typeof params.operatorId !== 'string' || !params.operatorId.trim() ||
-        typeof params.operatorName !== 'string' || !params.operatorName.trim()) {
-      return { success: false, error: 'بيانات منفذ المناقلة غير صالحة.' };
-    }
-
     const sourceBalance = fromAccount.balances[params.currency];
     if (typeof sourceBalance !== 'number' || !Number.isFinite(sourceBalance) ||
         sourceBalance < params.amount) {
