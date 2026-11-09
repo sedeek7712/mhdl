@@ -212,6 +212,8 @@ export function insertBalancedJournalEntry(
     }
   }
 
+  // Include all business-significant fields in the idempotency fingerprint.
+  // applyBalanceMovements is deliberately excluded: it is an import-only execution mode.
   const fingerprintPayload = {
     id: entry.id,
     entryNumber: entry.entryNumber,
@@ -222,7 +224,11 @@ export function insertBalancedJournalEntry(
     referenceId: entry.referenceId,
     branchId: entry.branchId,
     createdBy: entry.createdBy,
-    createdById: entry.createdById || null,
+    createdById: entry.createdById ?? null,
+    exchangeRateMicro: entry.exchangeRateMicro ?? null,
+    grossTargetAmountMilli: entry.grossTargetAmountMilli ?? null,
+    targetAmountMilli: entry.targetAmountMilli ?? null,
+    voucherNumber: entry.voucherNumber ?? null,
     lines: normalizedLines,
   };
   const fingerprint = crypto.createHash('sha256')
