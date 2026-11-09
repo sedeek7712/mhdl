@@ -912,6 +912,7 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
         grossTargetAmountMilli: item.grossTargetAmount === undefined ? undefined : toScaledInteger(numberValue(item.grossTargetAmount, 'journal.grossTargetAmount'), 1000),
         targetAmountMilli: item.targetAmount === undefined ? undefined : toScaledInteger(numberValue(item.targetAmount, 'journal.targetAmount'), 1000),
         voucherNumber: optionalText(item, 'voucherNumber'),
+        customerPhone: optionalText(item, 'customerPhone'),
         lines,
         applyBalanceMovements: false,
       });
