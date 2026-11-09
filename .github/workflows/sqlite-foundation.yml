@@ -1,0 +1,58 @@
+name: Validate SQLite foundation
+
+on:
+  push:
+    branches:
+      - 'storage/**'
+  pull_request:
+    branches:
+      - main
+      - 'audit/**'
+    paths:
+      - 'package.json'
+      - 'src/server/db/**'
+      - 'tests/sqlite*.test.ts'
+      - '.github/workflows/sqlite-foundation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-foundation:
+    name: SQLite schema and financial repository tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js with built-in SQLite
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate runtime versions
+        run: |
+          node --version
+          bun --version
+
+      - name: Run financial storage and SQLite tests
+        run: bun run test:storage
+
+      - name: Validate TypeScript
+        run: bun run lint
+
+      - name: Build production frontend
+        run: bun run build
