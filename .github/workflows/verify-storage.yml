@@ -34,6 +34,9 @@ jobs:
       - name: Run isolated internal transfer tests
         run: bun run test:internal-transfers
 
+      - name: Run chart reconciliation tests
+        run: bun run test:chart-reconciliation
+
       - name: TypeScript validation
         run: bun run lint
 
