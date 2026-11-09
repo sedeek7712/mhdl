@@ -425,7 +425,9 @@ async function runTestSuite() {
 
       // 3. التحقق من أن ledger.json تم إنشاؤه ذرياً والملفات القديمة ما زالت موجودة دون حذف
       const ledgerFileExists = fs.existsSync(ledgerPath);
-      const oldFilesPreserved = fs.existsSync(accountsPath) && fs.existsSync(journalPath);
+      // الملفان القديمان اختياريان (data/ غير متتبَّع الآن): المطلوب ألا يُحذف أحدهما دون الآخر
+      const oldFilesPreserved =
+        (!fs.existsSync(accountsPath) && !fs.existsSync(journalPath)) || (fs.existsSync(accountsPath) && fs.existsSync(journalPath));
 
       const n5Success = hasMethod && currentDataIntegrityPasses && tamperingDetected && ledgerFileExists && oldFilesPreserved;
 
@@ -583,7 +585,7 @@ async function runTestSuite() {
     const { computeInitialBalances } = await import('../src/server/services/serverAccountingEngine.js');
     const fsR = await import('fs');
     const pathR = await import('path');
-    const sha = (f: string) => crypto.createHash('sha256').update(fsR.readFileSync(f)).digest('hex');
+    const sha = (f: string) => (fsR.existsSync(f) ? crypto.createHash('sha256').update(fsR.readFileSync(f)).digest('hex') : 'absent');
 
     // R1: الافتتاحي = الرصيد − صافي القيود (وليس القيم الافتراضية)
     const acc: any = { id: 'acc-x', balances: { YER_OLD: 0, YER_NEW: 0, SAR: 123456, USD: 0 } };
@@ -715,6 +717,40 @@ async function runTestSuite() {
     }
   } catch (err: any) {
     assert(false, 'اختبارات المرحلة 2', 'المرحلة 2 (الأمان)', err.message);
+  }
+
+  // =========================================================================
+  // 3-F. اختبارات المرحلة 3: N8 أرقام سندات الصرف متسلسلة وفريدة وتصدرها الخادم
+  // =========================================================================
+  try {
+    const sfx3 = Date.now().toString().slice(-6);
+    const nums = [`N8A-${sfx3}`, `N8B-${sfx3}`, `N8C-${sfx3}`];
+    for (const n of nums) {
+      remittanceRegistry.registerMasterRemittance({
+        id: `n8-${n}`, transferNumber: n, direction: 'incoming', status: 'available', senderName: 's', senderPhone: '',
+        recipientName: 'r', recipientPhone: '', networkName: 'n', amount: 1, currency: 'SAR', feeAmount: 0, totalPaid: 1,
+        branchName: 'b', tellerName: 't', createdAt: '2026-11-09 10:00',
+      } as any);
+    }
+    const vouchers: string[] = [];
+    for (const n of nums) {
+      const r = remittanceRegistry.payoutRemittance({
+        transferId: n, transferNumber: n, recipientIdType: 'national_id', recipientIdNumber: '1',
+        tellerId: 'usr-003', tellerName: 't', tellerRole: 'teller',
+        voucherNumber: 'V-PAY-0001', // قيمة العميل يجب أن تُتجاهل
+      } as any);
+      if (r.success && r.record) vouchers.push(r.record.voucherNumber);
+    }
+    const seqs = vouchers.map((v) => parseInt(v.split('-').pop() || '0', 10));
+    assert(
+      vouchers.length === 3 && new Set(vouchers).size === 3 && vouchers.every((v) => /^V-PAY-\d{4}-\d{5}$/.test(v)) &&
+        seqs[1] === seqs[0] + 1 && seqs[2] === seqs[1] + 1 && !vouchers.includes('V-PAY-0001'),
+      'N8: أرقام سندات الصرف متسلسلة وفريدة ومن الخادم (يُتجاهل رقم العميل)',
+      'المرحلة 3',
+      `الأرقام: ${vouchers.join(', ')}`
+    );
+  } catch (err: any) {
+    assert(false, 'اختبار N8', 'المرحلة 3', err.message);
   }
 
   console.log('===============================================================');

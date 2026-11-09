@@ -122,6 +122,29 @@ class RemittanceRegistry {
   private auditLogs: RemittanceAuditRecord[] = [];
   private payouts: Map<string, RemittancePayoutRecord> = new Map();
   private idempotencyStore: Map<string, RemittancePayoutRecord> = new Map();
+
+  /**
+   * N8: رقم سند صرف متسلسل وفريد `V-PAY-YYYY-NNNNN` يُشتق من أعلى رقم في سجل الصرف
+   * (يشمل prepared)، مع فحص التفرد صراحةً.
+   */
+  private nextPayoutVoucherNumber(): string {
+    const year = new Date().getFullYear();
+    const pattern = new RegExp(`^V-PAY-${year}-(\\d{5})$`);
+    let max = 0;
+    const used = new Set<string>();
+    for (const p of this.payouts.values()) {
+      used.add(p.voucherNumber);
+      const m = pattern.exec(p.voucherNumber || '');
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+    let seq = max;
+    let candidate = '';
+    do {
+      seq += 1;
+      candidate = `V-PAY-${year}-${String(seq).padStart(5, '0')}`;
+    } while (used.has(candidate));
+    return candidate;
+  }
   private idempotencyToTransferMap: Map<string, string> = new Map();
   private masterRemittances: Map<string, RemittanceMasterRecord> = new Map();
   private inFlightPayouts: Set<string> = new Set();
@@ -615,7 +638,8 @@ class RemittanceRegistry {
       );
 
       const yemenPaidAt = getYemenDateTimeString();
-      const voucherNum = params.voucherNumber || `V-PAY-${Date.now().toString().slice(-4)}`;
+      // N8: رقم السند تصدره الخادم فقط (متسلسل وفريد)؛ أي قيمة من العميل تُتجاهل
+      const voucherNum = this.nextPayoutVoucherNumber();
 
       // 1. نمط Write-Ahead: كتابة سجل الصرف أولاً بحالة prepared مع fsync على القرص
       const preparedRecord: RemittancePayoutRecord = {

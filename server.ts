@@ -374,7 +374,7 @@ async function startServer() {
         dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
 
         whatsappMessageId = `wamid.SIMULATED_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-        dispatchRegistry.recordSent(record.id, whatsappMessageId);
+        dispatchRegistry.recordSimulated(record.id, whatsappMessageId);
 
         return res.status(200).json({
           success: true,
@@ -383,7 +383,7 @@ async function startServer() {
           message: 'تم حفظ السند والأرشيف الرقمي (نمط المحاكاة المحلي - لم يتم الإرسال إلى هاتف حقيقي لعدم تهيئة توكن Meta)',
           whatsappMessageId,
           metaMediaId,
-          status: 'SENT_LOCAL_SIMULATION',
+          status: 'SIMULATED',
           record: dispatchRegistry.getByVoucherNumber(voucherNumber),
           notice: 'لإرسال رسائل واتساب حقيقية للعملاء، يجب إدخال WHATSAPP_TOKEN و WHATSAPP_PHONE_NUMBER_ID في ملف متغيرات البيئة.',
         });
@@ -599,13 +599,21 @@ async function startServer() {
     requireAuth,
     registerRateLimiter,
     (req: any, res: Response) => {
-      const { transferNumber, mode } = req.body;
+      const { transferNumber, mode } = req.body || {};
       const authenticatedUser = req.user as AuthenticatedUser;
+
+      // N11: فحص الأنواع قبل أي معالجة نصية (يمنع انهيار .trim() على نوع خاطئ)
+      if (typeof transferNumber !== 'string' || !transferNumber.trim() || transferNumber.length > 40) {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة يجب أن يكون نصاً غير فارغ لا يتجاوز 40 خانة.',
+        });
+      }
 
       const result = remittanceRegistry.registerTransferNumber(
         transferNumber,
         authenticatedUser.name,
-        mode || 'manual'
+        mode === 'automatic' ? 'automatic' : 'manual'
       );
 
       if (!result.success) {
@@ -656,6 +664,14 @@ async function startServer() {
       } = req.body;
 
       const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof transferNumber !== 'string' || typeof recipientIdNumber !== 'string' ||
+          (recipientIdType !== undefined && typeof recipientIdType !== 'string')) {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة ورقم هوية المستلم يجب أن يكونا نصوصاً صحيحة.',
+        });
+      }
 
       if (!transferNumber || !recipientIdNumber) {
         return res.status(400).json({
@@ -768,6 +784,27 @@ async function startServer() {
         });
       }
 
+      // N11: أنواع الحقول (نصوص) ومبلغ/عمولة رقمية فقط، وعمولة غير سالبة
+      const mustBeString: Array<[string, unknown]> = [['رقم الحوالة', transferNumber], ['اسم المستفيد', recipientName], ['العملة', currency]];
+      for (const [label, v] of mustBeString) {
+        if (typeof v !== 'string') {
+          return res.status(400).json({ success: false, error: `حقل ${label} يجب أن يكون نصاً.` });
+        }
+      }
+      for (const [label, v] of [['اسم المرسل', senderName], ['هاتف المرسل', senderPhone], ['هاتف المستفيد', recipientPhone], ['الشبكة', networkName], ['الملاحظات', notes]] as Array<[string, unknown]>) {
+        if (v !== undefined && v !== null && typeof v !== 'string') {
+          return res.status(400).json({ success: false, error: `حقل ${label} يجب أن يكون نصاً.` });
+        }
+      }
+      if ((typeof amount !== 'number' && typeof amount !== 'string') ||
+          (feeAmount !== undefined && feeAmount !== null && feeAmount !== '' && typeof feeAmount !== 'number' && typeof feeAmount !== 'string')) {
+        return res.status(400).json({ success: false, error: 'المبلغ والعمولة يجب أن يكونا أرقاماً.' });
+      }
+      const parsedFee = feeAmount === undefined || feeAmount === null || feeAmount === '' ? 0 : Number(feeAmount);
+      if (!Number.isFinite(parsedFee) || parsedFee < 0) {
+        return res.status(400).json({ success: false, error: 'العمولة يجب أن تكون رقماً غير سالب.' });
+      }
+
       const parsedAmount = Number(amount);
       if (!parsedAmount || parsedAmount <= 0 || !Number.isFinite(parsedAmount)) {
         return res.status(400).json({
@@ -796,8 +833,8 @@ async function startServer() {
         networkName: networkName || 'شبكة النجم للحوالات',
         amount: parsedAmount,
         currency: currency.trim(),
-        feeAmount: Number(feeAmount) || 0,
-        totalPaid: parsedAmount + (Number(feeAmount) || 0),
+        feeAmount: parsedFee,
+        totalPaid: parsedAmount + parsedFee,
         branchName: authenticatedUser.branchName || 'الفرع الرئيسي',
         tellerName: authenticatedUser.name,
         createdAt: new Date().toISOString().replace('T', ' ').substring(0, 16),

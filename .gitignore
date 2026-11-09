@@ -15,3 +15,5 @@ data/archived_vouchers/
 data/*.bak
 data/*.legacy*
 data/system_users.json
+data/*.json
+!data/*.example.json

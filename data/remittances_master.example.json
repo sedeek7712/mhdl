@@ -1,0 +1,20 @@
+[
+  {
+    "id": "rem-example-1",
+    "transferNumber": "TR-EXAMPLE-0001",
+    "direction": "incoming",
+    "status": "available",
+    "senderName": "مرسل تجريبي",
+    "senderPhone": "770000000",
+    "recipientName": "مستلم تجريبي",
+    "recipientPhone": "771111111",
+    "networkName": "شبكة تجريبية",
+    "amount": 1000,
+    "currency": "SAR",
+    "feeAmount": 0,
+    "totalPaid": 1000,
+    "branchName": "فرع تجريبي",
+    "tellerName": "مستخدم تجريبي",
+    "createdAt": "2026-01-01 10:00"
+  }
+]
