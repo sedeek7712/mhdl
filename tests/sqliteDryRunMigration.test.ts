@@ -289,3 +289,45 @@ test('operational dry-run rejects a WhatsApp voucher archive whose hash does not
     fs.rmSync(fixture.directory, { recursive: true, force: true });
   }
 });
+
+test('operational dry-run rejects unbalanced closed-shift discrepancies and undocumented variances', () => {
+  for (const scenario of ['mismatch', 'variance-without-note'] as const) {
+    const fixture = createOperationalParityFixture();
+
+    try {
+      const statePath = path.join(fixture.directory, 'cash_box_shift_state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+        history: Array<{
+          expectedBalances: Record<string, number>;
+          actualBalances: Record<string, number>;
+          discrepancies: Record<string, number>;
+          notes: string;
+        }>;
+      };
+      const closed = state.history[0];
+
+      if (scenario === 'mismatch') {
+        closed.discrepancies.YER_OLD = 1;
+      } else {
+        closed.actualBalances.YER_OLD = closed.expectedBalances.YER_OLD + 1;
+        closed.discrepancies.YER_OLD = 1;
+        closed.notes = '';
+      }
+
+      writeFixtureJson(fixture.directory, 'cash_box_shift_state.json', {
+        schemaVersion: 1,
+        activeShift: JSON.parse(fs.readFileSync(
+          path.join(fixture.directory, 'cash_box_shift_state.json'),
+          'utf8'
+        )).activeShift,
+        history: state.history,
+      });
+
+      const report = runSqliteDryRun(fixture.directory);
+      assert.equal(report.status, 'FAIL', scenario);
+      assert.equal(report.validation.temporaryDatabaseRemoved, true);
+    } finally {
+      fs.rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  }
+});
