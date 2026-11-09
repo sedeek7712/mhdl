@@ -42,6 +42,8 @@ export interface SqliteDryRunReport {
     openingBalanceReconciliation: 'MATCHED' | 'NOT_AVAILABLE';
     journalEntriesBalanced: boolean;
     remittancePayoutsReconciled: boolean;
+    operationalDataImported: boolean;
+    voucherArchivesVerified: boolean;
     sourceFilesUnchanged: boolean;
     temporaryDatabaseRemoved: boolean;
   };
@@ -109,6 +111,10 @@ function optionalText(row: JsonRecord, key: string): string | undefined {
 
 function sha256(raw: string): string {
   return crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
+}
+
+function sha256Buffer(raw: Buffer): string {
+  return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
 function safeFileCount(payload: unknown): number {
@@ -454,6 +460,8 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       openingBalanceReconciliation: 'NOT_AVAILABLE',
       journalEntriesBalanced: false,
       remittancePayoutsReconciled: false,
+      operationalDataImported: false,
+      voucherArchivesVerified: false,
       sourceFilesUnchanged: false,
       temporaryDatabaseRemoved: false,
     },
@@ -493,7 +501,7 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       if (item) {
         loaded.set(name, item);
         payloads.set(name, item.payload);
-        const deferred = name.startsWith('system_users') || name === 'whatsapp_dispatch_registry.json' || name === 'exchange_rate_state.json' || name === 'cash_box_shift_state.json';
+        const deferred = name === 'system_users.json';
         const validatedOnly = name === 'financial_baseline_approved.local.json';
         addSnapshot(report.sourceFiles, name, item, deferred ? 'deferred' : validatedOnly ? 'validated_only' : 'imported');
       } else {
