@@ -40,6 +40,7 @@ function exchangeEntry(): VoucherJournalEntry {
     branchId: 'branch-1',
     createdBy: actor.name,
     createdById: actor.id,
+    customerPhone: '+967700000003',
     isBalanced: true,
     exchangeRate: 3.75,
     grossTargetAmount: 375,
@@ -307,7 +308,7 @@ test('rejects an incoming remittance that has not actually been paid', () => {
   }, entry, { masterRemittance: master }), /قبل تسجيل الصرف/);
 });
 
-test('builds internal-transfer vouchers only from the two balanced server account lines', () => {
+test('does not send internal-transfer vouchers to an unverified external WhatsApp recipient', () => {
   const voucherNumber = 'V-TRF-001';
   const entry: VoucherJournalEntry = {
     id: 'journal-internal-1',
@@ -320,33 +321,19 @@ test('builds internal-transfer vouchers only from the two balanced server accoun
     voucherNumber,
     branchId: actor.branchId,
     createdBy: actor.name,
+    createdById: actor.id,
     isBalanced: true,
     lines: [
       { accountId: 'acc-1102', accountNameAr: 'صندوق الكاشير', currency: 'YER_OLD', debit: 25000, credit: 0 },
       { accountId: 'acc-1301', accountNameAr: 'الخزينة المركزية', currency: 'YER_OLD', debit: 0, credit: 25000 },
     ],
   };
-  const result = resolve({
+  assert.throws(() => resolve({
     voucherNumber,
     transactionId: voucherNumber,
     voucherType: 'transfer_outgoing',
     recipientPhone: '+967700000003',
-    snapshot: {
-      voucherNumber,
-      transactionId: voucherNumber,
-      type: 'transfer_outgoing',
-      referenceNumber: voucherNumber,
-      partyName: 'صندوق الكاشير',
-      senderName: 'الخزينة المركزية',
-      recipientName: 'صندوق الكاشير',
-      amount: 25000,
-      currency: 'YER_OLD',
-    },
-  }, entry);
-
-  assert.equal(result.amount, 25000);
-  assert.equal(result.senderName, 'الخزينة المركزية');
-  assert.equal(result.recipientName, 'صندوق الكاشير');
+  }, entry), /رقم واتساب المستلم/);
 });
 
 test('rejects a voucher without a linked server journal entry', () => {
@@ -356,4 +343,26 @@ test('rejects a voucher without a linked server journal entry', () => {
     voucherType: 'transfer_outgoing',
     recipientPhone: '+967700000003',
   }, exchangeEntry()), /لم يتم العثور على عملية مالية معتمدة/);
+});
+
+test('rejects an exchange voucher sent to a phone that differs from the customer record', () => {
+  const entry = exchangeEntry();
+  assert.throws(() => resolve({
+    voucherNumber: entry.voucherNumber!,
+    transactionId: entry.entryNumber,
+    voucherType: 'exchange',
+    recipientPhone: '+967700000999',
+    snapshot: { amount: 100, currency: 'USD' },
+  }, entry), /رقم واتساب المستلم/);
+});
+
+test('rejects an outgoing remittance voucher sent to a phone other than the beneficiary record', () => {
+  const entry = outgoingEntry();
+  const master = outgoingMaster();
+  assert.throws(() => resolve({
+    voucherNumber: master.voucherNumber!,
+    transactionId: master.transferNumber,
+    voucherType: 'transfer_outgoing',
+    recipientPhone: '+967700000999',
+  }, entry, { masterRemittance: master }), /رقم واتساب المستلم/);
 });
