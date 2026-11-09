@@ -175,7 +175,11 @@ function createOperationalParityFixture(): { directory: string; imagePath: strin
     history: [closedShift],
   });
 
-  const image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // Valid 1x1 RGBA PNG (including IHDR/IDAT/IEND chunks and CRCs).
+  const image = Buffer.from(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c63f80f040009fb03fdfb5e6b2b0000000049454e44ae426082',
+    'hex'
+  );
   const archiveDirectory = path.join(directory, 'archived_vouchers');
   fs.mkdirSync(archiveDirectory, { recursive: true });
   const imagePath = path.join(archiveDirectory, 'fixture-voucher.png');
