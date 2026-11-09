@@ -906,6 +906,59 @@ async function startServer() {
     }
   );
 
+  // Server-authoritative internal asset-to-asset transfers.
+  app.post(
+    '/api/accounting/internal-transfers',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const {
+        fromAccountId,
+        toAccountId,
+        currency,
+        amount,
+        description,
+        idempotencyKey,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      const result = serverAccountingEngine.executeInternalTransfer({
+        fromAccountId,
+        toAccountId,
+        currency: currency as CurrencyCode,
+        amount: Number(amount),
+        description,
+        operatorId: authenticatedUser.id,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+        idempotencyKey,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'نتيجة المناقلة غير محسومة. أوقف النظام ولا تنفذ مناقلة أخرى حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم المناقلة الداخلية.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'اعتمد الخادم المناقلة الداخلية وحفظ القيد المحاسبي.',
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+      });
+    }
+  );
+
   // Financial Reconciliation Endpoint
   app.get(
     '/api/remittances/reconciliation',
