@@ -231,6 +231,53 @@ class ApiClient {
   }
 
   /**
+   * تنفيذ صرافة العملات باستخدام سعر معتمد ودفتر الخادم فقط
+   */
+  public async executeExchange(payload: {
+    idempotencyKey: string;
+    rateId: string;
+    rateMode: 'buy' | 'sell';
+    sourceCurrency: string;
+    targetCurrency: string;
+    sourceAmount: number;
+    commission: number;
+    customerName: string;
+    customerPhone: string;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    effectiveRate?: number;
+    grossTargetAmount?: number;
+    targetAmount?: number;
+    voucherNumber?: string;
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/exchanges', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تنفيذ الصرافة؛ قد تكون العملية حُفظت في الخادم.',
+      };
+    }
+  }
+
+  /**
    * تغذية صندوق الكاشير من الخزينة المركزية بقيد خادمي معتمد
    */
   public async fundCashierDrawer(payload: {
