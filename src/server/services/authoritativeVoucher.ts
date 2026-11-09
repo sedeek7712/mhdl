@@ -36,6 +36,7 @@ export interface VoucherJournalEntry {
   grossTargetAmount?: number;
   targetAmount?: number;
   voucherNumber?: string;
+  customerPhone?: string;
 }
 
 export interface VoucherMasterRecord {
@@ -142,6 +143,18 @@ function near(a: number, b: number): boolean {
 
 function normalizeNumber(value: string): string {
   return value.trim().toUpperCase();
+}
+
+function normalizePhone(value: string): string {
+  return value.replace(/\\D/g, '');
+}
+
+function assertRecipientBinding(input: AuthoritativeVoucherInput, snapshot: AuthoritativeVoucherResult): void {
+  const expected = snapshot.recipientPhone || snapshot.partyPhone;
+  if (!expected || !normalizePhone(expected) ||
+      normalizePhone(input.recipientPhone) !== normalizePhone(expected)) {
+    fail('رقم واتساب المستلم لا يطابق رقم هاتف العميل أو المستفيد المسجل في العملية المالية.');
+  }
 }
 
 function assertSnapshotValue(
@@ -277,7 +290,8 @@ function resolveExchange(
   return baseSnapshot(input, entry, actor, {
     type: 'exchange',
     partyName: customer,
-    partyPhone: '',
+    partyPhone: entry.customerPhone || '',
+    recipientPhone: entry.customerPhone,
     amount,
     currency: sourceCurrency,
     amountInWordsAr: '',
@@ -485,7 +499,9 @@ export function resolveAuthoritativeVoucher(params: {
       item.entryNumber === master.journalEntryReference);
     if (!entry) fail('لم يتم العثور على القيد المرتبط بالحوالة الصادرة.');
     validateJournal(entry, accountIds);
-    return resolveOutgoing(input, actor, master, entry);
+    const resolved = resolveOutgoing(input, actor, master, entry);
+    assertRecipientBinding(input, resolved);
+    return resolved;
   }
 
   if (master?.direction === 'incoming' &&
@@ -494,7 +510,9 @@ export function resolveAuthoritativeVoucher(params: {
     const entry = params.journalEntries.find((item) => item.entryNumber === payout.journalEntryReference);
     if (!entry) fail('لم يتم العثور على القيد المرتبط بصرف الحوالة الواردة.');
     validateJournal(entry, accountIds);
-    return resolvePayout(input, actor, master, payout, entry);
+    const resolved = resolvePayout(input, actor, master, payout, entry);
+    assertRecipientBinding(input, resolved);
+    return resolved;
   }
 
   const entry = params.journalEntries.find((item) =>
@@ -504,6 +522,9 @@ export function resolveAuthoritativeVoucher(params: {
   if (!entry) fail('لم يتم العثور على عملية مالية معتمدة تطابق رقم السند والعملية.');
   validateJournal(entry, accountIds);
 
-  if (entry.referenceType === 'exchange') return resolveExchange(input, actor, entry);
-  return resolveInternalOrExpense(input, actor, entry);
+  const resolved = entry.referenceType === 'exchange'
+    ? resolveExchange(input, actor, entry)
+    : resolveInternalOrExpense(input, actor, entry);
+  assertRecipientBinding(input, resolved);
+  return resolved;
 }
