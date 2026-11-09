@@ -286,6 +286,70 @@ export class RemittanceRegistry {
         }
       }
     }
+
+    // Reconcile outgoing remittances against their cash/payable/commission journal.
+    for (const [cleanNum, master] of this.masterRemittances) {
+      if (master.direction !== 'outgoing') continue;
+
+      const journal = journalEntries.find((entry) =>
+        entry.entryNumber === master.journalEntryReference
+      );
+      const totalPaid = master.amount + master.feeAmount;
+      const cashLine = journal?.lines.find((line) =>
+        line.accountId === 'acc-1102' &&
+        line.currency === master.currency &&
+        Math.abs(line.debit - totalPaid) <= 0.001 &&
+        line.credit === 0
+      );
+      const payableLine = journal?.lines.find((line) =>
+        line.accountId === 'acc-2201' &&
+        line.currency === master.currency &&
+        Math.abs(line.credit - master.amount) <= 0.001 &&
+        line.debit === 0
+      );
+      const commissionLine = master.feeAmount > 0
+        ? journal?.lines.find((line) =>
+            line.accountId === 'acc-4101' &&
+            line.currency === master.currency &&
+            Math.abs(line.credit - master.feeAmount) <= 0.001 &&
+            line.debit === 0
+          )
+        : undefined;
+      const reservation = this.registeredNumbers.get(cleanNum);
+
+      if (!master.idempotencyKey || !master.tellerId || !master.branchId ||
+          !master.journalEntryReference || !master.voucherNumber ||
+          !reservation || reservation.number.trim().toUpperCase() !== cleanNum ||
+          !journal || journal.referenceType !== 'transfer_send' ||
+          journal.referenceId.trim().toUpperCase() !== cleanNum ||
+          journal.voucherNumber !== master.voucherNumber ||
+          journal.idempotencyKey !== master.idempotencyKey ||
+          !cashLine || !payableLine ||
+          (master.feeAmount > 0 && !commissionLine)) {
+        throw new Error(`توقف آمن: سجل الحوالة الصادرة (${cleanNum}) لا يطابق حجز الرقم والقيد المحاسبي (الصندوق/الالتزام/العمولة). يلزم فحص يدوي قبل التشغيل.`);
+      }
+
+      const debit = journal.lines
+        .filter((line) => line.currency === master.currency)
+        .reduce((sum, line) => sum + line.debit, 0);
+      const credit = journal.lines
+        .filter((line) => line.currency === master.currency)
+        .reduce((sum, line) => sum + line.credit, 0);
+      if (Math.abs(debit - totalPaid) > 0.001 || Math.abs(credit - totalPaid) > 0.001) {
+        throw new Error(`توقف آمن: إجمالي قيد الحوالة الصادرة (${cleanNum}) غير متوازن أو لا يساوي إجمالي المبلغ المستلم.`);
+      }
+    }
+
+    for (const journal of journalEntries) {
+      if (journal.referenceType !== 'transfer_send') continue;
+      const cleanNum = journal.referenceId.trim().toUpperCase();
+      const master = this.masterRemittances.get(cleanNum);
+      if (!master || master.direction !== 'outgoing' ||
+          master.journalEntryReference !== journal.entryNumber ||
+          master.idempotencyKey !== journal.idempotencyKey) {
+        throw new Error(`توقف آمن: قيد إرسال الحوالة (${journal.entryNumber}) لا يملك سجل حوالة صادرة مطابقاً.`);
+      }
+    }
   }
   private saveSettingsToDisk() {
     safeAtomicWriteJson(SETTINGS_FILE, this.settings);
