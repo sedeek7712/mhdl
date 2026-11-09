@@ -361,7 +361,7 @@ export function insertSqliteRemittance(
     } | undefined;
 
     if (priorReservation) {
-      if (priorReservation.number_original !== remittance.transferNumber.trim() ||
+      if (priorReservation.number_original.trim().toUpperCase() !== normalizedNumber ||
           priorReservation.registered_at !== remittance.reservationRegisteredAt ||
           priorReservation.registered_by !== remittance.reservationRegisteredBy ||
           priorReservation.numbering_mode !== remittance.reservationMode) {
