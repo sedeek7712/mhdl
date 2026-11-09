@@ -338,6 +338,51 @@ function insertRemittanceAuditLogs(
   }
 }
 
+
+function importExchangeRateState(db: ReturnType<typeof openSqliteDatabase>, value: unknown): { rates: number; auditLogs: number } {
+  const state = record(value, 'exchange_rate_state.json');
+  if (state.schemaVersion !== 1) throw new Error('Unsupported exchange-rate state schema version.');
+  const rates = records(state.rates, 'exchange rates');
+  const logs = records(state.auditLogs, 'exchange-rate audit logs');
+  const seenIds = new Set<string>();
+  const seenPairs = new Set<string>();
+  const rateByPair = new Map<string, string>();
+  const insertRate = db.prepare('INSERT INTO exchange_rates (id, from_currency, to_currency, buy_rate_micro, sell_rate_micro, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  for (const item of rates) {
+    const id = stringValue(item.id, 'rate.id');
+    const from = currencyValue(item.fromCurrency, 'rate.fromCurrency');
+    const to = currencyValue(item.toCurrency, 'rate.toCurrency');
+    if (from === to) throw new Error('An exchange-rate pair cannot use the same currency.');
+    const pair = `${from} / ${to}`;
+    if (seenIds.has(id) || seenPairs.has(pair)) throw new Error('Duplicate exchange-rate ID or currency pair.');
+    seenIds.add(id); seenPairs.add(pair);
+    insertRate.run(id, from, to,
+      toScaledInteger(numberValue(item.buyRate, 'rate.buyRate'), 1_000_000, 'rate.buyRate'),
+      toScaledInteger(numberValue(item.sellRate, 'rate.sellRate'), 1_000_000, 'rate.sellRate'),
+      stringValue(item.updatedAt, 'rate.updatedAt', true),
+      stringValue(item.updatedBy, 'rate.updatedBy'));
+    rateByPair.set(pair, id);
+  }
+  const insertLog = db.prepare('INSERT INTO exchange_rate_audit (id, rate_id, old_buy_rate_micro, new_buy_rate_micro, old_sell_rate_micro, new_sell_rate_micro, changed_at, changed_by, changed_by_id, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const logIds = new Set<string>();
+  for (const log of logs) {
+    const id = stringValue(log.id, 'rateAudit.id');
+    if (logIds.has(id)) throw new Error('Duplicate exchange-rate audit identifier.');
+    logIds.add(id);
+    const rateId = rateByPair.get(stringValue(log.currencyPair, 'rateAudit.currencyPair'));
+    if (!rateId) throw new Error('Exchange-rate audit entry references an unknown currency pair.');
+    insertLog.run(id, rateId,
+      toScaledInteger(numberValue(log.oldBuyRate, 'rateAudit.oldBuyRate'), 1_000_000),
+      toScaledInteger(numberValue(log.newBuyRate, 'rateAudit.newBuyRate'), 1_000_000),
+      toScaledInteger(numberValue(log.oldSellRate, 'rateAudit.oldSellRate'), 1_000_000),
+      toScaledInteger(numberValue(log.newSellRate, 'rateAudit.newSellRate'), 1_000_000),
+      stringValue(log.changedAt, 'rateAudit.changedAt'),
+      stringValue(log.changedBy, 'rateAudit.changedBy'),
+      stringValue(log.changedById, 'rateAudit.changedById'),
+      stringValue(log.note, 'rateAudit.note'));
+  }
+  return { rates: rates.length, auditLogs: logs.length };
+}
 function compareRemittancePayouts(
   masters: JsonRecord[],
   payouts: JsonRecord[],
