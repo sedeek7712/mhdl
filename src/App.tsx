@@ -213,6 +213,51 @@ function AppContent() {
       .catch(() => {
         // Keep the last locally saved values when the local server is unavailable.
       });
+
+    // Remittance master registry is the source of truth for incoming/outgoing registered remittances.
+    apiClient.fetch('/api/remittances/master-list')
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data || !data.success || !Array.isArray(data.remittances)) return;
+
+        const serverRemittances: Remittance[] = data.remittances
+          .filter((record: any) =>
+            record && typeof record.id === 'string' &&
+            typeof record.transferNumber === 'string' &&
+            (record.direction === 'incoming' || record.direction === 'outgoing') &&
+            typeof record.recipientName === 'string' &&
+            typeof record.amount === 'number'
+          )
+          .map((record: any) => ({
+            id: record.id,
+            transferNumber: record.transferNumber,
+            direction: record.direction,
+            status: record.status,
+            senderName: record.senderName || '',
+            senderPhone: record.senderPhone || '',
+            recipientName: record.recipientName,
+            recipientPhone: record.recipientPhone || '',
+            networkName: record.networkName || '',
+            amount: record.amount,
+            currency: record.currency as CurrencyCode,
+            feeAmount: Number(record.feeAmount) || 0,
+            totalPaid: Number(record.totalPaid) || record.amount,
+            branchName: record.branchName || '',
+            tellerName: record.tellerName || '',
+            createdAt: record.createdAt || '',
+            paidAt: record.paidAt,
+            recipientIdType: record.recipientIdType,
+            recipientIdNumber: record.recipientIdNumber,
+            voucherNumber: typeof record.voucherNumber === 'string' ? record.voucherNumber : '',
+            notes: record.notes || '',
+            numberingMode: record.numberingMode || 'manual',
+          }));
+
+        setRemittances(serverRemittances);
+      })
+      .catch(() => {
+        // Keep the last saved view while reporting the server as unavailable elsewhere.
+      });
   }, [isAuthenticated]);
 
   // Listen to browser network connectivity events
@@ -833,7 +878,7 @@ function AppContent() {
   };
 
   // Helper: Create Incoming Remittance from networks for Cash-out
-  const handleCreateIncomingRemittance = (data: {
+  const handleCreateIncomingRemittance = async (data: {
     transferNumber: string;
     networkName: string;
     senderName: string;
@@ -843,34 +888,145 @@ function AppContent() {
     amount: number;
     currency: CurrencyCode;
     notes?: string;
-  }): Remittance => {
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-
-    const newRem: Remittance = {
-      id: `rem-${Date.now()}`,
-      transferNumber: data.transferNumber,
-      voucherNumber: `V-INC-${Date.now().toString().slice(-4)}`,
-      direction: 'incoming',
-      senderName: data.senderName,
-      senderPhone: data.senderPhone,
-      recipientName: data.recipientName,
-      recipientPhone: data.recipientPhone,
+  }): Promise<Remittance | null> => {
+    const request = {
+      transferNumber: data.transferNumber.trim().toUpperCase(),
+      networkName: data.networkName.trim(),
+      senderName: data.senderName.trim(),
+      senderPhone: data.senderPhone.trim(),
+      recipientName: data.recipientName.trim(),
+      recipientPhone: data.recipientPhone.trim(),
       amount: data.amount,
       currency: data.currency,
-      feeAmount: 0,
-      totalPaid: data.amount,
-      networkName: data.networkName,
-      status: 'pending',
-      createdAt: `${dateStr} ${timeStr}`,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      notes: data.notes || 'حوالة واردة للتسليم الفوري',
+      notes: (data.notes || '').trim(),
     };
 
-    setRemittances((prev) => [newRem, ...prev]);
-    return newRem;
+    if (!request.transferNumber || !request.networkName ||
+        !request.senderName || !request.recipientName ||
+        !Number.isFinite(request.amount) || request.amount <= 0) {
+      toast.warning('أكمل رقم الحوالة واسم المرسل والمستفيد والمبلغ قبل التسجيل.');
+      return null;
+    }
+
+    const pendingStorageKey = 'alnamari_pending_incoming_remittance_v1';
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending);
+        const sameRequest = pending &&
+          pending.transferNumber === request.transferNumber &&
+          pending.networkName === request.networkName &&
+          pending.senderName === request.senderName &&
+          pending.senderPhone === request.senderPhone &&
+          pending.recipientName === request.recipientName &&
+          pending.recipientPhone === request.recipientPhone &&
+          pending.amount === request.amount &&
+          pending.currency === request.currency &&
+          pending.notes === request.notes;
+        if (!sameRequest) {
+          toast.warning(
+            'توجد محاولة تسجيل حوالة سابقة لم تُحسم',
+            'أعد إرسال الحوالة نفسها بالبيانات ذاتها لاسترجاع نتيجة الخادم، أو اطلب مطابقة سجل الحوالات قبل تسجيل رقم آخر.'
+          );
+          return null;
+        }
+      } else {
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          ...request,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error(
+        'تعذر حفظ بيانات المحاولة',
+        'أوقِف التسجيل؛ يجب حفظ بيانات الطلب محلياً حتى نتمكن من إعادة نفس طلب الحوالة بأمان بعد انقطاع الاتصال.'
+      );
+      return null;
+    }
+
+    const result = await apiClient.registerIncomingRemittance(request);
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'تسجيل الحوالة غير محسوم',
+          result.error || 'أوقف النظام ولا تعاود التسجيل قبل مطابقة سجل الحوالات والأرقام والتدقيق.'
+        );
+        return null;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نضف الحوالة إلى الشاشة. أعد إرسال الطلب نفسه بالبيانات ذاتها لاسترجاع السجل إن كان الخادم قد حفظه.'
+        );
+        return null;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // No server record was committed for a definitive rejection.
+      }
+      toast.error('رفض الخادم تسجيل الحوالة', result.error || 'لم يتم تسجيل الحوالة.');
+      return null;
+    }
+
+    const record = result.record;
+    if (!record || record.direction !== 'incoming' ||
+        record.status !== 'available' ||
+        typeof record.id !== 'string' ||
+        typeof record.transferNumber !== 'string' ||
+        typeof record.voucherNumber !== 'string' ||
+        typeof record.amount !== 'number') {
+      toast.error(
+        'سجل الحوالة الوارد غير مكتمل',
+        'لم نحدّث الشاشة أو نمسح بيانات المحاولة. راجع السجل المركزي قبل تكرار التسجيل.'
+      );
+      return null;
+    }
+
+    const registeredRemittance: Remittance = {
+      id: record.id,
+      transferNumber: record.transferNumber,
+      direction: 'incoming',
+      status: 'available',
+      senderName: record.senderName,
+      senderPhone: record.senderPhone || '',
+      recipientName: record.recipientName,
+      recipientPhone: record.recipientPhone || '',
+      networkName: record.networkName,
+      amount: record.amount,
+      currency: record.currency as CurrencyCode,
+      feeAmount: record.feeAmount,
+      totalPaid: record.totalPaid,
+      branchName: record.branchName,
+      tellerName: record.tellerName,
+      createdAt: record.createdAt,
+      voucherNumber: record.voucherNumber,
+      notes: record.notes || '',
+      numberingMode: record.numberingMode || 'manual',
+    };
+
+    setRemittances((previous) => {
+      const existingIndex = previous.findIndex(
+        (item) => item.transferNumber.trim().toUpperCase() === registeredRemittance.transferNumber
+      );
+      if (existingIndex < 0) return [registeredRemittance, ...previous];
+      return previous.map((item, index) => index === existingIndex ? registeredRemittance : item);
+    });
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // A stale pending request is safe; the server treats an identical registration as an idempotent replay.
+    }
+
+    toast.success(
+      result.replayed ? 'الحوالة مسجلة مسبقاً' : 'تم تسجيل الحوالة الواردة',
+      `اعتمد الخادم الحوالة ${registeredRemittance.transferNumber} بمبلغ ${formatMoney(registeredRemittance.amount, registeredRemittance.currency)}.`
+    );
+    return registeredRemittance;
   };
 
   // Fund drawer through the authoritative server ledger. Never update financial balances locally.
