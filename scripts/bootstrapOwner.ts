@@ -78,7 +78,7 @@ function readHidden(question: string): Promise<string> {
           }
           continue;
         }
-        if (byte >= 48 && byte <= 57 && value.length < 10) {
+        if (byte >= 48 && byte <= 57 && value.length < 6) {
           value += String.fromCharCode(byte);
           process.stdout.write('*');
         }
@@ -100,7 +100,7 @@ function validatePin(pin: string): void {
   if (!/^\d{4,10}$/.test(pin)) {
     throw new Error('يجب أن يتكون PIN من 4 إلى 10 أرقام.');
   }
-  if (/^(\d)\1+$/.test(pin) || ['1234', '4321', '123456', '654321', '0000'].includes(pin)) {
+  if (/^(\d)\1+$/.test(pin) || ['123456', '654321', '000000', '111111', '222222', '123321'].includes(pin)) {
     throw new Error('هذا PIN ضعيف وشائع؛ اختر أرقاماً غير متسلسلة وغير مكررة.');
   }
 }
