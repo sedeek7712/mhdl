@@ -31,7 +31,8 @@ interface OwnerRecord extends ExistingOwner {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, '../data');
-const USERS_FILE = path.join(DATA_DIR, 'system_users.json');
+const USERS_FILE = path.join(DATA_DIR, 'system_users.local.json');
+const LEGACY_USERS_FILE = path.join(DATA_DIR, 'system_users.json');
 
 function ask(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -107,8 +108,9 @@ function validatePin(pin: string): void {
 async function main(): Promise<void> {
   let owner: ExistingOwner;
 
-  if (fs.existsSync(USERS_FILE)) {
-    const raw = fs.readFileSync(USERS_FILE, 'utf8');
+  const sourceUsersFile = fs.existsSync(USERS_FILE) ? USERS_FILE : LEGACY_USERS_FILE;
+  if (fs.existsSync(sourceUsersFile)) {
+    const raw = fs.readFileSync(sourceUsersFile, 'utf8');
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
       throw new Error('ملف المستخدمين ليس قائمة JSON صحيحة. لم يتم تعديل أي ملف.');
@@ -170,9 +172,9 @@ async function main(): Promise<void> {
   };
 
   let backupPath: string | undefined;
-  if (fs.existsSync(USERS_FILE)) {
+  if (fs.existsSync(sourceUsersFile)) {
     backupPath = `${USERS_FILE}.pre-single-user.${Date.now()}.bak`;
-    fs.copyFileSync(USERS_FILE, backupPath);
+    fs.copyFileSync(sourceUsersFile, backupPath);
   }
 
   safeAtomicWriteJson(USERS_FILE, [ownerRecord]);
