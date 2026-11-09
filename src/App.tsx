@@ -973,8 +973,9 @@ function AppContent() {
     }
 
     const record = result.record;
+    const validStatuses = ['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'];
     if (!record || record.direction !== 'incoming' ||
-        record.status !== 'available' ||
+        !validStatuses.includes(record.status) ||
         typeof record.id !== 'string' ||
         typeof record.transferNumber !== 'string' ||
         typeof record.voucherNumber !== 'string' ||
@@ -990,7 +991,7 @@ function AppContent() {
       id: record.id,
       transferNumber: record.transferNumber,
       direction: 'incoming',
-      status: 'available',
+      status: record.status,
       senderName: record.senderName,
       senderPhone: record.senderPhone || '',
       recipientName: record.recipientName,
@@ -1022,9 +1023,14 @@ function AppContent() {
       // A stale pending request is safe; the server treats an identical registration as an idempotent replay.
     }
 
+    const statusMessage = registeredRemittance.status === 'available'
+      ? 'الحوالة متاحة الآن للتحقق من الهوية والصرف.'
+      : registeredRemittance.status === 'paid'
+        ? 'هذه الحوالة مصروفة مسبقاً؛ لم يتم إنشاء سجل صرف جديد.'
+        : `حالة الحوالة الحالية: ${registeredRemittance.status}.`;
     toast.success(
       result.replayed ? 'الحوالة مسجلة مسبقاً' : 'تم تسجيل الحوالة الواردة',
-      `اعتمد الخادم الحوالة ${registeredRemittance.transferNumber} بمبلغ ${formatMoney(registeredRemittance.amount, registeredRemittance.currency)}.`
+      `اعتمد الخادم الحوالة ${registeredRemittance.transferNumber} بمبلغ ${formatMoney(registeredRemittance.amount, registeredRemittance.currency)}. ${statusMessage}`
     );
     return registeredRemittance;
   };
