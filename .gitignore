@@ -12,3 +12,4 @@ data/.jwt_secret
 data/*.tmp*
 data/*.corrupt*
 data/archived_vouchers/
+data/*.pre-single-user.*.bak
