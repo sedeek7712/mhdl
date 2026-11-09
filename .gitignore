@@ -13,3 +13,5 @@ data/*.tmp*
 data/*.corrupt*
 data/archived_vouchers/
 data/*.pre-single-user.*.bak
+data/system_users.local.json
+data/system_users.local.json.pre-single-user.*.bak
