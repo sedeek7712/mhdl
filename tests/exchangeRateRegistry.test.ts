@@ -41,6 +41,7 @@ test('server exchange rates start unapproved and owner updates are audited atomi
   assert.equal(updated.auditLogs?.[0].oldBuyRate, 0);
   assert.equal(updated.auditLogs?.[0].newBuyRate, 140.25);
   assert.equal(updated.auditLogs?.[0].changedBy, 'مالك الاختبار');
+  assert.equal(updated.auditLogs?.[0].changedById, 'owner-test');
 
   const persisted = JSON.parse(
     fs.readFileSync(path.join(dataDirectory, 'exchange_rate_state.json'), 'utf8')
