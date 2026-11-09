@@ -23,7 +23,8 @@
     "test:exchange-rate-registry": "node --import tsx --test tests/exchangeRateRegistry.test.ts",
     "test:server-exchange": "node --import tsx --test tests/serverExchange.test.ts",
     "test:cashier-shifts": "node --import tsx --test tests/serverCashBoxShift.test.ts",
-    "test:http-integration": "node --import tsx --test tests/serverHttpIntegration.test.ts"
+    "test:http-integration": "node --import tsx --test tests/serverHttpIntegration.test.ts",
+    "test:sqlite": "node --import tsx --test tests/sqliteDatabase.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -50,5 +51,8 @@
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
     "vite-plugin-pwa": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=22.13.0"
   }
 }
