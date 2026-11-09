@@ -906,6 +906,57 @@ async function startServer() {
     }
   );
 
+  // Server-authoritative operating expense vouchers.
+  app.post(
+    '/api/accounting/expenses',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const {
+        expenseType,
+        amount,
+        currency,
+        notes,
+        idempotencyKey,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      const result = serverAccountingEngine.executeOperatingExpense({
+        expenseType,
+        amount: Number(amount),
+        currency: currency as CurrencyCode,
+        notes,
+        operatorId: authenticatedUser.id,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+        idempotencyKey,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة المصروف غير محسومة. أوقف النظام ولا تنفذ سنداً جديداً حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم سند المصروف.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'اعتمد الخادم سند المصروف وحفظ القيد المزدوج.',
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+      });
+    }
+  );
+
   // Server-authoritative internal asset-to-asset transfers.
   app.post(
     '/api/accounting/internal-transfers',
