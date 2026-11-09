@@ -238,7 +238,7 @@ test('builds a received remittance voucher only from a paid payout journal', () 
     currency: 'USD',
     feeAmount: 0,
     totalPaid: 50,
-    branchName: actor.branchName,
+    branchName: 'مركز تسجيل الحوالات',
     tellerName: actor.name,
     voucherNumber: 'V-PAY-001',
   };
