@@ -437,9 +437,9 @@ function AppContent() {
         typeof entry.entryNumber !== 'string' ||
         entry.idempotencyKey !== idempotencyKey ||
         typeof result.voucherNumber !== 'string' ||
-        !Number.isFinite(result.effectiveRate) ||
-        !Number.isFinite(result.targetAmount) ||
-        !Number.isFinite(result.grossTargetAmount)) {
+        typeof result.effectiveRate !== 'number' || !Number.isFinite(result.effectiveRate) ||
+        typeof result.targetAmount !== 'number' || !Number.isFinite(result.targetAmount) ||
+        typeof result.grossTargetAmount !== 'number' || !Number.isFinite(result.grossTargetAmount)) {
       toast.error(
         'نتيجة الصرافة غير مكتملة',
         'لم نحدّث الشاشة. لا تنشئ عملية جديدة؛ تحقق من دفتر الخادم باستخدام معرف الصرافة نفسه.'
