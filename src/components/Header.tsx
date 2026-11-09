@@ -77,7 +77,7 @@ export const Header: React.FC<HeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const roleConfigMap: Record<UserRole, { label: string; badgeClass: string; icon: React.ReactNode }> = {
+  const roleConfigMap: Partial<Record<UserProfile['role'], { label: string; badgeClass: string; icon: React.ReactNode }>> = {
     owner: {
       label: 'المالك والمشرف العام',
       badgeClass: 'bg-amber-950/80 text-amber-300 border-amber-600/60 ring-1 ring-amber-500/30',
