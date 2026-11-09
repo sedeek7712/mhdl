@@ -757,6 +757,94 @@ async function startServer() {
     });
   });
 
+  // Server-authoritative outgoing registration and balanced cash/payable/commission posting.
+  app.post(
+    '/api/remittances/outgoing',
+    requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        idempotencyKey,
+        manualTransferNumber,
+        senderName,
+        senderPhone,
+        recipientName,
+        recipientPhone,
+        networkName,
+        amount,
+        currency,
+        feeAmount,
+        notes,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof idempotencyKey !== 'string' ||
+          typeof senderName !== 'string' ||
+          typeof recipientName !== 'string' ||
+          typeof networkName !== 'string' ||
+          typeof amount !== 'number' || !Number.isFinite(amount) ||
+          typeof feeAmount !== 'number' || !Number.isFinite(feeAmount) ||
+          typeof currency !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'معرف العملية وأسماء المرسل والمستفيد والشبكة والمبلغ والعمولة والعملة مطلوبة بصيغ صحيحة.',
+        });
+      }
+      if (manualTransferNumber !== undefined && typeof manualTransferNumber !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة اليدوي يجب أن يكون نصاً صالحاً.',
+        });
+      }
+
+      const result = remittanceRegistry.registerOutgoingRemittance({
+        idempotencyKey,
+        manualTransferNumber,
+        senderName,
+        senderPhone: typeof senderPhone === 'string' ? senderPhone : '',
+        recipientName,
+        recipientPhone: typeof recipientPhone === 'string' ? recipientPhone : '',
+        networkName,
+        amount,
+        currency: currency as CurrencyCode,
+        feeAmount,
+        notes: typeof notes === 'string' ? notes : '',
+        branchName: authenticatedUser.branchName,
+        branchId: authenticatedUser.branchId,
+        tellerId: authenticatedUser.id,
+        tellerName: authenticatedUser.name,
+        tellerRole: authenticatedUser.role,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة تسجيل الحوالة الصادرة غير محسومة. أوقف النظام ولا تعاود الطلب حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          error: result.error || 'رفض الخادم تسجيل الحوالة الصادرة.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        replayed: Boolean(result.replayed),
+        message: result.replayed
+          ? 'الحوالة الصادرة مسجلة سابقاً بالبيانات نفسها؛ تم إرجاع القيد والسجل الموجودين.'
+          : 'تم تسجيل الحوالة الصادرة وقيد الصندوق والتزام الشبكة والعمولة على الخادم.',
+        record: result.record,
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+      });
+    }
+  );
+
   // Server-authoritative incoming remittance registration (master, number reservation and audit in one guarded commit).
   app.post(
     '/api/remittances/incoming',
