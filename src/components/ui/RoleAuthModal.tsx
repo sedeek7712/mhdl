@@ -21,6 +21,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
   isRequired = false,
 }) => {
   const [pin, setPin] = useState('');
+  const [username, setUsername] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const toast = useToast();
@@ -81,12 +82,13 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
     setErrorMsg(null);
 
     try {
-      const res = await apiClient.login(targetRole, pin);
-      if (res.success && res.user) {
+      const loginUsername = username.trim() || currentRoleInfo.defaultUsername;
+      const res = await apiClient.login(loginUsername, pin);
+      if (res.success && res.user && res.user.role === targetRole) {
         const updatedUser: UserProfile = {
           id: res.user.id || `usr-${targetRole}`,
           name: res.user.name || currentRoleInfo.title,
-          role: targetRole,
+          role: res.user.role,
           roleTitleAr: currentRoleInfo.title,
           branchId: res.user.branchId || 'br-01',
           branchName: res.user.branchName || 'المركز الرئيسي',
@@ -99,7 +101,9 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         onSuccess(updatedUser);
         onClose();
       } else {
-        setErrorMsg(res.error || 'الرمز السري (PIN) غير صحيح أو الحساب غير مصرح له');
+        setErrorMsg(res.success && res.user
+          ? 'هذا الحساب لا يحمل الصلاحية المطلوبة. اختر الدور الصحيح أو استخدم حساباً مخولاً.'
+          : (res.error || 'اسم المستخدم أو رمز PIN غير صحيح.'));
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'فشل الاتصال بخادم المصادقة');
@@ -156,6 +160,20 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs text-slate-300 mb-1.5 font-medium">
+              اسم المستخدم:
+            </label>
+            <input
+              type="text"
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder={currentRoleInfo.defaultUsername}
+              className="w-full bg-slate-850 border border-slate-700 rounded-xl px-4 py-2.5 text-start text-sm font-mono text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              required
+            />
+          </div>
           <div>
             <label className="block text-xs text-slate-300 mb-1.5 font-medium flex items-center justify-between">
               <span>رمز المرور السري (PIN):</span>
