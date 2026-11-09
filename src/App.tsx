@@ -52,8 +52,6 @@ import { A4AccountStatementModal } from './components/A4AccountStatementModal';
 import { ReceiveTransferDesk } from './components/ReceiveTransferDesk';
 import { PrintAuditLogModal } from './components/vouchers/PrintAuditLogModal';
 import { RoleAuthModal } from './components/ui/RoleAuthModal';
-import { UserRole } from './types/exchange';
-import { AVAILABLE_ROLES } from './data/initialData';
 
 function AppContent() {
   const toast = useToast();
@@ -65,7 +63,8 @@ function AppContent() {
   const [isA4StatementOpen, setIsA4StatementOpen] = useState<boolean>(false);
   const [statementCustomerId, setStatementCustomerId] = useState<string | undefined>(undefined);
   const [statementType, setStatementType] = useState<'customer' | 'account' | 'profits'>('account');
-  const [roleAuthTarget, setRoleAuthTarget] = useState<UserRole | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isProcessingPayout, setIsProcessingPayout] = useState<boolean>(false);
   const [isOfflineModalOpen, setIsOfflineModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
@@ -84,15 +83,17 @@ function AppContent() {
   const [systemAuditLogs, setSystemAuditLogs] = useState<SystemAuditLog[]>(() =>
     offlineStorage.loadSystemAuditLogs(INITIAL_SYSTEM_AUDIT_LOGS)
   );
-  const [activeShift, setActiveShift] = useState<CashBoxShift>(() => offlineStorage.loadActiveShift(INITIAL_ACTIVE_SHIFT));
+  const [activeShift, setActiveShift] = useState<CashBoxShift>(() => ({ ...INITIAL_ACTIVE_SHIFT, id: 'no-active-shift', status: 'closed', openedAt: 'لم تفتح وردية بعد' }));
 
   // Sync to local persistent storage automatically on change
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveAccounts(accounts);
-  }, [accounts]);
+  }, [accounts, isAuthenticated]);
 
   // C3: مزامنة الحسابات وقيود اليومية المعتمدة من الخادم كمرجع وحيد للحقيقة
   useEffect(() => {
+    if (!isAuthenticated) return;
     async function syncAuthoritativeLedger() {
       try {
         const [accRes, jvRes] = await Promise.all([
@@ -110,69 +111,202 @@ function AppContent() {
       }
     }
     syncAuthoritativeLedger();
-  }, [currentUser]);
+  }, [currentUser, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveCustomers(customers);
-  }, [customers]);
+  }, [customers, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveRates(exchangeRates);
-  }, [exchangeRates]);
+  }, [exchangeRates, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveAuditLogs(auditLogs);
-  }, [auditLogs]);
+  }, [auditLogs, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveJournalEntries(journalEntries);
-  }, [journalEntries]);
+  }, [journalEntries, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveRemittances(remittances);
-  }, [remittances]);
+  }, [remittances, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveRemittanceSettings(remittanceSettings);
-  }, [remittanceSettings]);
+  }, [remittanceSettings, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     offlineStorage.saveSystemAuditLogs(systemAuditLogs);
-  }, [systemAuditLogs]);
+  }, [systemAuditLogs, isAuthenticated]);
 
+  // Restore a previously authenticated owner session; never auto-login with a role or default PIN.
   useEffect(() => {
-    offlineStorage.saveActiveShift(activeShift);
-  }, [activeShift]);
+    let cancelled = false;
 
-  // Authenticate session and sync with backend API
+    const restoreSession = async () => {
+      const session = await apiClient.getSession();
+      if (cancelled) return;
+
+      if (session.success && session.user?.role === 'owner') {
+        setCurrentUser({
+          id: session.user.id,
+          name: session.user.name,
+          role: 'owner',
+          roleTitleAr: 'المالك والمشرف العام',
+          branchId: session.user.branchId,
+          branchName: session.user.branchName,
+        });
+        setIsAuthenticated(true);
+      } else {
+        apiClient.clearSession();
+        setIsAuthenticated(false);
+      }
+
+      setIsAuthChecking(false);
+    };
+
+    restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Exchange rates and their audit history are server-owned; never trust stale localStorage rates.
   useEffect(() => {
-    apiClient.login(currentUser.role).then(() => {
-      apiClient.fetch('/api/remittances/settings')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data && data.success && data.settings) {
-            setRemittanceSettings((prev) => ({
-              ...prev,
-              ...data.settings,
-            }));
-          }
-        })
-        .catch(() => {
-          // Fallback to local storage when backend is offline
-        });
+    if (!isAuthenticated) return;
 
-      apiClient.fetch('/api/remittances/audit-logs')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data && data.success && Array.isArray(data.logs) && data.logs.length > 0) {
-            setSystemAuditLogs(data.logs);
-          }
-        })
-        .catch(() => {
-          // Fallback to local storage
-        });
+    let cancelled = false;
+    apiClient.getExchangeRates().then((result) => {
+      if (cancelled) return;
+      if (result.success && Array.isArray(result.rates) && Array.isArray(result.auditLogs)) {
+        setExchangeRates(result.rates as ExchangeRate[]);
+        setAuditLogs(result.auditLogs as ExchangeRateAuditLog[]);
+      } else {
+        setExchangeRates([]);
+        setAuditLogs([]);
+      }
     });
-  }, [currentUser]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
+
+  // Server-owned shift state. Never restore an open shift from localStorage.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    apiClient.getActiveCashierShift().then((result) => {
+      if (cancelled) return;
+      if (!result.success) {
+        toast.error('تعذر التحقق من الوردية', result.error || 'لا تنفذ عمليات مالية قبل استعادة اتصال الخادم.');
+        return;
+      }
+      setActiveShift(result.activeShift || {
+        ...INITIAL_ACTIVE_SHIFT,
+        id: 'no-active-shift',
+        status: 'closed',
+        openedAt: 'لم تفتح وردية بعد',
+      });
+    });
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
+  // Load server-owned settings only after the owner session has been verified.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    apiClient.fetch('/api/remittances/settings')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.success && data.settings) {
+          setRemittanceSettings((prev) => ({
+            ...prev,
+            ...data.settings,
+          }));
+        }
+      })
+      .catch(() => {
+        // Keep the last locally saved values when the local server is unavailable.
+      });
+
+    apiClient.fetch('/api/remittances/audit-logs')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.success && Array.isArray(data.logs)) {
+          setSystemAuditLogs(data.logs);
+        }
+      })
+      .catch(() => {
+        // Keep the last locally saved values when the local server is unavailable.
+      });
+
+    // Remittance master registry is the source of truth for incoming/outgoing registered remittances.
+    apiClient.fetch('/api/remittances/master-list')
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data || !data.success || !Array.isArray(data.remittances)) return;
+
+        const serverRemittances: Remittance[] = data.remittances
+          .filter((record: any) =>
+            record && typeof record.id === 'string' &&
+            typeof record.transferNumber === 'string' &&
+            (record.direction === 'incoming' || record.direction === 'outgoing') &&
+            ['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'].includes(record.status) &&
+            ['YER_OLD', 'YER_NEW', 'SAR', 'USD'].includes(record.currency) &&
+            typeof record.recipientName === 'string' &&
+            typeof record.amount === 'number' && Number.isFinite(record.amount) && record.amount > 0
+          )
+          .map((record: any) => ({
+            id: record.id,
+            transferNumber: record.transferNumber,
+            direction: record.direction,
+            status: record.status,
+            senderName: record.senderName || '',
+            senderPhone: record.senderPhone || '',
+            recipientName: record.recipientName,
+            recipientPhone: record.recipientPhone || '',
+            networkName: record.networkName || '',
+            amount: record.amount,
+            currency: record.currency as CurrencyCode,
+            feeAmount: Number(record.feeAmount) || 0,
+            totalPaid: Number(record.totalPaid) || record.amount,
+            branchName: record.branchName || '',
+            tellerName: record.tellerName || '',
+            createdAt: record.createdAt || '',
+            paidAt: record.paidAt,
+            recipientIdType: record.recipientIdType,
+            recipientIdNumber: record.recipientIdNumber,
+            voucherNumber: typeof record.voucherNumber === 'string' ? record.voucherNumber : '',
+            notes: record.notes || '',
+            numberingMode: record.numberingMode || 'manual',
+          }));
+
+        // Keep legacy local-only entries visible until their operations are migrated,
+        // but the server record always wins when the same transfer number exists centrally.
+        setRemittances((previous) => {
+          const serverNumbers = new Set(
+            serverRemittances.map((item) => item.transferNumber.trim().toUpperCase())
+          );
+          const localOnly = previous.filter(
+            (item) => !serverNumbers.has(item.transferNumber.trim().toUpperCase())
+          );
+          return [...serverRemittances, ...localOnly];
+        });
+      })
+      .catch(() => {
+        // Keep the last saved view while reporting the server as unavailable elsewhere.
+      });
+  }, [isAuthenticated]);
 
   // Listen to browser network connectivity events
   useEffect(() => {
@@ -197,7 +331,7 @@ function AppContent() {
     setRemittances(offlineStorage.loadRemittances(INITIAL_REMITTANCES));
     setRemittanceSettings(offlineStorage.loadRemittanceSettings(INITIAL_REMITTANCE_SETTINGS));
     setSystemAuditLogs(offlineStorage.loadSystemAuditLogs(INITIAL_SYSTEM_AUDIT_LOGS));
-    setActiveShift(offlineStorage.loadActiveShift(INITIAL_ACTIVE_SHIFT));
+    setActiveShift({ ...INITIAL_ACTIVE_SHIFT, id: 'no-active-shift', status: 'closed', openedAt: 'لم تفتح وردية بعد' });
   };
 
   // Official Sample Voucher Helper matching reference voucher
@@ -226,7 +360,9 @@ function AppContent() {
   const [isInternalTransferModalOpen, setIsInternalTransferModalOpen] = useState<boolean>(false);
 
   // 1. Execute Currency Exchange (صرافة العملات)
-  const handleExecuteExchange = (data: {
+  const handleExecuteExchange = async (data: {
+    rateId: string;
+    rateMode: 'buy' | 'sell';
     sourceCurrency: CurrencyCode;
     sourceAmount: number;
     targetCurrency: CurrencyCode;
@@ -236,115 +372,131 @@ function AppContent() {
     customerName: string;
     customerPhone: string;
     notes: string;
-  }) => {
-    const entryId = `jv-ex-${Date.now()}`;
-    const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
-    const voucherNum = `V-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-
-    // Update balances: Cashier box receives source currency and dispenses target currency
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.sourceCurrency]: (acc.balances[data.sourceCurrency] || 0) + data.sourceAmount,
-              [data.targetCurrency]: (acc.balances[data.targetCurrency] || 0) - data.targetAmount,
-            },
-          };
-        }
-        // If commission, credit commission revenue account
-        if (data.commission > 0 && acc.id === 'acc-4101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.sourceCurrency]: (acc.balances[data.sourceCurrency] || 0) + data.commission,
-            },
-          };
-        }
-        return acc;
-      })
-    );
-
-    // Balanced Journal Entry
-    const lines = [
-      {
-        accountId: 'acc-1102',
-        accountNameAr: 'صندوق كاشير الصراف 1',
-        currency: data.sourceCurrency,
-        debit: data.sourceAmount,
-        credit: 0,
-        note: `قبض نقدي من العميل ${data.customerName}`,
-      },
-      {
-        accountId: 'acc-2101',
-        accountNameAr: 'أمانات العملاء ووسيط التسوية',
-        currency: data.sourceCurrency,
-        debit: 0,
-        credit: data.sourceAmount,
-        note: 'تسوية عملة مقبوضة',
-      },
-      {
-        accountId: 'acc-2101',
-        accountNameAr: 'أمانات العملاء ووسيط التسوية',
-        currency: data.targetCurrency,
-        debit: data.targetAmount,
-        credit: 0,
-        note: 'تسوية عملة مسلمة',
-      },
-      {
-        accountId: 'acc-1102',
-        accountNameAr: 'صندوق كاشير الصراف 1',
-        currency: data.targetCurrency,
-        debit: 0,
-        credit: data.targetAmount,
-        note: `تسليم نقدي للعميل ${data.customerName}`,
-      },
-    ];
-
-    const newJournalEntry: JournalEntry = {
-      id: entryId,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `صرافة ${formatMoney(data.sourceAmount, data.sourceCurrency)} مقابل ${formatMoney(data.targetAmount, data.targetCurrency)} بسعر ${data.exchangeRate}`,
-      lines,
-      referenceType: 'exchange',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
+  }): Promise<boolean> => {
+    const pendingStorageKey = 'alnamari_pending_exchange_v1';
+    const request = {
+      rateId: data.rateId,
+      rateMode: data.rateMode,
+      sourceCurrency: data.sourceCurrency,
+      targetCurrency: data.targetCurrency,
+      sourceAmount: data.sourceAmount,
+      commission: data.commission,
+      customerName: data.customerName,
+      customerPhone: data.customerPhone,
+      notes: data.notes,
     };
 
-    setJournalEntries((prev) => [...prev, newJournalEntry]);
+    let idempotencyKey: string;
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          request?: typeof request;
+        };
+        if (!pending.idempotencyKey ||
+            JSON.stringify(pending.request) !== JSON.stringify(request)) {
+          toast.warning(
+            'توجد صرافة سابقة لم تُحسم',
+            'أعد نفس العملية السابقة لاسترجاع نتيجتها، أو اطلب مطابقة الدفتر قبل بدء عملية مختلفة.'
+          );
+          return false;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          request,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error('تعذر حفظ معرف الصرافة', 'أوقِف العملية؛ لا يمكن ضمان منع تكرار القيد دون حفظ معرفها.');
+      return false;
+    }
 
-    // Create Official Voucher via Central Voucher Engine
-    const newVoucher = voucherEngine.createExchangeVoucher({
-      voucherNumber: voucherNum,
-      transactionNumber: entryNum,
+    const result = await apiClient.executeExchange({
+      idempotencyKey,
+      ...request,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'الصرافة غير محسومة',
+          result.error || 'أوقف النظام ولا تعاود الصرافة حتى مطابقة الدفاتر.'
+        );
+        return false;
+      }
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نحدّث الأرصدة في الواجهة. أعد نفس الطلب لاسترجاع النتيجة باستخدام معرف العملية نفسه.'
+        );
+        return false;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // A stale key is safe: the next request will be rejected if its payload differs.
+      }
+      toast.error('رفض الخادم عملية الصرافة', result.error || 'لم يتم تنفيذ العملية.');
+      return false;
+    }
+
+    const entry = result.journalEntry;
+    if (!Array.isArray(result.accounts) || !entry ||
+        typeof entry.id !== 'string' ||
+        typeof entry.entryNumber !== 'string' ||
+        entry.idempotencyKey !== idempotencyKey ||
+        typeof result.voucherNumber !== 'string' ||
+        typeof result.effectiveRate !== 'number' || !Number.isFinite(result.effectiveRate) ||
+        typeof result.targetAmount !== 'number' || !Number.isFinite(result.targetAmount) ||
+        typeof result.grossTargetAmount !== 'number' || !Number.isFinite(result.grossTargetAmount)) {
+      toast.error(
+        'نتيجة الصرافة غير مكتملة',
+        'لم نحدّث الشاشة. لا تنشئ عملية جديدة؛ تحقق من دفتر الخادم باستخدام معرف الصرافة نفسه.'
+      );
+      return false;
+    }
+
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((item) =>
+        item.id === entry.id || item.entryNumber === entry.entryNumber
+      );
+      return exists ? previous : [entry as JournalEntry, ...previous];
+    });
+
+    const voucher = voucherEngine.createExchangeVoucher({
+      voucherNumber: result.voucherNumber,
+      transactionNumber: entry.entryNumber,
       customerName: data.customerName,
       customerPhone: data.customerPhone,
       sourceCurrency: data.sourceCurrency,
       sourceAmount: data.sourceAmount,
       targetCurrency: data.targetCurrency,
-      targetAmount: data.targetAmount,
-      exchangeRate: data.exchangeRate,
+      targetAmount: result.targetAmount,
+      exchangeRate: result.effectiveRate,
       commission: data.commission,
       branchName: currentUser.branchName,
       tellerName: currentUser.name,
       notes: data.notes,
     });
+    setActiveVoucher(voucher);
 
-    setActiveVoucher(newVoucher);
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // Replaying the same key is safe and returns the existing server journal entry.
+    }
+    return true;
   };
 
   // 2. Create Outgoing Remittance (إرسال حوالة صادرة)
-  const handleCreateOutgoingRemittance = (data: {
+  const handleCreateOutgoingRemittance = async (data: {
     senderName: string;
     senderPhone: string;
     recipientName: string;
@@ -355,196 +507,252 @@ function AppContent() {
     feeAmount: number;
     notes?: string;
     manualTransferNumber?: string;
-  }) => {
-    const totalPaid = data.amount + data.feeAmount;
+  }): Promise<Remittance | null> => {
+    const request = {
+      senderName: data.senderName.trim(),
+      senderPhone: data.senderPhone.trim(),
+      recipientName: data.recipientName.trim(),
+      recipientPhone: data.recipientPhone.trim(),
+      networkName: data.networkName.trim(),
+      amount: data.amount,
+      currency: data.currency,
+      feeAmount: data.feeAmount,
+      notes: (data.notes || '').trim(),
+      manualTransferNumber: data.manualTransferNumber?.trim().toUpperCase() || undefined,
+    };
 
-    // Numbering Mode Policy Execution (Automatic vs Manual with UNIQUE constraint)
-    let transferNum = '';
-    const mode = remittanceSettings.numberingMode;
+    if (!request.senderName || !request.recipientName || !request.networkName ||
+        !Number.isFinite(request.amount) || request.amount <= 0 ||
+        !Number.isFinite(request.feeAmount) || request.feeAmount < 0) {
+      toast.warning('بيانات الحوالة الصادرة غير مكتملة أو غير صالحة.');
+      return null;
+    }
 
-    if (mode === 'manual') {
-      if (!data.manualTransferNumber || !data.manualTransferNumber.trim()) {
-        toast.warning('رقم الحوالة إلزامي في وضع الترقيم اليدوي.');
-        return;
+    if (remittanceSettings.numberingMode === 'manual' && !request.manualTransferNumber) {
+      toast.warning('رقم الحوالة إلزامي في وضع الترقيم اليدوي.');
+      return null;
+    }
+
+    const pendingStorageKey = 'alnamari_pending_outgoing_remittance_v1';
+    let idempotencyKey: string;
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          senderName?: string;
+          senderPhone?: string;
+          recipientName?: string;
+          recipientPhone?: string;
+          networkName?: string;
+          amount?: number;
+          currency?: string;
+          feeAmount?: number;
+          notes?: string;
+          manualTransferNumber?: string;
+        };
+
+        const sameRequest =
+          pending.senderName === request.senderName &&
+          pending.senderPhone === request.senderPhone &&
+          pending.recipientName === request.recipientName &&
+          pending.recipientPhone === request.recipientPhone &&
+          pending.networkName === request.networkName &&
+          pending.amount === request.amount &&
+          pending.currency === request.currency &&
+          pending.feeAmount === request.feeAmount &&
+          pending.notes === request.notes &&
+          (pending.manualTransferNumber || undefined) === request.manualTransferNumber;
+        if (!pending.idempotencyKey || !sameRequest) {
+          toast.warning(
+            'توجد حوالة صادرة سابقة لم تُحسم',
+            'لا تنشئ حوالة أخرى الآن. أعد إرسال نفس بيانات الحوالة السابقة لاسترجاع نتيجتها، أو اطلب مطابقة الدفتر.'
+          );
+          return null;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          ...request,
+          createdAt: new Date().toISOString(),
+        }));
       }
-      const cleanManualNum = data.manualTransferNumber.trim().toUpperCase();
-
-      // Check Unique constraint locally
-      const isDuplicate = remittances.some(
-        (r) => r.transferNumber.trim().toUpperCase() === cleanManualNum
+    } catch {
+      toast.error(
+        'تعذر حفظ معرف عملية الحوالة',
+        'أوقف التسجيل؛ يجب حفظ معرف ثابت قبل إرسال الطلب حتى لا تتكرر حركة الصندوق بعد انقطاع الاتصال.'
       );
-      if (isDuplicate) {
-        toast.error(
-          'رقم الحوالة مستخدم مسبقاً',
-          `رفض النظام: رقم الحوالة (${cleanManualNum}) مستخدم مسبقاً في النظام ولا يمكن تكراره (UNIQUE Constraint).`
-        );
-        return;
-      }
-
-      transferNum = cleanManualNum;
-    } else {
-      // Automatic Mode: sequential atomic unique generation
-      let currentSeq = remittanceSettings.nextSequence;
-      transferNum = `${remittanceSettings.prefix}${String(currentSeq).padStart(6, '0')}`;
-
-      // Prevent collision with any existing remittances
-      while (
-        remittances.some((r) => r.transferNumber.trim().toUpperCase() === transferNum.toUpperCase())
-      ) {
-        currentSeq += 1;
-        transferNum = `${remittanceSettings.prefix}${String(currentSeq).padStart(6, '0')}`;
-      }
-
-      // Update next sequence
-      setRemittanceSettings((prev) => ({
-        ...prev,
-        nextSequence: currentSeq + 1,
-      }));
+      return null;
     }
 
-    // Register with backend server if online
-    if (isOnline) {
-      apiClient.fetch('/api/remittances/register-number', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transferNumber: transferNum,
-          mode,
-        }),
-      }).catch((err) => console.warn('Could not register number with central server:', err));
-    }
-
-    const voucherNum = `V-${new Date().getFullYear()}-${String(remittances.length + 1).padStart(4, '0')}`;
-    const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-
-    // Update balances: Cashier box gets totalPaid, Network account owed the amount, Commission account gets fee
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + totalPaid,
-            },
-          };
-        }
-        if (acc.id === 'acc-1301') {
-          // Network account (liability to pay recipient network)
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) - data.amount,
-            },
-          };
-        }
-        if (acc.id === 'acc-4101' && data.feeAmount > 0) {
-          // Commission revenue
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + data.feeAmount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
-
-    // Remittance object with numberingMode tracking
-    const newRemittance: Remittance = {
-      id: `rem-${Date.now()}`,
-      transferNumber: transferNum,
-      direction: 'outgoing',
-      status: 'approved',
-      senderName: data.senderName,
-      senderPhone: data.senderPhone,
-      recipientName: data.recipientName,
-      recipientPhone: data.recipientPhone,
-      networkName: data.networkName,
-      amount: data.amount,
-      currency: data.currency,
-      feeAmount: data.feeAmount,
-      totalPaid,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      createdAt: `${dateStr} ${timeStr}`,
-      voucherNumber: voucherNum,
-      notes: data.notes,
-      numberingMode: mode,
-    };
-
-    setRemittances((prev) => [newRemittance, ...prev]);
-
-    // Balanced Journal Entry
-    const newJournalEntry: JournalEntry = {
-      id: `jv-rem-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `إرسال حوالة صادرة ${transferNum} للمستلم ${data.recipientName} عبر ${data.networkName}`,
-      lines: [
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'صندوق كاشير الصراف 1',
-          currency: data.currency,
-          debit: totalPaid,
-          credit: 0,
-          note: 'قبض من المرسل مع العمولة',
-        },
-        {
-          accountId: 'acc-1301',
-          accountNameAr: `حساب ${data.networkName}`,
-          currency: data.currency,
-          debit: 0,
-          credit: data.amount,
-          note: 'مستحق للشبكة',
-        },
-        ...(data.feeAmount > 0
-          ? [
-              {
-                accountId: 'acc-4101',
-                accountNameAr: 'إيرادات عمولات الحوالات',
-                currency: data.currency,
-                debit: 0,
-                credit: data.feeAmount,
-                note: 'أجور تحويل مستحقة',
-              },
-            ]
-          : []),
-      ],
-      referenceType: 'transfer_send',
-      referenceId: transferNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
-
-    setJournalEntries((prev) => [...prev, newJournalEntry]);
-
-    // Create Official Voucher via Central Voucher Engine
-    const newVoucher = voucherEngine.createOutgoingTransferVoucher({
-      voucherNumber: voucherNum,
-      transferNumber: transferNum,
-      senderName: data.senderName,
-      senderPhone: data.senderPhone,
-      recipientName: data.recipientName,
-      recipientPhone: data.recipientPhone,
-      networkName: data.networkName,
-      amount: data.amount,
-      currency: data.currency,
-      feeAmount: data.feeAmount,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      notes: data.notes,
+    const result = await apiClient.registerOutgoingRemittance({
+      idempotencyKey,
+      manualTransferNumber: request.manualTransferNumber,
+      senderName: request.senderName,
+      senderPhone: request.senderPhone,
+      recipientName: request.recipientName,
+      recipientPhone: request.recipientPhone,
+      networkName: request.networkName,
+      amount: request.amount,
+      currency: request.currency,
+      feeAmount: request.feeAmount,
+      notes: request.notes,
     });
 
-    setActiveVoucher(newVoucher);
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'الحوالة الصادرة غير محسومة محاسبياً',
+          result.error || 'أوقف النظام ولا تعاود تسجيل الحوالة. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return null;
+      }
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد إرسال نفس بيانات الحوالة لاسترجاع النتيجة باستخدام معرف العملية السابق.'
+        );
+        return null;
+      }
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // A definitive rejection did not create a ledger movement.
+      }
+      toast.error('رفض الخادم تسجيل الحوالة الصادرة', result.error || 'لم يتم تنفيذ العملية.');
+      return null;
+    }
+
+    const record = result.record;
+    const journalEntry = result.journalEntry;
+    const totalPaid = request.amount + request.feeAmount;
+    const cashLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-1102' &&
+      line.currency === request.currency &&
+      Math.abs(line.debit - totalPaid) <= 0.0000001 &&
+      line.credit === 0
+    );
+    const payableLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-2201' &&
+      line.currency === request.currency &&
+      Math.abs(line.credit - request.amount) <= 0.0000001 &&
+      line.debit === 0
+    );
+    const commissionLine = request.feeAmount > 0
+      ? journalEntry?.lines?.find((line: any) =>
+          line.accountId === 'acc-4101' &&
+          line.currency === request.currency &&
+          Math.abs(line.credit - request.feeAmount) <= 0.0000001 &&
+          line.debit === 0
+        )
+      : true;
+
+    if (!record || record.direction !== 'outgoing' ||
+        record.status !== 'approved' ||
+        typeof record.id !== 'string' ||
+        typeof record.transferNumber !== 'string' ||
+        typeof record.voucherNumber !== 'string' ||
+        record.idempotencyKey !== idempotencyKey ||
+        !journalEntry ||
+        journalEntry.referenceType !== 'transfer_send' ||
+        journalEntry.referenceId !== record.transferNumber ||
+        journalEntry.idempotencyKey !== idempotencyKey ||
+        typeof journalEntry.entryNumber !== 'string' ||
+        !cashLine || !payableLine || !commissionLine ||
+        !Array.isArray(result.accounts)) {
+      toast.error(
+        'استجابة الحوالة الصادرة غير مكتملة',
+        'لم نحدث الأرصدة أو نمسح معرف المحاولة. لا تسجل حوالة أخرى قبل مطابقة دفتر الخادم.'
+      );
+      return null;
+    }
+
+    const registeredRemittance: Remittance = {
+      id: record.id,
+      transferNumber: record.transferNumber,
+      direction: 'outgoing',
+      status: record.status,
+      senderName: record.senderName,
+      senderPhone: record.senderPhone || '',
+      recipientName: record.recipientName,
+      recipientPhone: record.recipientPhone || '',
+      networkName: record.networkName,
+      amount: record.amount,
+      currency: record.currency as CurrencyCode,
+      feeAmount: record.feeAmount,
+      totalPaid: record.totalPaid,
+      branchName: record.branchName,
+      tellerName: record.tellerName,
+      createdAt: record.createdAt,
+      voucherNumber: record.voucherNumber,
+      notes: record.notes || '',
+      numberingMode: record.numberingMode || 'manual',
+    };
+
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((entry) =>
+        entry.id === journalEntry.id || entry.entryNumber === journalEntry.entryNumber
+      );
+      return exists ? previous : [journalEntry as JournalEntry, ...previous];
+    });
+    setRemittances((previous) => {
+      const exists = previous.some(
+        (item) => item.transferNumber.trim().toUpperCase() === registeredRemittance.transferNumber
+      );
+      return exists
+        ? previous.map((item) =>
+            item.transferNumber.trim().toUpperCase() === registeredRemittance.transferNumber
+              ? registeredRemittance
+              : item
+          )
+        : [registeredRemittance, ...previous];
+    });
+    if (result.settings) {
+      setRemittanceSettings(result.settings as RemittanceSettings);
+    }
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // Server journal and master record retain the idempotency key, so a replay remains safe.
+    }
+
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${journalEntry.id}`,
+      category: 'financial',
+      timestamp: `${journalEntry.date} ${journalEntry.time}`,
+      action: 'تسجيل حوالة صادرة',
+      details: `اعتمد الخادم الحوالة ${record.transferNumber} بمبلغ ${formatMoney(record.amount, record.currency)} وعمولة ${formatMoney(record.feeAmount, record.currency)} بالقيد ${journalEntry.entryNumber}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
+    };
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
+
+    const voucher = voucherEngine.createOutgoingTransferVoucher({
+      voucherNumber: record.voucherNumber,
+      transferNumber: record.transferNumber,
+      senderName: record.senderName,
+      senderPhone: record.senderPhone || '',
+      recipientName: record.recipientName,
+      recipientPhone: record.recipientPhone || '',
+      networkName: record.networkName,
+      amount: record.amount,
+      currency: record.currency as CurrencyCode,
+      feeAmount: record.feeAmount,
+      branchName: record.branchName,
+      tellerName: record.tellerName,
+      notes: record.notes || '',
+    });
+    setActiveVoucher(voucher);
+
+    toast.success(
+      result.replayed ? 'الحوالة الصادرة مسجلة مسبقاً' : 'تم اعتماد الحوالة الصادرة من الخادم',
+      `الحوالة ${record.transferNumber} بالقيد ${journalEntry.entryNumber}. تم تحديث الأرصدة من دفتر الخادم.`
+    );
+    return registeredRemittance;
   };
 
   // 2.1 Save Remittance Settings (التحكم في طريقة إصدار أرقام الحوالات وتوثيق التدقيق)
@@ -641,8 +849,7 @@ function AppContent() {
     setIsProcessingPayout(true);
 
     try {
-      // 1. Call Server-Side API to enforce atomic duplicate payout prevention & audit registry
-      const idempotencyKey = `pay_${targetRem.transferNumber}_${currentUser.id}_${Date.now()}`;
+      // 1. Call the server; it derives a stable idempotency key from the authenticated teller and transfer.
       const serverResult = await apiClient.payoutRemittance({
         transferId: targetRem.id,
         transferNumber: targetRem.transferNumber,
@@ -652,7 +859,6 @@ function AppContent() {
         currency: targetRem.currency,
         clientAmount: targetRem.amount,
         clientCurrency: targetRem.currency,
-        idempotencyKey,
       });
 
       if (!serverResult.success) {
@@ -794,7 +1000,7 @@ function AppContent() {
   };
 
   // Helper: Create Incoming Remittance from networks for Cash-out
-  const handleCreateIncomingRemittance = (data: {
+  const handleCreateIncomingRemittance = async (data: {
     transferNumber: string;
     networkName: string;
     senderName: string;
@@ -804,140 +1010,276 @@ function AppContent() {
     amount: number;
     currency: CurrencyCode;
     notes?: string;
-  }): Remittance => {
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-
-    const newRem: Remittance = {
-      id: `rem-${Date.now()}`,
-      transferNumber: data.transferNumber,
-      voucherNumber: `V-INC-${Date.now().toString().slice(-4)}`,
-      direction: 'incoming',
-      senderName: data.senderName,
-      senderPhone: data.senderPhone,
-      recipientName: data.recipientName,
-      recipientPhone: data.recipientPhone,
+  }): Promise<Remittance | null> => {
+    const request = {
+      transferNumber: data.transferNumber.trim().toUpperCase(),
+      networkName: data.networkName.trim(),
+      senderName: data.senderName.trim(),
+      senderPhone: data.senderPhone.trim(),
+      recipientName: data.recipientName.trim(),
+      recipientPhone: data.recipientPhone.trim(),
       amount: data.amount,
       currency: data.currency,
-      feeAmount: 0,
-      totalPaid: data.amount,
-      networkName: data.networkName,
-      status: 'pending',
-      createdAt: `${dateStr} ${timeStr}`,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      notes: data.notes || 'حوالة واردة للتسليم الفوري',
+      notes: (data.notes || '').trim(),
     };
 
-    setRemittances((prev) => [newRem, ...prev]);
-    return newRem;
+    if (!request.transferNumber || !request.networkName ||
+        !request.senderName || !request.recipientName ||
+        !Number.isFinite(request.amount) || request.amount <= 0) {
+      toast.warning('أكمل رقم الحوالة واسم المرسل والمستفيد والمبلغ قبل التسجيل.');
+      return null;
+    }
+
+    const pendingStorageKey = 'alnamari_pending_incoming_remittance_v1';
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending);
+        const sameRequest = pending &&
+          pending.transferNumber === request.transferNumber &&
+          pending.networkName === request.networkName &&
+          pending.senderName === request.senderName &&
+          pending.senderPhone === request.senderPhone &&
+          pending.recipientName === request.recipientName &&
+          pending.recipientPhone === request.recipientPhone &&
+          pending.amount === request.amount &&
+          pending.currency === request.currency &&
+          pending.notes === request.notes;
+        if (!sameRequest) {
+          toast.warning(
+            'توجد محاولة تسجيل حوالة سابقة لم تُحسم',
+            'أعد إرسال الحوالة نفسها بالبيانات ذاتها لاسترجاع نتيجة الخادم، أو اطلب مطابقة سجل الحوالات قبل تسجيل رقم آخر.'
+          );
+          return null;
+        }
+      } else {
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          ...request,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error(
+        'تعذر حفظ بيانات المحاولة',
+        'أوقِف التسجيل؛ يجب حفظ بيانات الطلب محلياً حتى نتمكن من إعادة نفس طلب الحوالة بأمان بعد انقطاع الاتصال.'
+      );
+      return null;
+    }
+
+    const result = await apiClient.registerIncomingRemittance(request);
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'تسجيل الحوالة غير محسوم',
+          result.error || 'أوقف النظام ولا تعاود التسجيل قبل مطابقة سجل الحوالات والأرقام والتدقيق.'
+        );
+        return null;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نضف الحوالة إلى الشاشة. أعد إرسال الطلب نفسه بالبيانات ذاتها لاسترجاع السجل إن كان الخادم قد حفظه.'
+        );
+        return null;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // No server record was committed for a definitive rejection.
+      }
+      toast.error('رفض الخادم تسجيل الحوالة', result.error || 'لم يتم تسجيل الحوالة.');
+      return null;
+    }
+
+    const record = result.record;
+    const validStatuses = ['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'];
+    if (!record || record.direction !== 'incoming' ||
+        !validStatuses.includes(record.status) ||
+        !['YER_OLD', 'YER_NEW', 'SAR', 'USD'].includes(record.currency) ||
+        typeof record.id !== 'string' ||
+        typeof record.transferNumber !== 'string' ||
+        typeof record.voucherNumber !== 'string' ||
+        typeof record.amount !== 'number' || !Number.isFinite(record.amount) || record.amount <= 0) {
+      toast.error(
+        'سجل الحوالة الوارد غير مكتمل',
+        'لم نحدّث الشاشة أو نمسح بيانات المحاولة. راجع السجل المركزي قبل تكرار التسجيل.'
+      );
+      return null;
+    }
+
+    const registeredRemittance: Remittance = {
+      id: record.id,
+      transferNumber: record.transferNumber,
+      direction: 'incoming',
+      status: record.status,
+      senderName: record.senderName,
+      senderPhone: record.senderPhone || '',
+      recipientName: record.recipientName,
+      recipientPhone: record.recipientPhone || '',
+      networkName: record.networkName,
+      amount: record.amount,
+      currency: record.currency as CurrencyCode,
+      feeAmount: record.feeAmount,
+      totalPaid: record.totalPaid,
+      branchName: record.branchName,
+      tellerName: record.tellerName,
+      createdAt: record.createdAt,
+      voucherNumber: record.voucherNumber,
+      notes: record.notes || '',
+      numberingMode: record.numberingMode || 'manual',
+    };
+
+    setRemittances((previous) => {
+      const existingIndex = previous.findIndex(
+        (item) => item.transferNumber.trim().toUpperCase() === registeredRemittance.transferNumber
+      );
+      if (existingIndex < 0) return [registeredRemittance, ...previous];
+      return previous.map((item, index) => index === existingIndex ? registeredRemittance : item);
+    });
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // A stale pending request is safe; the server treats an identical registration as an idempotent replay.
+    }
+
+    const statusMessage = registeredRemittance.status === 'available'
+      ? 'الحوالة متاحة الآن للتحقق من الهوية والصرف.'
+      : registeredRemittance.status === 'paid'
+        ? 'هذه الحوالة مصروفة مسبقاً؛ لم يتم إنشاء سجل صرف جديد.'
+        : `حالة الحوالة الحالية: ${registeredRemittance.status}.`;
+    toast.success(
+      result.replayed ? 'الحوالة مسجلة مسبقاً' : 'تم تسجيل الحوالة الواردة',
+      `اعتمد الخادم الحوالة ${registeredRemittance.transferNumber} بمبلغ ${formatMoney(registeredRemittance.amount, registeredRemittance.currency)}. ${statusMessage}`
+    );
+    return registeredRemittance;
   };
 
-  // Helper: Fund Drawer from Central Treasury with strict liquidity check and balanced double-entry
-  const handleFundDrawer = (currency: CurrencyCode, amount: number) => {
-    if (amount <= 0) {
+  // Fund drawer through the authoritative server ledger. Never update financial balances locally.
+  const handleFundDrawer = async (currency: CurrencyCode, amount: number) => {
+    if (!Number.isFinite(amount) || amount <= 0) {
       toast.warning('يرجى إدخال مبلغ صحيح لتغذية الصندوق.');
       return;
     }
 
-    const centralTreasury = accounts.find((a) => a.id === 'acc-1101');
-    const cashierDrawer = accounts.find((a) => a.id === 'acc-1102');
+    const fromAccountId = 'acc-1101';
+    const toAccountId = 'acc-1102';
+    const pendingStorageKey = 'alnamari_pending_fund_drawer_v1';
 
-    if (!centralTreasury || !cashierDrawer) {
-      toast.error('خطأ في تهيئة الحسابات', 'تعذر العثور على حساب الخزينة الرئيسية أو صندوق الكاشير.');
+    let idempotencyKey: string;
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          fromAccountId?: string;
+          toAccountId?: string;
+          amount?: number;
+          currency?: string;
+        };
+
+        if (!pending.idempotencyKey || pending.fromAccountId !== fromAccountId ||
+            pending.toAccountId !== toAccountId ||
+            pending.amount !== amount || pending.currency !== currency) {
+          toast.warning(
+            'توجد تغذية سابقة لم تُحسم',
+            'لا تنفذ مبلغاً جديداً. أعد طلب العملية السابقة بنفس المبلغ والعملة لاسترجاع نتيجتها، أو اطلب مطابقة الدفتر من المسؤول.'
+          );
+          return;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          fromAccountId,
+          toAccountId,
+          amount,
+          currency,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error('تعذر حفظ رقم حماية العملية', 'أوقِف طلب التغذية؛ لا يمكن ضمان منع التكرار دون حفظ معرف العملية محلياً.');
       return;
     }
 
-    const treasuryBalance = centralTreasury.balances[currency] || 0;
-    if (treasuryBalance < amount) {
+    const result = await apiClient.fundCashierDrawer({
+      fromAccountId,
+      toAccountId,
+      amount,
+      currency,
+      idempotencyKey,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'تغذية الصندوق غير محسومة',
+          result.error || 'أوقف النظام ولا تعاود التغذية. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد نفس طلب التغذية بالمبلغ والعملة نفسيهما لاسترجاع النتيجة باستخدام معرف العملية نفسه.'
+        );
+        return;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // The server rejected the request definitively; a stale local key will be detected on next attempt.
+      }
+      toast.error('رفض الخادم تغذية الصندوق', result.error || 'لم يتم تنفيذ العملية.');
+      return;
+    }
+
+    if (!Array.isArray(result.accounts) || !result.journalEntry ||
+        typeof result.journalEntry.entryNumber !== 'string' ||
+        !result.journalEntry.idempotencyKey ||
+        result.journalEntry.idempotencyKey !== idempotencyKey) {
       toast.error(
-        'رصيد الخزينة الرئيسية غير كافٍ',
-        `الرصيد المتاح في الخزينة المركزية (${formatMoney(treasuryBalance, currency)}) أقل من المبلغ المطلوب (${formatMoney(amount, currency)}).`
+        'نتيجة التغذية غير مكتملة',
+        'لم يتم تحديث الشاشة. لا تنشئ عملية جديدة؛ تحقق من دفتر الخادم باستخدام معرف العملية نفسه.'
       );
       return;
     }
 
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-    const entryNum = `JV-FUND-${Date.now().toString().slice(-4)}`;
-    const voucherNum = `V-FUND-${Date.now().toString().slice(-4)}`;
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const alreadyPresent = previous.some(
+        (entry) => entry.id === result.journalEntry.id ||
+          entry.entryNumber === result.journalEntry.entryNumber
+      );
+      return alreadyPresent ? previous : [result.journalEntry as JournalEntry, ...previous];
+    });
 
-    // Correct Double-Entry Balance Adjustment:
-    // Deduct from Central Treasury (acc-1101)
-    // Credit to Cashier Drawer (acc-1102)
-    setAccounts((prev) =>
-      prev.map((acc) => {
-        if (acc.id === 'acc-1101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [currency]: (acc.balances[currency] || 0) - amount,
-            },
-          };
-        }
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [currency]: (acc.balances[currency] || 0) + amount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // Keeping a stale key is safe: a retry replays the committed journal entry without another debit.
+    }
 
-    // Balanced Journal Entry
-    const fundJournalEntry: JournalEntry = {
-      id: `jv-fund-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `تغذية صندوق الصراف 1 من الخزينة المركزية بمبلغ ${formatMoney(amount, currency)}`,
-      lines: [
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'صندوق كاشير الصراف 1',
-          currency,
-          debit: amount,
-          credit: 0,
-          note: 'استلام تغذية نقدية لصندوق الكاشير',
-        },
-        {
-          accountId: 'acc-1101',
-          accountNameAr: 'الخزينة الرئيسية المركزية',
-          currency,
-          debit: 0,
-          credit: amount,
-          note: 'صرف تغذية سيولة لصندوق الكاشير',
-        },
-      ],
-      referenceType: 'internal_transfer',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
-
-    setJournalEntries((prev) => [...prev, fundJournalEntry]);
-
-    // System audit log
+    const entry = result.journalEntry;
+    const voucherNum = entry.voucherNumber || entry.referenceId;
     const auditRecord: SystemAuditLog = {
-      id: `sys-log-${Date.now()}`,
+      id: `sys-log-${entry.id}`,
       category: 'financial',
-      timestamp: `${dateStr} ${timeStr}`,
+      timestamp: `${entry.date} ${entry.time}`,
       action: 'تغذية صندوق الصراف',
-      details: `تمت تغذية صندوق الكاشير من الخزينة المركزية بمبلغ ${formatMoney(amount, currency)} بقيد ${entryNum}`,
+      details: `اعتمد الخادم تغذية صندوق الكاشير بمبلغ ${formatMoney(amount, currency)} بالقيد ${entry.entryNumber}`,
       performedBy: currentUser.name,
       userRole: currentUser.role,
     };
-    setSystemAuditLogs((prev) => [auditRecord, ...prev]);
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
 
-    // Create official voucher
     const voucher = voucherEngine.createInternalTransferVoucher({
       voucherNumber: voucherNum,
       fromAccountName: 'الخزينة الرئيسية المركزية',
@@ -951,258 +1293,438 @@ function AppContent() {
     setActiveVoucher(voucher);
 
     toast.success(
-      'تمت تغذية الصندوق بنجاح',
-      `تم تحويل ${formatMoney(amount, currency)} من الخزينة الرئيسية إلى صندوق الكاشير بقيد محاسبي متوازن.`
+      'تم اعتماد تغذية الصندوق من الخادم',
+      `تم اعتماد ${formatMoney(amount, currency)} بالقيد ${entry.entryNumber}. تم تحديث الأرصدة من دفتر الخادم.`
     );
   };
 
   // 5. Internal Financial Transfers (البند 3.3: التحويلات المالية الداخلية وتغذية الصناديق)
-  const handleExecuteInternalTransfer = (data: {
+  const handleExecuteInternalTransfer = async (data: {
     fromAccountId: string;
     toAccountId: string;
     currency: CurrencyCode;
     amount: number;
     description: string;
-  }) => {
-    const entryNum = `JV-TRF-${Date.now().toString().slice(-4)}`;
-    const voucherNum = `V-TRF-${Date.now().toString().slice(-4)}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+  }): Promise<boolean> => {
+    if (!Number.isFinite(data.amount) || data.amount <= 0 ||
+        data.fromAccountId === data.toAccountId || !data.description.trim()) {
+      toast.warning('بيانات المناقلة غير مكتملة أو غير صالحة.');
+      return false;
+    }
 
-    const fromAcc = accounts.find((a) => a.id === data.fromAccountId);
-    const toAcc = accounts.find((a) => a.id === data.toAccountId);
+    const pendingStorageKey = 'alnamari_pending_internal_transfer_v1';
+    let idempotencyKey: string;
 
-    // Update balances
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === data.fromAccountId) {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) - data.amount,
-            },
-          };
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          fromAccountId?: string;
+          toAccountId?: string;
+          currency?: string;
+          amount?: number;
+          description?: string;
+        };
+
+        if (!pending.idempotencyKey ||
+            pending.fromAccountId !== data.fromAccountId ||
+            pending.toAccountId !== data.toAccountId ||
+            pending.currency !== data.currency ||
+            pending.amount !== data.amount ||
+            pending.description !== data.description.trim()) {
+          toast.warning(
+            'توجد مناقلة سابقة لم تُحسم',
+            'لا تنفذ مناقلة مختلفة الآن. أعد نفس المناقلة السابقة بالبيانات نفسها لاسترجاع نتيجتها أو اطلب مطابقة الدفتر.'
+          );
+          return false;
         }
-        if (acc.id === data.toAccountId) {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + data.amount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          fromAccountId: data.fromAccountId,
+          toAccountId: data.toAccountId,
+          currency: data.currency,
+          amount: data.amount,
+          description: data.description.trim(),
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error(
+        'تعذر حفظ معرف المناقلة',
+        'أوقِف العملية؛ لا يمكن ضمان منع التكرار دون حفظ معرف ثابت محلياً قبل إرسال الطلب.'
+      );
+      return false;
+    }
 
-    // Balanced Journal Entry
-    const newEntry: JournalEntry = {
-      id: `jv-itrf-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `${data.description} (من ${fromAcc?.nameAr} إلى ${toAcc?.nameAr})`,
-      lines: [
-        {
-          accountId: data.toAccountId,
-          accountNameAr: toAcc?.nameAr || 'الحساب المستلم',
-          currency: data.currency,
-          debit: data.amount,
-          credit: 0,
-          note: 'استلام تحويل داخلي',
-        },
-        {
-          accountId: data.fromAccountId,
-          accountNameAr: fromAcc?.nameAr || 'الحساب المحول',
-          currency: data.currency,
-          debit: 0,
-          credit: data.amount,
-          note: 'إرسال تحويل داخلي',
-        },
-      ],
-      referenceType: 'expense',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
+    const result = await apiClient.executeInternalTransfer({
+      fromAccountId: data.fromAccountId,
+      toAccountId: data.toAccountId,
+      currency: data.currency,
+      amount: data.amount,
+      description: data.description.trim(),
+      idempotencyKey,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'المناقلة غير محسومة محاسبياً',
+          result.error || 'أوقف النظام ولا تعاود المناقلة. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return false;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد نفس المناقلة بالبيانات نفسها لاسترجاع النتيجة باستخدام معرفها السابق.'
+        );
+        return false;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // A stale key is harmless; a different request remains blocked until it is resolved.
+      }
+      toast.error('رفض الخادم المناقلة', result.error || 'لم يتم تنفيذ العملية.');
+      return false;
+    }
+
+    const journalEntry = result.journalEntry;
+    if (!Array.isArray(result.accounts) || !journalEntry ||
+        journalEntry.referenceType !== 'internal_transfer' ||
+        journalEntry.idempotencyKey !== idempotencyKey ||
+        typeof journalEntry.entryNumber !== 'string' ||
+        typeof journalEntry.voucherNumber !== 'string' ||
+        !Array.isArray(journalEntry.lines) || journalEntry.lines.length !== 2) {
+      toast.error(
+        'استجابة المناقلة غير مكتملة',
+        'لم يتم تحديث الشاشة أو إزالة معرف العملية. لا تبدأ مناقلة جديدة حتى تتم مطابقة دفتر الخادم.'
+      );
+      return false;
+    }
+
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((entry) =>
+        entry.id === journalEntry.id || entry.entryNumber === journalEntry.entryNumber
+      );
+      return exists ? previous : [journalEntry as JournalEntry, ...previous];
+    });
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // A repeated request remains safe because the server stores the idempotency key in the journal.
+    }
+
+    const fromAccount = (result.accounts as Account[]).find((account) => account.id === data.fromAccountId);
+    const toAccount = (result.accounts as Account[]).find((account) => account.id === data.toAccountId);
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${journalEntry.id}`,
+      category: 'financial',
+      timestamp: `${journalEntry.date} ${journalEntry.time}`,
+      action: 'مناقلة مالية داخلية',
+      details: `اعتمد الخادم مناقلة ${formatMoney(data.amount, data.currency)} من ${fromAccount?.nameAr || data.fromAccountId} إلى ${toAccount?.nameAr || data.toAccountId} بالقيد ${journalEntry.entryNumber}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
     };
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
 
-    setJournalEntries((prev) => [...prev, newEntry]);
-
-    // Create Voucher
-    const transferVoucher: OfficialVoucher = {
-      id: `vouch-${Date.now()}`,
-      voucherNumber: voucherNum,
-      type: 'payment',
-      date: dateStr,
-      time: timeStr,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      partyName: toAcc?.nameAr || 'الصندوق المستلم',
-      partyPhone: '',
+    const voucher = voucherEngine.createInternalTransferVoucher({
+      voucherNumber: journalEntry.voucherNumber,
+      fromAccountName: fromAccount?.nameAr || 'الحساب المحول',
+      toAccountName: toAccount?.nameAr || 'الحساب المستلم',
       amount: data.amount,
       currency: data.currency,
-      amountInWordsAr: tafqeetArabic(data.amount, data.currency),
-      referenceNumber: entryNum,
-      qrCodeData: voucherNum,
-      notes: data.description,
-    };
+      tellerName: currentUser.name,
+      branchName: currentUser.branchName,
+      reason: data.description.trim(),
+    });
+    setActiveVoucher(voucher);
 
-    setActiveVoucher(transferVoucher);
+    toast.success(
+      'تم اعتماد المناقلة من الخادم',
+      `تم اعتماد ${formatMoney(data.amount, data.currency)} بالقيد ${journalEntry.entryNumber}. الأرصدة المعروضة من دفتر الخادم.`
+    );
+    return true;
   };
 
   // 6. Record Operating Expense (البند 7.3: إثبات سند صرف مصروف تشغيلي)
-  const handleRecordExpense = (data: {
+  const handleRecordExpense = async (data: {
     expenseType: string;
     amount: number;
     currency: CurrencyCode;
     notes: string;
-  }) => {
-    const entryNum = `JV-EXP-${Date.now().toString().slice(-4)}`;
-    const voucherNum = `V-EXP-${Date.now().toString().slice(-4)}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+  }): Promise<boolean> => {
+    if (!Number.isFinite(data.amount) || data.amount <= 0 ||
+        !data.expenseType.trim() || !data.notes.trim()) {
+      toast.warning('بيانات المصروف غير مكتملة أو غير صالحة.');
+      return false;
+    }
 
-    // Update balances: Cashier box decreases, Expense account increases
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) - data.amount,
-            },
-          };
+    const pendingStorageKey = 'alnamari_pending_expense_v1';
+    let idempotencyKey: string;
+
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          expenseType?: string;
+          amount?: number;
+          currency?: string;
+          notes?: string;
+        };
+
+        if (!pending.idempotencyKey ||
+            pending.expenseType !== data.expenseType.trim() ||
+            pending.amount !== data.amount ||
+            pending.currency !== data.currency ||
+            pending.notes !== data.notes.trim()) {
+          toast.warning(
+            'يوجد سند مصروف سابق لم تُحسم نتيجته',
+            'لا تسجل مصروفاً مختلفاً الآن. أعد نفس المصروف السابق بالبيانات ذاتها لاسترجاع نتيجته، أو اطلب مطابقة الدفتر.'
+          );
+          return false;
         }
-        if (acc.id === 'acc-5101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + data.amount,
-            },
-          };
-        }
-        return acc;
-      })
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          expenseType: data.expenseType.trim(),
+          amount: data.amount,
+          currency: data.currency,
+          notes: data.notes.trim(),
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error(
+        'تعذر حفظ معرف سند المصروف',
+        'أوقف العملية؛ لا يمكن ضمان منع تكرار سند الصرف دون حفظ معرف ثابت قبل إرسال الطلب.'
+      );
+      return false;
+    }
+
+    const result = await apiClient.executeOperatingExpense({
+      expenseType: data.expenseType.trim(),
+      amount: data.amount,
+      currency: data.currency,
+      notes: data.notes.trim(),
+      idempotencyKey,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'سند المصروف غير محسوم محاسبياً',
+          result.error || 'أوقف النظام ولا تعاود تسجيل المصروف. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return false;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد نفس سند المصروف بالبيانات نفسها لاسترجاع النتيجة باستخدام معرفه السابق.'
+        );
+        return false;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // Definitive server rejection; no local financial changes were made.
+      }
+      toast.error('رفض الخادم سند المصروف', result.error || 'لم يتم تنفيذ المصروف.');
+      return false;
+    }
+
+    const journalEntry = result.journalEntry;
+    const expenseLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-5101' &&
+      line.currency === data.currency &&
+      Math.abs(line.debit - data.amount) <= 0.0000001 &&
+      line.credit === 0
+    );
+    const cashierLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-1102' &&
+      line.currency === data.currency &&
+      Math.abs(line.credit - data.amount) <= 0.0000001 &&
+      line.debit === 0
     );
 
-    // Balanced Journal Entry
-    const newEntry: JournalEntry = {
-      id: `jv-exp-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `سند صرف مصروف: ${data.expenseType} - ${data.notes}`,
-      lines: [
-        {
-          accountId: 'acc-5101',
-          accountNameAr: 'حـ/ مصاريف التشغيل والإيجارات',
-          currency: data.currency,
-          debit: data.amount,
-          credit: 0,
-          note: data.notes,
-        },
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'حـ/ صندوق كاشير الصراف 1',
-          currency: data.currency,
-          debit: 0,
-          credit: data.amount,
-          note: 'صرف نقدي من الصندوق',
-        },
-      ],
-      referenceType: 'expense',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
+    if (!Array.isArray(result.accounts) || !journalEntry ||
+        journalEntry.referenceType !== 'expense' ||
+        journalEntry.idempotencyKey !== idempotencyKey ||
+        typeof journalEntry.entryNumber !== 'string' ||
+        typeof journalEntry.voucherNumber !== 'string' ||
+        !expenseLine || !cashierLine) {
+      toast.error(
+        'استجابة سند المصروف غير مكتملة',
+        'لم يتم تحديث الشاشة أو إزالة معرف العملية. لا تنشئ سنداً جديداً حتى تتم مطابقة دفتر الخادم.'
+      );
+      return false;
+    }
 
-    setJournalEntries((prev) => [...prev, newEntry]);
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((entry) =>
+        entry.id === journalEntry.id || entry.entryNumber === journalEntry.entryNumber
+      );
+      return exists ? previous : [journalEntry as JournalEntry, ...previous];
+    });
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // The journal stores the idempotency key, so a repeated request is still safe.
+    }
+
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${journalEntry.id}`,
+      category: 'financial',
+      timestamp: `${journalEntry.date} ${journalEntry.time}`,
+      action: 'اعتماد سند صرف مصروف تشغيلي',
+      details: `اعتمد الخادم مصروف ${data.expenseType.trim()} بمبلغ ${formatMoney(data.amount, data.currency)} بالقيد ${journalEntry.entryNumber}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
+    };
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
 
     const expenseVoucher: OfficialVoucher = {
-      id: `vouch-${Date.now()}`,
-      voucherNumber: voucherNum,
+      id: journalEntry.id,
+      voucherNumber: journalEntry.voucherNumber,
       type: 'payment',
-      date: dateStr,
-      time: timeStr,
+      date: journalEntry.date,
+      time: journalEntry.time,
       branchName: currentUser.branchName,
       tellerName: currentUser.name,
-      partyName: data.expenseType,
+      partyName: data.expenseType.trim(),
       partyPhone: '',
       amount: data.amount,
       currency: data.currency,
       amountInWordsAr: tafqeetArabic(data.amount, data.currency),
-      referenceNumber: entryNum,
-      qrCodeData: voucherNum,
-      notes: data.notes,
+      referenceNumber: journalEntry.entryNumber,
+      qrCodeData: journalEntry.voucherNumber,
+      notes: data.notes.trim(),
     };
-
     setActiveVoucher(expenseVoucher);
+
+    toast.success(
+      'تم اعتماد سند المصروف من الخادم',
+      `تم اعتماد ${formatMoney(data.amount, data.currency)} بالقيد ${journalEntry.entryNumber}. الأرصدة من دفتر الخادم.`
+    );
+    return true;
   };
 
   // 7. Update Exchange Rates with Audit Trail
-  const handleUpdateExchangeRate = (rateId: string, newBuyRate: number, newSellRate: number, note?: string) => {
-    const targetRate = exchangeRates.find((r) => r.id === rateId);
-    if (!targetRate) return;
-
-    const now = new Date();
-    const timeStr = now.toISOString().replace('T', ' ').substring(0, 16);
-
-    const newLog: ExchangeRateAuditLog = {
-      id: `audit-${Date.now()}`,
-      currencyPair: `${targetRate.fromCurrency} / ${targetRate.toCurrency}`,
-      oldBuyRate: targetRate.buyRate,
-      newBuyRate,
-      oldSellRate: targetRate.sellRate,
-      newSellRate,
-      changedAt: timeStr,
-      changedBy: `${currentUser.name} (${currentUser.roleTitleAr})`,
+  const handleUpdateExchangeRate = async (rateId: string, newBuyRate: number, newSellRate: number, note?: string): Promise<boolean> => {
+    const result = await apiClient.updateExchangeRate({
+      rateId,
+      buyRate: newBuyRate,
+      sellRate: newSellRate,
       note: note || 'تعديل أسعار الصرف المعتمدة',
-    };
-
-    setAuditLogs((prev) => [newLog, ...prev]);
-
-    setExchangeRates((prev) =>
-      prev.map((r) =>
-        r.id === rateId
-          ? {
-              ...r,
-              buyRate: newBuyRate,
-              sellRate: newSellRate,
-              updatedAt: timeStr,
-              updatedBy: currentUser.name,
-            }
-          : r
-      )
-    );
-  };
-
-  // 8. Close Shift (إقفال الوردية)
-  const handleCloseShift = (actualBalances: Record<CurrencyCode, number>, notes: string) => {
-    setActiveShift((prev) => ({
-      ...prev,
-      status: 'closed',
-      closedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      actualBalances,
-      notes,
-    }));
-  };
-
-  // 9. Open New Shift
-  const handleOpenNewShift = () => {
-    setActiveShift({
-      ...INITIAL_ACTIVE_SHIFT,
-      id: `shift-${Date.now().toString().slice(-4)}`,
-      openedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      status: 'open',
     });
+
+    if (!result.success || !Array.isArray(result.rates) || !Array.isArray(result.auditLogs)) {
+      toast.error('تعذر اعتماد سعر الصرف', result.error || 'لم يتم حفظ السعر في الخادم.');
+      return false;
+    }
+
+    setExchangeRates(result.rates as ExchangeRate[]);
+    setAuditLogs(result.auditLogs as ExchangeRateAuditLog[]);
+    toast.success('تم اعتماد سعر الصرف', 'تم حفظ السعر وسجل التعديل في الخادم.');
+    return true;
+  };
+
+  // 8. Close shift through the server; expected balances are read from the server ledger.
+  const handleCloseShift = async (
+    actualBalances: Record<CurrencyCode, number>,
+    notes: string
+  ): Promise<boolean> => {
+    if (activeShift.status !== 'open' || activeShift.id === 'no-active-shift') {
+      toast.warning('لا توجد وردية مفتوحة لإقفالها.');
+      return false;
+    }
+    const storageKey = 'alnamari_pending_shift_close_v1';
+    const request = { shiftId: activeShift.id, actualBalances, notes: notes.trim() };
+    let idempotencyKey: string;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw) {
+        const pending = JSON.parse(raw);
+        if (!pending.idempotencyKey || JSON.stringify(pending.request) !== JSON.stringify(request)) {
+          toast.warning('يوجد إقفال سابق لم يُحسم', 'أعد نفس بيانات الجرد السابقة لاسترجاع النتيجة، ولا تبدأ إقفالاً مختلفاً.');
+          return false;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(storageKey, JSON.stringify({ idempotencyKey, request }));
+      }
+    } catch {
+      toast.error('تعذر حفظ معرف الإقفال', 'أوقف العملية؛ لا يمكن ضمان منع تكرار محضر الإقفال.');
+      return false;
+    }
+
+    const result = await apiClient.closeCashierShift({ idempotencyKey, ...request });
+    if (!result.success || !result.shift) {
+      if (!result.outcomeUncertain) {
+        try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+      }
+      toast.error(result.outcomeUncertain ? 'نتيجة الإقفال غير محسومة' : 'رفض الخادم إقفال الوردية',
+        result.error || 'لم يتم اعتماد محضر الإقفال.');
+      return false;
+    }
+    setActiveShift(result.shift as CashBoxShift);
+    try { window.localStorage.removeItem(storageKey); } catch { /* replay remains safe */ }
+    toast.success('تم إقفال الوردية من الخادم', 'تم حفظ الجرد والفروقات ومحضر الإقفال.');
+    return true;
+  };
+
+  // 9. Open a new shift using the current server-side cashier balance as its opening balance.
+  const handleOpenNewShift = async (): Promise<boolean> => {
+    if (activeShift.status === 'open') {
+      toast.warning('توجد وردية مفتوحة بالفعل.');
+      return false;
+    }
+    const storageKey = 'alnamari_pending_shift_open_v1';
+    let idempotencyKey: string;
+    try {
+      const existing = window.localStorage.getItem(storageKey);
+      if (existing) {
+        const pending = JSON.parse(existing);
+        if (!pending.idempotencyKey) throw new Error('invalid pending key');
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(storageKey, JSON.stringify({ idempotencyKey }));
+      }
+    } catch {
+      toast.error('تعذر حفظ معرف فتح الوردية', 'أوقف العملية حتى يمكن ضمان عدم تكرار فتح الوردية.');
+      return false;
+    }
+    const result = await apiClient.openCashierShift({ idempotencyKey });
+    if (!result.success || !result.shift) {
+      if (!result.outcomeUncertain) {
+        try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+      }
+      toast.error(result.outcomeUncertain ? 'نتيجة فتح الوردية غير محسومة' : 'تعذر فتح الوردية',
+        result.error || 'لم يؤكد الخادم فتح الوردية.');
+      return false;
+    }
+    setActiveShift(result.shift as CashBoxShift);
+    try { window.localStorage.removeItem(storageKey); } catch { /* replay remains safe */ }
+    toast.success('تم فتح الوردية', 'اعتمد الخادم الرصيد الافتتاحي مباشرة من دفتر صندوق الكاشير.');
+    return true;
   };
 
   // Open voucher from remittance record
@@ -1245,25 +1767,36 @@ function AppContent() {
     setActiveVoucher(voucher);
   };
 
-  // Secure Role Escalation with Server-Side Verification
-  const handleRequestRoleChange = (role: UserRole) => {
-    if (role === currentUser.role) return;
+  // This deployment is intentionally single-user and single-role (owner only).
 
-    // For standard operational roles (teller, auditor), allow switching with notification
-    if (role === 'teller' || role === 'auditor') {
-      const roleMeta = AVAILABLE_ROLES.find((r) => r.role === role);
-      setCurrentUser((prev) => ({
-        ...prev,
-        role,
-        roleTitleAr: roleMeta?.titleAr || role,
-      }));
-      toast.info(`تم تبديل الجلسة إلى: [${roleMeta?.titleAr.split('(')[0].trim()}]`);
-      return;
-    }
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center" dir="rtl">
+        <div className="text-sm text-slate-300">جارٍ التحقق من جلسة الدخول الآمنة...</div>
+      </div>
+    );
+  }
 
-    // High privilege roles: Owner, General Manager, Branch Manager require server PIN verification
-    setRoleAuthTarget(role);
-  };
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4" dir="rtl">
+        <div className="w-full max-w-md text-center space-y-3">
+          <h1 className="text-xl font-bold">نظام عمرو النماري للصرافة</h1>
+          <p className="text-sm text-slate-400">هذا الإصدار مخصص لمالك واحد. سجّل الدخول للمتابعة.</p>
+        </div>
+        <RoleAuthModal
+          isOpen={true}
+          isRequired={true}
+          targetRole="owner"
+          onClose={() => undefined}
+          onSuccess={(authedUser) => {
+            setCurrentUser(authedUser);
+            setIsAuthenticated(true);
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -1272,7 +1805,6 @@ function AppContent() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         currentUser={currentUser}
-        onRequestRoleChange={handleRequestRoleChange}
         isOnline={isOnline}
         setIsOnline={setIsOnline}
         onOpenRatesModal={() => setIsRatesModalOpen(true)}
@@ -1430,18 +1962,7 @@ function AppContent() {
         initialMode={statementType}
       />
 
-      {/* Server PIN Authentication Modal for Role Escalation */}
-      {roleAuthTarget && (
-        <RoleAuthModal
-          isOpen={!!roleAuthTarget}
-          targetRole={roleAuthTarget}
-          onClose={() => setRoleAuthTarget(null)}
-          onSuccess={(authedUser) => {
-            setCurrentUser(authedUser);
-            setRoleAuthTarget(null);
-          }}
-        />
-      )}
+
 
       {/* Exchange Rates & Audit Log Modal */}
       <ExchangeRatesModal

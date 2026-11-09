@@ -42,7 +42,7 @@ interface RemittanceViewProps {
     feeAmount: number;
     notes?: string;
     manualTransferNumber?: string;
-  }) => void;
+  }) => Promise<Remittance | null>;
   onPayoutIncomingRemittance: (transferId: string, recipientIdType: 'national_id' | 'passport' | 'family_card', recipientIdNumber: string) => void;
   onCancelRemittance: (transferId: string, reason: string) => void;
   onOpenVoucher: (remittance: Remittance) => void;
@@ -77,11 +77,49 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
   const [currency, setCurrency] = useState<CurrencyCode>('SAR');
   const [feeAmount, setFeeAmount] = useState<number>(0);
   const [notes, setNotes] = useState('');
+  const [isSubmittingOutgoing, setIsSubmittingOutgoing] = useState(false);
 
   // Manual numbering states & real-time uniqueness validation
   const [manualTransferNumber, setManualTransferNumber] = useState('');
   const [numberValidationStatus, setNumberValidationStatus] = useState<'idle' | 'valid' | 'duplicate' | 'empty'>('idle');
   const [numberValidationError, setNumberValidationError] = useState('');
+
+  // Restore an unresolved outgoing-remittance request after app/browser restart.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('alnamari_pending_outgoing_remittance_v1');
+      if (!raw) return;
+      const pending = JSON.parse(raw);
+      const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+      if (!pending || typeof pending.idempotencyKey !== 'string' ||
+          typeof pending.senderName !== 'string' ||
+          typeof pending.recipientName !== 'string' ||
+          typeof pending.networkName !== 'string' ||
+          typeof pending.amount !== 'number' || !Number.isFinite(pending.amount) ||
+          typeof pending.feeAmount !== 'number' || !Number.isFinite(pending.feeAmount) ||
+          !currencies.includes(pending.currency)) {
+        return;
+      }
+
+      setSenderName(pending.senderName);
+      setSenderPhone(typeof pending.senderPhone === 'string' ? pending.senderPhone : '');
+      setRecipientName(pending.recipientName);
+      setRecipientPhone(typeof pending.recipientPhone === 'string' ? pending.recipientPhone : '');
+      setNetworkName(pending.networkName);
+      setAmount(pending.amount);
+      setCurrency(pending.currency);
+      setFeeAmount(pending.feeAmount);
+      setNotes(typeof pending.notes === 'string' ? pending.notes : '');
+      setManualTransferNumber(typeof pending.manualTransferNumber === 'string' ? pending.manualTransferNumber : '');
+      setActiveTab('new_outgoing');
+      toast.warning(
+        'تم استرجاع محاولة حوالة صادرة غير محسومة',
+        'راجع البيانات المستعادة ثم أعد إرسال الحوالة نفسها لاسترجاع نتيجة الخادم دون تكرار القيد.'
+      );
+    } catch {
+      // Invalid pending data is not used to create or retry a financial transaction.
+    }
+  }, []);
 
   // Validate manual transfer number on change
   useEffect(() => {
@@ -135,10 +173,14 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
     return true;
   });
 
-  const handleCreateOutgoing = (e: React.FormEvent) => {
+  const handleCreateOutgoing = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (amount <= 0) {
-      toast.warning('يرجى إدخال مبلغ الحوالة بشكل صحيح');
+    if (isSubmittingOutgoing) return;
+
+    if (!Number.isFinite(amount) || amount <= 0 ||
+        !Number.isFinite(feeAmount) || feeAmount < 0 ||
+        !senderName.trim() || !recipientName.trim() || !networkName.trim()) {
+      toast.warning('تحقق من أسماء المرسل والمستفيد والمبلغ والعمولة قبل الإرسال.');
       return;
     }
 
@@ -148,30 +190,46 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
         toast.warning('يرجى إدخال رقم الحوالة (حقل إلزامي في وضع الترقيم اليدوي).');
         return;
       }
-      const isDuplicate = remittances.some(
-        (r) => r.transferNumber.trim().toUpperCase() === trimmed.toUpperCase()
-      );
-      if (isDuplicate) {
-        toast.error('رقم الحوالة مستخدم مسبقاً', `رفض النظام: رقم الحوالة (${trimmed}) مستخدم مسبقاً لمنع التكرار.`);
-        return;
-      }
+      // Final uniqueness and pending-replay checks are authoritative on the server.
     }
 
-    onCreateOutgoingRemittance({
-      senderName,
-      senderPhone,
-      recipientName,
-      recipientPhone,
-      networkName,
-      amount,
-      currency,
-      feeAmount,
-      notes,
-      manualTransferNumber: remittanceSettings.numberingMode === 'manual' ? manualTransferNumber.trim().toUpperCase() : undefined,
-    });
-    toast.success('تم إصدار الحوالة الصادرة بنجاح', 'تم قيد العملية في دفتر اليومية وفتح سند التحويل المعتمد.');
-    setManualTransferNumber('');
-    setActiveTab('list');
+    setIsSubmittingOutgoing(true);
+    try {
+      const created = await onCreateOutgoingRemittance({
+        senderName: senderName.trim(),
+        senderPhone: senderPhone.trim(),
+        recipientName: recipientName.trim(),
+        recipientPhone: recipientPhone.trim(),
+        networkName: networkName.trim(),
+        amount,
+        currency,
+        feeAmount,
+        notes: notes.trim(),
+        manualTransferNumber: manualTransferNumber.trim()
+          ? manualTransferNumber.trim().toUpperCase()
+          : undefined,
+      });
+
+      if (!created) return;
+
+      toast.success(
+        'تم اعتماد الحوالة الصادرة',
+        `الحوالة ${created.transferNumber} اعتمدها الخادم بالقيد والسند رقم ${created.voucherNumber}.`
+      );
+      setManualTransferNumber('');
+      setSenderName('');
+      setSenderPhone('');
+      setRecipientName('');
+      setRecipientPhone('');
+      setAmount(0);
+      setFeeAmount(0);
+      setNotes('');
+      setActiveTab('list');
+    } catch (error: any) {
+      toast.error('تعذر تسجيل الحوالة الصادرة', error.message || 'لم يصل تأكيد من الخادم.');
+    } finally {
+      setIsSubmittingOutgoing(false);
+    }
   };
 
   const [isSubmittingPayout, setIsSubmittingPayout] = useState(false);
@@ -287,6 +345,7 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
           </div>
 
           <form onSubmit={handleCreateOutgoing} className="space-y-5">
+            <fieldset disabled={isSubmittingOutgoing} className="space-y-5 disabled:opacity-80">
             {/* Numbering Policy Indicator / Manual Transfer Number Input */}
             {remittanceSettings.numberingMode === 'manual' ? (
               <div className="bg-sky-950/25 border-2 border-sky-500/50 rounded-xl p-4 space-y-2.5 animate-in fade-in">
@@ -486,20 +545,24 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
             <div className="flex items-center justify-end gap-3 pt-3">
               <button
                 type="button"
-                onClick={() => setActiveTab('list')}
+                onClick={() => { if (!isSubmittingOutgoing) setActiveTab('list'); }}
+                disabled={isSubmittingOutgoing}
                 className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold hover:bg-slate-700"
               >
                 إلغاء
               </button>
               <button
                 type="submit"
-                disabled={remittanceSettings.numberingMode === 'manual' && (numberValidationStatus === 'duplicate' || !manualTransferNumber.trim())}
+                disabled={isSubmittingOutgoing || !senderName.trim() || !recipientName.trim() || !networkName.trim() ||
+                  !Number.isFinite(amount) || amount <= 0 || !Number.isFinite(feeAmount) || feeAmount < 0 ||
+                  (remittanceSettings.numberingMode === 'manual' && !manualTransferNumber.trim())}
                 className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:border disabled:border-slate-700 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-600/20 transition-all cursor-pointer"
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>إرسال وتوليد السند المالي فـوراً</span>
+                {isSubmittingOutgoing ? <span className="animate-spin border-2 border-white/30 border-t-white rounded-full w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>{isSubmittingOutgoing ? 'جارٍ اعتماد الحوالة في الخادم...' : 'إرسال الحوالة واعتماد القيد'}</span>
               </button>
             </div>
+            </fieldset>
           </form>
         </div>
       ) : (

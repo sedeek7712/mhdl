@@ -47,6 +47,14 @@ export function getYemenFullTimestamp(date = new Date()): string {
  * يمنع تلف ملفات JSON عند انقطاع التيار الكهربائي أو إيقاف السيرفر المفاجئ
  */
 export function safeAtomicWriteJson(filePath: string, data: any): void {
+  // Deterministic failure injection is available only in isolated test mode.
+  // It lets integration tests simulate a process/storage failure between JSON file writes.
+  if (process.env.NODE_ENV === 'test' &&
+      process.env.ALNAMARI_TEST_FAIL_WRITE_BASENAME === path.basename(filePath)) {
+    delete process.env.ALNAMARI_TEST_FAIL_WRITE_BASENAME;
+    throw new Error(`Injected test-only atomic write failure for ${path.basename(filePath)}`);
+  }
+
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -85,10 +93,17 @@ export function safeAtomicWriteJson(filePath: string, data: any): void {
 export function safeReadJson<T>(
   filePath: string,
   defaultData: T,
-  options: { failOnCorruption?: boolean } = { failOnCorruption: true }
+  options: { failOnCorruption?: boolean; failOnMissing?: boolean } = { failOnCorruption: true }
 ): T {
+  const failOnCorruption = options.failOnCorruption !== false;
+
   if (!fs.existsSync(filePath)) {
-    // الملف غير موجود: نكتب البيانات الافتراضية بشكل ذري
+    if (options.failOnMissing === true) {
+      throw new Error(
+        `خطأ حرج في سلامة البيانات: الملف المطلوب (${path.basename(filePath)}) غير موجود. تم إيقاف القراءة المالية لمنع إنشاء بيانات افتراضية أو أرصدة غير حقيقية.`
+      );
+    }
+    // الملفات الاختيارية فقط: نكتب القيمة الافتراضية بشكل ذري عند أول تشغيل
     safeAtomicWriteJson(filePath, defaultData);
     return defaultData;
   }
@@ -96,7 +111,7 @@ export function safeReadJson<T>(
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     if (!raw.trim()) {
-      return defaultData;
+      throw new Error('الملف فارغ أو مقطوع (0 بايت أو مسافات فقط)');
     }
     return JSON.parse(raw) as T;
   } catch (err: any) {
@@ -111,7 +126,7 @@ export function safeReadJson<T>(
       // Ignore
     }
 
-    if (options.failOnCorruption) {
+    if (failOnCorruption) {
       throw new Error(
         `خطأ حرج في سلامة البيانات: الملف ${path.basename(filePath)} تالف أو غير صالح كـ JSON. تم إيقاف النظام لمنع تصفير البيانات أو إعادة الترقيم الافتراضي.`
       );

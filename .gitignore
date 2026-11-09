@@ -12,3 +12,10 @@ data/.jwt_secret
 data/*.tmp*
 data/*.corrupt*
 data/archived_vouchers/
+data/*.pre-single-user.*.bak
+data/system_users.local.json
+data/financial_transaction_pending.json
+data/financial_baseline_approved.local.json
+data/accounts_ledger.json.before-chart-reconcile.*.bak
+data/exchange_rate_state.json
+data/exchange_rate_state.json.*.bak

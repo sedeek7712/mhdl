@@ -11,7 +11,7 @@ interface LedgerAndAccountsViewProps {
     amount: number;
     currency: CurrencyCode;
     notes: string;
-  }) => void;
+  }) => Promise<boolean>;
 }
 
 export const LedgerAndAccountsView: React.FC<LedgerAndAccountsViewProps> = ({
@@ -23,6 +23,7 @@ export const LedgerAndAccountsView: React.FC<LedgerAndAccountsViewProps> = ({
   const [currencyFilter, setCurrencyFilter] = useState<string>('all');
   const [accountTypeFilter, setAccountTypeFilter] = useState<string>('all');
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
 
   // Expense form state
   const [expenseType, setExpenseType] = useState('إيجار الفرع ومصاريف تشغيل');
@@ -86,18 +87,24 @@ export const LedgerAndAccountsView: React.FC<LedgerAndAccountsViewProps> = ({
     });
   });
 
-  const handleExpenseSubmit = (e: React.FormEvent) => {
+  const handleExpenseSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (expenseAmount <= 0) return;
-    if (onRecordExpense) {
-      onRecordExpense({
+    if (isSubmittingExpense || !onRecordExpense ||
+        !Number.isFinite(expenseAmount) || expenseAmount <= 0 ||
+        !expenseType.trim() || !expenseNotes.trim()) return;
+
+    setIsSubmittingExpense(true);
+    try {
+      const accepted = await onRecordExpense({
         expenseType,
         amount: expenseAmount,
         currency: expenseCurrency,
         notes: expenseNotes,
       });
+      if (accepted) setIsExpenseModalOpen(false);
+    } finally {
+      setIsSubmittingExpense(false);
     }
-    setIsExpenseModalOpen(false);
   };
 
   const getAccountTypeLabel = (type: AccountType) => {
@@ -504,14 +511,15 @@ export const LedgerAndAccountsView: React.FC<LedgerAndAccountsViewProps> = ({
       {/* Modal: Record Operating Expense */}
       {isExpenseModalOpen ? (
         <div
-          onClick={(e) => { if (e.target === e.currentTarget) setIsExpenseModalOpen(false); }}
+          onClick={(e) => { if (!isSubmittingExpense && e.target === e.currentTarget) setIsExpenseModalOpen(false); }}
           className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
         >
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 sm:p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">إثبات سند صرف مصروف تشغيلي</h3>
               <button
-                onClick={() => setIsExpenseModalOpen(false)}
+                onClick={() => { if (!isSubmittingExpense) setIsExpenseModalOpen(false); }}
+                disabled={isSubmittingExpense}
                 aria-label="إغلاق"
                 className="w-10 h-10 min-w-[40px] flex items-center justify-center rounded-xl bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-750 cursor-pointer transition-colors"
               >
@@ -580,15 +588,17 @@ export const LedgerAndAccountsView: React.FC<LedgerAndAccountsViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsExpenseModalOpen(false)}
+                  disabled={isSubmittingExpense}
                   className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
+                  disabled={isSubmittingExpense}
                   className="min-h-[44px] px-5 py-2 bg-rose-700 hover:bg-rose-600 text-white font-bold rounded-xl text-xs shadow-md shadow-rose-950/40 cursor-pointer"
                 >
-                  اعتماد سند الصرف والقيد
+                  {isSubmittingExpense ? 'جارٍ اعتماد المصروف من الخادم...' : 'اعتماد سند الصرف والقيد'}
                 </button>
               </div>
             </form>

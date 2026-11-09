@@ -5,15 +5,19 @@
  */
 
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
-import { serverAccountingEngine, ServerJournalEntry, CurrencyCode } from './serverAccountingEngine.js';
+import { serverAccountingEngine } from './serverAccountingEngine.js';
+import type { ServerJournalEntry, ServerAccount, CurrencyCode } from './serverAccountingEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.resolve(__dirname, '../../../data');
+const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
+  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
+  : path.resolve(__dirname, '../../../data');
 const SETTINGS_FILE = path.resolve(DATA_DIR, 'remittance_settings.json');
 const NUMBERS_REGISTRY_FILE = path.resolve(DATA_DIR, 'remittance_numbers_registry.json');
 const AUDIT_LOGS_FILE = path.resolve(DATA_DIR, 'remittance_audit_logs.json');
@@ -72,6 +76,9 @@ export interface RemittancePayoutRecord {
 
 export interface RemittanceMasterRecord {
   id: string;
+  tellerRole?: string;
+  tellerId?: string;
+  branchId?: string;
   transferNumber: string;
   direction: 'outgoing' | 'incoming';
   status: TransferStatus;
@@ -95,6 +102,7 @@ export interface RemittanceMasterRecord {
   cashMovementReference?: string;
   payoutRecordId?: string;
   numberingMode?: RemittanceNumberingMode;
+  idempotencyKey?: string;
   notes?: string;
 }
 
@@ -115,7 +123,7 @@ export interface ReconciliationResult {
 
 const SUPPORTED_CURRENCIES: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
 
-class RemittanceRegistry {
+export class RemittanceRegistry {
   private settings: RemittanceSettingsRecord;
   private registeredNumbers: Map<string, { number: string; registeredAt: string; registeredBy: string; mode: string }> = new Map();
   private auditLogs: RemittanceAuditRecord[] = [];
@@ -143,45 +151,209 @@ class RemittanceRegistry {
    * H4: قراءة آمنة تمنع بلع الأخطاء وتدمير البيانات عند وجود تلف
    */
   private loadFromDisk() {
-    this.settings = safeReadJson<RemittanceSettingsRecord>(SETTINGS_FILE, this.settings, { failOnCorruption: false });
+    // جميع هذه الملفات تحمل حالة مالية أو مرجعية تؤثر في منع التكرار؛ لا يجوز استبدالها بقيم فارغة عند الفقد أو التلف.
+    const loadedSettings = safeReadJson<RemittanceSettingsRecord>(SETTINGS_FILE, this.settings, {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!loadedSettings || typeof loadedSettings !== 'object' ||
+        !['automatic', 'manual'].includes(loadedSettings.numberingMode) ||
+        typeof loadedSettings.prefix !== 'string' || !loadedSettings.prefix.trim() ||
+        !Number.isSafeInteger(loadedSettings.nextSequence) || loadedSettings.nextSequence < 1) {
+      throw new Error('توقف آمن: إعدادات ترقيم الحوالات غير صالحة؛ لن يتم تشغيل التسجيل أو الترقيم حتى استعادة الإعدادات الصحيحة.');
+    }
 
     const numbersList = safeReadJson<{ number: string; registeredAt: string; registeredBy: string; mode: string }[]>(
       NUMBERS_REGISTRY_FILE,
       [],
-      { failOnCorruption: false }
+      { failOnCorruption: true, failOnMissing: true }
     );
-    this.registeredNumbers.clear();
-    for (const item of numbersList) {
-      if (item && item.number) {
-        this.registeredNumbers.set(item.number.trim().toUpperCase(), item);
-      }
+    if (!Array.isArray(numbersList) ||
+        numbersList.some((item) => !item || typeof item.number !== 'string' || !item.number.trim())) {
+      throw new Error('توقف آمن: سجل أرقام الحوالات غير صالح؛ منعاً لإعادة استخدام رقم سبق حجزه.');
     }
 
-    const payoutsList = safeReadJson<RemittancePayoutRecord[]>(PAYOUTS_REGISTRY_FILE, [], { failOnCorruption: false });
+    const payoutsList = safeReadJson<RemittancePayoutRecord[]>(PAYOUTS_REGISTRY_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(payoutsList) ||
+        payoutsList.some((item) => !item || typeof item.transferNumber !== 'string' ||
+          !item.transferNumber.trim() || typeof item.tellerId !== 'string' ||
+          !Number.isFinite(item.amount) || item.amount <= 0 ||
+          typeof item.currency !== 'string' || typeof item.voucherNumber !== 'string' ||
+          typeof item.journalEntryReference !== 'string')) {
+      throw new Error('توقف آمن: سجل صرف الحوالات يحتوي سجلات غير صالحة؛ لن يتم تحميل حالة صرف غير موثوقة.');
+    }
+
+    const auditLogs = safeReadJson<RemittanceAuditRecord[]>(AUDIT_LOGS_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(auditLogs) ||
+        auditLogs.some((item) => !item || typeof item.id !== 'string' ||
+          typeof item.action !== 'string' || typeof item.timestamp !== 'string')) {
+      throw new Error('توقف آمن: سجل تدقيق الحوالات غير صالح؛ لا يمكن ضمان سلامة سجل العمليات.');
+    }
+
+    const masterList = safeReadJson<RemittanceMasterRecord[]>(MASTER_REMITTANCES_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(masterList) ||
+        masterList.some((item) => !item || typeof item.id !== 'string' ||
+          typeof item.transferNumber !== 'string' || !item.transferNumber.trim() ||
+          !Number.isFinite(item.amount) || item.amount <= 0)) {
+      throw new Error('توقف آمن: سجل الحوالات الرئيسي يحتوي بيانات غير صالحة؛ تم منع تشغيل الصرف على سجل ناقص.');
+    }
+
+    this.settings = loadedSettings;
+    this.registeredNumbers.clear();
+    for (const item of numbersList) {
+      const normalizedNumber = item.number.trim().toUpperCase();
+      if (this.registeredNumbers.has(normalizedNumber)) {
+        throw new Error(`توقف آمن: رقم حوالة مكرر في سجل الأرقام (${normalizedNumber}).`);
+      }
+      this.registeredNumbers.set(normalizedNumber, item);
+    }
+
     this.payouts.clear();
     this.idempotencyStore.clear();
     this.idempotencyToTransferMap.clear();
     for (const item of payoutsList) {
       const cleanNum = item.transferNumber.trim().toUpperCase();
+      if (this.payouts.has(cleanNum)) {
+        throw new Error(`توقف آمن: توجد أكثر من عملية صرف مسجلة للحوالة (${cleanNum}).`);
+      }
       this.payouts.set(cleanNum, item);
       if (item.idempotencyKey) {
+        const boundTransfer = this.idempotencyToTransferMap.get(item.idempotencyKey);
+        if (boundTransfer && boundTransfer !== cleanNum) {
+          throw new Error(`توقف آمن: مفتاح عدم التكرار مرتبط بأكثر من حوالة (${item.idempotencyKey}).`);
+        }
         const compositeKey = `${cleanNum}:${item.tellerId}:${item.idempotencyKey}`;
         this.idempotencyStore.set(compositeKey, item);
         this.idempotencyToTransferMap.set(item.idempotencyKey, cleanNum);
       }
     }
 
-    this.auditLogs = safeReadJson<RemittanceAuditRecord[]>(AUDIT_LOGS_FILE, [], { failOnCorruption: false });
-
-    const masterList = safeReadJson<RemittanceMasterRecord[]>(MASTER_REMITTANCES_FILE, [], { failOnCorruption: false });
+    this.auditLogs = auditLogs;
     this.masterRemittances.clear();
     for (const item of masterList) {
-      if (item && item.transferNumber) {
-        this.masterRemittances.set(item.transferNumber.trim().toUpperCase(), item);
+      const normalizedNumber = item.transferNumber.trim().toUpperCase();
+      if (this.masterRemittances.has(normalizedNumber)) {
+        throw new Error(`توقف آمن: رقم حوالة مكرر في السجل الرئيسي (${normalizedNumber}).`);
+      }
+      this.masterRemittances.set(normalizedNumber, item);
+    }
+
+    // Reconcile all paid records against both the payout registry and the actual journal.
+    // If any side of a previous multi-file commit is missing or inconsistent, do not start the service.
+    const journalEntries = serverAccountingEngine.getJournalEntries();
+    for (const [cleanNum, payout] of this.payouts) {
+      const master = this.masterRemittances.get(cleanNum);
+      const journal = journalEntries.find((entry) => entry.entryNumber === payout.journalEntryReference);
+      if (!master || master.status !== 'paid' ||
+          master.amount !== payout.amount || master.currency !== payout.currency ||
+          master.journalEntryReference !== payout.journalEntryReference ||
+          !journal || journal.referenceType !== 'transfer_payout' ||
+          journal.referenceId.trim().toUpperCase() !== cleanNum) {
+        throw new Error(`توقف آمن: عدم تطابق سجل صرف الحوالة (${cleanNum}) بين الحوالة الرئيسية وسجل الصرف ودفتر اليومية. يلزم فحص محاسبي قبل التشغيل.`);
+      }
+
+      const debit = journal.lines
+        .filter((line) => line.currency === payout.currency)
+        .reduce((sum, line) => sum + line.debit, 0);
+      const credit = journal.lines
+        .filter((line) => line.currency === payout.currency)
+        .reduce((sum, line) => sum + line.credit, 0);
+      if (Math.abs(debit - payout.amount) > 0.001 || Math.abs(credit - payout.amount) > 0.001) {
+        throw new Error(`توقف آمن: مبالغ قيد اليومية لا تطابق عملية صرف الحوالة (${cleanNum}). يلزم فحص محاسبي قبل التشغيل.`);
+      }
+    }
+
+    for (const [cleanNum, master] of this.masterRemittances) {
+      if (master.status === 'paid' && !this.payouts.has(cleanNum)) {
+        throw new Error(`توقف آمن: الحوالة (${cleanNum}) مدفوعة في السجل الرئيسي دون سجل صرف مطابق.`);
+      }
+    }
+
+    for (const journal of journalEntries) {
+      if (journal.referenceType === 'transfer_payout') {
+        const cleanNum = journal.referenceId.trim().toUpperCase();
+        const payout = this.payouts.get(cleanNum);
+        if (!payout || payout.journalEntryReference !== journal.entryNumber) {
+          throw new Error(`توقف آمن: قيد صرف (${journal.entryNumber}) لا يملك سجل صرف وحوالة رئيسية مطابقين.`);
+        }
+      }
+    }
+
+    // Reconcile outgoing remittances against their cash/payable/commission journal.
+    for (const [cleanNum, master] of this.masterRemittances) {
+      if (master.direction !== 'outgoing') continue;
+
+      const journal = journalEntries.find((entry) =>
+        entry.entryNumber === master.journalEntryReference
+      );
+      const totalPaid = master.amount + master.feeAmount;
+      const cashLine = journal?.lines.find((line) =>
+        line.accountId === 'acc-1102' &&
+        line.currency === master.currency &&
+        Math.abs(line.debit - totalPaid) <= 0.001 &&
+        line.credit === 0
+      );
+      const payableLine = journal?.lines.find((line) =>
+        line.accountId === 'acc-2201' &&
+        line.currency === master.currency &&
+        Math.abs(line.credit - master.amount) <= 0.001 &&
+        line.debit === 0
+      );
+      const commissionLine = master.feeAmount > 0
+        ? journal?.lines.find((line) =>
+            line.accountId === 'acc-4101' &&
+            line.currency === master.currency &&
+            Math.abs(line.credit - master.feeAmount) <= 0.001 &&
+            line.debit === 0
+          )
+        : undefined;
+      const reservation = this.registeredNumbers.get(cleanNum);
+
+      if (!master.idempotencyKey || !master.tellerId || !master.branchId ||
+          !master.journalEntryReference || !master.voucherNumber ||
+          !reservation || reservation.number.trim().toUpperCase() !== cleanNum ||
+          !journal || journal.referenceType !== 'transfer_send' ||
+          journal.referenceId.trim().toUpperCase() !== cleanNum ||
+          journal.voucherNumber !== master.voucherNumber ||
+          journal.idempotencyKey !== master.idempotencyKey ||
+          journal.createdById !== master.tellerId ||
+          journal.branchId !== master.branchId ||
+          !cashLine || !payableLine ||
+          (master.feeAmount > 0 && !commissionLine)) {
+        throw new Error(`توقف آمن: سجل الحوالة الصادرة (${cleanNum}) لا يطابق حجز الرقم والقيد المحاسبي (الصندوق/الالتزام/العمولة). يلزم فحص يدوي قبل التشغيل.`);
+      }
+
+      const debit = journal.lines
+        .filter((line) => line.currency === master.currency)
+        .reduce((sum, line) => sum + line.debit, 0);
+      const credit = journal.lines
+        .filter((line) => line.currency === master.currency)
+        .reduce((sum, line) => sum + line.credit, 0);
+      if (Math.abs(debit - totalPaid) > 0.001 || Math.abs(credit - totalPaid) > 0.001) {
+        throw new Error(`توقف آمن: إجمالي قيد الحوالة الصادرة (${cleanNum}) غير متوازن أو لا يساوي إجمالي المبلغ المستلم.`);
+      }
+    }
+
+    for (const journal of journalEntries) {
+      if (journal.referenceType !== 'transfer_send') continue;
+      const cleanNum = journal.referenceId.trim().toUpperCase();
+      const master = this.masterRemittances.get(cleanNum);
+      if (!master || master.direction !== 'outgoing' ||
+          master.journalEntryReference !== journal.entryNumber ||
+          master.idempotencyKey !== journal.idempotencyKey) {
+        throw new Error(`توقف آمن: قيد إرسال الحوالة (${journal.entryNumber}) لا يملك سجل حوالة صادرة مطابقاً.`);
       }
     }
   }
-
   private saveSettingsToDisk() {
     safeAtomicWriteJson(SETTINGS_FILE, this.settings);
   }
@@ -209,58 +381,544 @@ class RemittanceRegistry {
   /**
    * C2 & M1: تسجيل حوالة في السجل المركزي المعتمد مع تدقيق صارم للمبالغ والعملة
    */
-  public registerMasterRemittance(rem: RemittanceMasterRecord): { success: boolean; error?: string; record?: RemittanceMasterRecord } {
-    if (!rem.transferNumber || typeof rem.transferNumber !== 'string' || !rem.transferNumber.trim()) {
-      return { success: false, error: 'رقم الحوالة إلزامي لتسجيل الحوالة في النظام المركزي.' };
+  public registerMasterRemittance(rem: RemittanceMasterRecord): {
+    success: boolean;
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+    record?: RemittanceMasterRecord;
+    replayed?: boolean;
+  } {
+    if (!rem || typeof rem !== 'object') {
+      return { success: false, error: 'بيانات الحوالة غير صالحة.' };
+    }
+    if (typeof rem.transferNumber !== 'string' || !rem.transferNumber.trim() ||
+        rem.transferNumber.trim().length > 64 ||
+        !/^[A-Za-z0-9][A-Za-z0-9-]{2,63}$/.test(rem.transferNumber.trim())) {
+      return { success: false, error: 'رقم الحوالة إلزامي ويجب أن يكون من 3 إلى 64 حرفاً/رقماً أو شرطة.' };
     }
 
     const cleanNum = rem.transferNumber.trim().toUpperCase();
-    if (this.masterRemittances.has(cleanNum)) {
+    if (rem.direction !== 'incoming') {
       return {
         success: false,
-        error: `رفض النظام: الحوالة رقم ${cleanNum} مسجلة مسبقاً في السجل المركزي (Unique Constraint).`,
+        error: 'لا يمكن تسجيل حوالة صادرة دون القيد المحاسبي المتكامل. استخدم مسار تسجيل الحوالة الصادرة المعتمد.',
+      };
+    }
+    if (typeof rem.amount !== 'number' || !Number.isFinite(rem.amount) ||
+        rem.amount <= 0 || Math.abs(rem.amount * 1000 - Math.round(rem.amount * 1000)) > 1e-8) {
+      return { success: false, error: 'مبلغ الحوالة يجب أن يكون موجباً وصالحاً حتى ثلاث منازل عشرية.' };
+    }
+    if (typeof rem.currency !== 'string' || !SUPPORTED_CURRENCIES.includes(rem.currency as CurrencyCode)) {
+      return { success: false, error: `العملة (${String(rem.currency)}) غير مدعومة.` };
+    }
+    if (typeof rem.senderName !== 'string' || !rem.senderName.trim() || rem.senderName.trim().length > 160 ||
+        typeof rem.recipientName !== 'string' || !rem.recipientName.trim() || rem.recipientName.trim().length > 160 ||
+        typeof rem.networkName !== 'string' || !rem.networkName.trim() || rem.networkName.trim().length > 100) {
+      return { success: false, error: 'اسم المرسل والمستفيد والشبكة حقول إلزامية وبأطوال صالحة.' };
+    }
+    const senderPhone = typeof rem.senderPhone === 'string' ? rem.senderPhone.trim() : '';
+    const recipientPhone = typeof rem.recipientPhone === 'string' ? rem.recipientPhone.trim() : '';
+    if (senderPhone.length > 32 || recipientPhone.length > 32) {
+      return { success: false, error: 'رقم هاتف المرسل أو المستفيد أطول من الحد المسموح.' };
+    }
+
+    const feeAmount = rem.feeAmount;
+    if (typeof feeAmount !== 'number' || !Number.isFinite(feeAmount) || feeAmount < 0 ||
+        Math.abs(feeAmount * 1000 - Math.round(feeAmount * 1000)) > 1e-8) {
+      return { success: false, error: 'العمولة يجب أن تكون صفراً أو مبلغاً موجباً حتى ثلاث منازل عشرية.' };
+    }
+    const expectedTotal = rem.amount + feeAmount;
+    if (typeof rem.totalPaid !== 'number' || !Number.isFinite(rem.totalPaid) ||
+        Math.abs(rem.totalPaid - expectedTotal) > 0.001) {
+      return { success: false, error: 'إجمالي المبلغ لا يساوي أصل الحوالة مضافاً إليه العمولة.' };
+    }
+    if (typeof rem.branchName !== 'string' || !rem.branchName.trim() ||
+        typeof rem.tellerName !== 'string' || !rem.tellerName.trim()) {
+      return { success: false, error: 'بيانات الفرع ومنفذ التسجيل مطلوبة.' };
+    }
+    const notes = typeof rem.notes === 'string' ? rem.notes.trim() : '';
+    if (notes.length > 500) {
+      return { success: false, error: 'ملاحظات الحوالة تتجاوز الحد المسموح.' };
+    }
+
+    const existing = this.masterRemittances.get(cleanNum);
+    if (existing) {
+      const sameRequest =
+        existing.direction === rem.direction &&
+        existing.senderName === rem.senderName.trim() &&
+        existing.senderPhone === senderPhone &&
+        existing.recipientName === rem.recipientName.trim() &&
+        existing.recipientPhone === recipientPhone &&
+        existing.networkName === rem.networkName.trim() &&
+        existing.amount === rem.amount &&
+        existing.currency === rem.currency &&
+        existing.feeAmount === feeAmount &&
+        existing.totalPaid === expectedTotal &&
+        existing.branchName === rem.branchName.trim() &&
+        existing.tellerName === rem.tellerName.trim() &&
+        (existing.tellerRole || '') === (rem.tellerRole || '') &&
+        (existing.notes || '') === notes;
+      if (!sameRequest) {
+        return {
+          success: false,
+          error: `رقم الحوالة (${cleanNum}) مسجل مسبقاً ببيانات مختلفة. لم يتم إنشاء سجل جديد.`,
+        };
+      }
+      return { success: true, record: existing, replayed: true };
+    }
+
+    if (this.registeredNumbers.has(cleanNum)) {
+      return {
+        success: false,
+        error: `رقم الحوالة (${cleanNum}) محجوز مسبقاً دون سجل حوالة مطابق. يلزم فحص الحجز السابق قبل التسجيل.`,
       };
     }
 
-    // M1: التحقق من إيجابية المبلغ وعدم تمرير مبالغ سالبة أو صفرية
-    if (typeof rem.amount !== 'number' || rem.amount <= 0 || !Number.isFinite(rem.amount)) {
-      return { success: false, error: 'مبلغ الحوالة يجب أن يكون رقماً موجباً أكبر من الصفر.' };
+    if (serverAccountingEngine.isFinancialWriteBlocked()) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة. أوقف النظام ولا تسجل حوالة جديدة حتى مطابقة الدفاتر.',
+      };
     }
 
-    // M1: التحقق من صحة العملة
-    if (!SUPPORTED_CURRENCIES.includes(rem.currency as CurrencyCode)) {
-      return { success: false, error: `العملة (${rem.currency}) غير مدعومة في نظام الصرافة.` };
-    }
-
-    // M2: التحقق من اسم المستفيد
-    if (!rem.recipientName || typeof rem.recipientName !== 'string' || !rem.recipientName.trim()) {
-      return { success: false, error: 'اسم المستفيد إلزامي لتسجيل الحوالة.' };
-    }
-
+    const createdAt = getYemenDateTimeString();
     const sanitizedRem: RemittanceMasterRecord = {
-      ...rem,
+      id: `rem-master-${crypto.randomUUID()}`,
       transferNumber: cleanNum,
+      direction: rem.direction,
+      status: 'available',
+      senderName: rem.senderName.trim(),
+      senderPhone,
+      recipientName: rem.recipientName.trim(),
+      recipientPhone,
+      networkName: rem.networkName.trim(),
       amount: rem.amount,
       currency: rem.currency,
-      status: 'available', // C2: إجبار الحالة على available من الخادم ومنع التلاعب
-      direction: rem.direction === 'outgoing' ? 'outgoing' : 'incoming',
-      createdAt: rem.createdAt || getYemenDateTimeString(),
+      feeAmount,
+      totalPaid: expectedTotal,
+      branchName: rem.branchName.trim(),
+      tellerName: rem.tellerName.trim(),
+      tellerRole: rem.tellerRole,
+      createdAt,
+      notes,
+      voucherNumber: `V-INC-${crypto.randomUUID().toUpperCase()}`,
+    };
+
+    const transaction = serverAccountingEngine.beginFinancialTransaction({
+      operation: 'remittance_master_registration',
+      referenceId: cleanNum,
+      amount: sanitizedRem.amount,
+      currency: sanitizedRem.currency as CurrencyCode,
+    });
+    if (!transaction.success || !transaction.transactionId) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: transaction.error || 'تعذر بدء معاملة تسجيل الحوالة الآمنة.',
+      };
+    }
+
+    const reservation = {
+      number: cleanNum,
+      registeredAt: createdAt,
+      registeredBy: sanitizedRem.tellerName,
+      mode: rem.numberingMode || 'manual',
+    };
+    const auditRecord: RemittanceAuditRecord = {
+      id: `audit-register-${crypto.randomUUID()}`,
+      category: 'financial',
+      action: sanitizedRem.direction === 'incoming' ? 'تسجيل حوالة واردة في السجل المركزي' : 'تسجيل حوالة صادرة في السجل المركزي',
+      details: `تم تسجيل الحوالة ${cleanNum} بمبلغ ${sanitizedRem.amount} ${sanitizedRem.currency} للمستفيد ${sanitizedRem.recipientName}`,
+      performedBy: sanitizedRem.tellerName,
+      userRole: sanitizedRem.tellerRole || 'owner',
+      timestamp: createdAt,
+      newValue: JSON.stringify({
+        transferNumber: cleanNum,
+        direction: sanitizedRem.direction,
+        amount: sanitizedRem.amount,
+        currency: sanitizedRem.currency,
+        status: 'available',
+      }),
     };
 
     this.masterRemittances.set(cleanNum, sanitizedRem);
-    this.saveMasterRemittancesToDisk();
+    this.registeredNumbers.set(cleanNum, reservation);
+    this.auditLogs.unshift(auditRecord);
 
-    if (!this.registeredNumbers.has(cleanNum)) {
-      this.registeredNumbers.set(cleanNum, {
-        number: cleanNum,
-        registeredAt: sanitizedRem.createdAt,
-        registeredBy: sanitizedRem.tellerName || 'النظام',
-        mode: sanitizedRem.numberingMode || 'automatic',
-      });
+    try {
+      this.saveMasterRemittancesToDisk();
       this.saveNumbersToDisk();
+      this.saveAuditLogsToDisk();
+    } catch (error: any) {
+      this.masterRemittances.delete(cleanNum);
+      this.registeredNumbers.delete(cleanNum);
+      this.auditLogs.shift();
+      serverAccountingEngine.markFinancialRecoveryRequired();
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ أحد سجلات تسجيل الحوالة. لا تعاود التسجيل؛ أوقف النظام وطابق سجل الحوالات والأرقام والتدقيق. ${error.message}`,
+      };
     }
 
-    return { success: true, record: sanitizedRem };
+    const completed = serverAccountingEngine.completeFinancialTransaction(transaction.transactionId);
+    if (!completed.success) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        record: sanitizedRem,
+        error: completed.error || 'تعذر إغلاق علامة تسجيل الحوالة؛ يلزم فحص الدفاتر.',
+      };
+    }
+
+    return { success: true, record: sanitizedRem, replayed: false };
+  }
+
+  public registerOutgoingRemittance(params: {
+    idempotencyKey: string;
+    manualTransferNumber?: string;
+    senderName: string;
+    senderPhone?: string;
+    recipientName: string;
+    recipientPhone?: string;
+    networkName: string;
+    amount: number;
+    currency: CurrencyCode;
+    feeAmount: number;
+    notes?: string;
+    branchName: string;
+    branchId: string;
+    tellerId: string;
+    tellerName: string;
+    tellerRole: string;
+  }): {
+    success: boolean;
+    record?: RemittanceMasterRecord;
+    journalEntry?: ServerJournalEntry;
+    accounts?: ServerAccount[];
+    replayed?: boolean;
+    error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
+  } {
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    if (typeof params.idempotencyKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(params.idempotencyKey)) {
+      return { success: false, error: 'معرف عملية الحوالة الصادرة غير صالح.' };
+    }
+    if (typeof params.senderName !== 'string' || !params.senderName.trim() || params.senderName.trim().length > 160 ||
+        typeof params.recipientName !== 'string' || !params.recipientName.trim() || params.recipientName.trim().length > 160 ||
+        typeof params.networkName !== 'string' || !params.networkName.trim() || params.networkName.trim().length > 100 ||
+        typeof params.branchName !== 'string' || !params.branchName.trim() ||
+        typeof params.branchId !== 'string' || !params.branchId.trim() ||
+        typeof params.tellerId !== 'string' || !params.tellerId.trim() ||
+        typeof params.tellerName !== 'string' || !params.tellerName.trim() ||
+        typeof params.tellerRole !== 'string' || !params.tellerRole.trim()) {
+      return { success: false, error: 'بيانات المرسل والمستفيد والشبكة والفرع والمنفذ مطلوبة.' };
+    }
+    if (!currencies.includes(params.currency)) {
+      return { success: false, error: 'عملة الحوالة الصادرة غير مدعومة.' };
+    }
+    const validAmount = (value: number) => typeof value === 'number' &&
+      Number.isFinite(value) && value >= 0 &&
+      Math.abs(value * 1000 - Math.round(value * 1000)) <= 1e-8;
+    if (!validAmount(params.amount) || params.amount <= 0 || !validAmount(params.feeAmount)) {
+      return { success: false, error: 'مبلغ الحوالة والعمولة يجب أن يكونا صالحين حتى ثلاث منازل عشرية، مع مبلغ حوالة موجب.' };
+    }
+    const totalPaid = params.amount + params.feeAmount;
+    if (!Number.isFinite(totalPaid) || totalPaid <= 0) {
+      return { success: false, error: 'إجمالي المبلغ المدفوع غير صالح.' };
+    }
+    const senderPhone = typeof params.senderPhone === 'string' ? params.senderPhone.trim() : '';
+    const recipientPhone = typeof params.recipientPhone === 'string' ? params.recipientPhone.trim() : '';
+    const notes = typeof params.notes === 'string' ? params.notes.trim() : '';
+    if (senderPhone.length > 32 || recipientPhone.length > 32 || notes.length > 500) {
+      return { success: false, error: 'أحد حقول الهاتف أو الملاحظات أطول من الحد المسموح.' };
+    }
+
+    if (serverAccountingEngine.isFinancialWriteBlocked()) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'توجد معاملة مالية غير محسومة. أوقف النظام ولا تسجل حوالة صادرة جديدة حتى مطابقة الدفاتر.',
+      };
+    }
+
+    const expectedDescription = (transferNumber: string) =>
+      `إرسال حوالة صادرة ${transferNumber} للمستلم ${params.recipientName.trim()} عبر ${params.networkName.trim()}`;
+
+    const existingByKey = Array.from(this.masterRemittances.values()).find(
+      (record) => record.idempotencyKey === params.idempotencyKey
+    );
+    if (existingByKey) {
+      const existingJournal = serverAccountingEngine.getJournalEntries().find(
+        (entry) => entry.idempotencyKey === params.idempotencyKey &&
+          entry.referenceType === 'transfer_send' &&
+          entry.referenceId === existingByKey.transferNumber
+      );
+      const sameRequest =
+        existingByKey.direction === 'outgoing' &&
+        existingByKey.senderName === params.senderName.trim() &&
+        existingByKey.senderPhone === senderPhone &&
+        existingByKey.recipientName === params.recipientName.trim() &&
+        existingByKey.recipientPhone === recipientPhone &&
+        existingByKey.networkName === params.networkName.trim() &&
+        existingByKey.amount === params.amount &&
+        existingByKey.currency === params.currency &&
+        existingByKey.feeAmount === params.feeAmount &&
+        existingByKey.totalPaid === totalPaid &&
+        existingByKey.branchName === params.branchName.trim() &&
+        existingByKey.tellerName === params.tellerName.trim() &&
+        (existingByKey.tellerRole || '') === params.tellerRole &&
+        existingByKey.tellerId === params.tellerId &&
+        existingByKey.branchId === params.branchId &&
+        (existingByKey.notes || '') === notes;
+      const requestedManual = typeof params.manualTransferNumber === 'string'
+        ? params.manualTransferNumber.trim().toUpperCase()
+        : '';
+      const sameManualNumber = existingByKey.numberingMode === 'manual'
+        ? requestedManual === existingByKey.transferNumber
+        : !requestedManual;
+      const cashLine = existingJournal?.lines.find((line) =>
+        line.accountId === 'acc-1102' && line.currency === params.currency &&
+        Math.abs(line.debit - totalPaid) <= 0.0000001 && line.credit === 0
+      );
+      const payableLine = existingJournal?.lines.find((line) =>
+        line.accountId === 'acc-2201' && line.currency === params.currency &&
+        Math.abs(line.credit - params.amount) <= 0.0000001 && line.debit === 0
+      );
+      const commissionLine = params.feeAmount > 0
+        ? existingJournal?.lines.find((line) =>
+            line.accountId === 'acc-4101' && line.currency === params.currency &&
+            Math.abs(line.credit - params.feeAmount) <= 0.0000001 && line.debit === 0
+          )
+        : undefined;
+      if (!sameRequest || !sameManualNumber || !existingJournal || !cashLine ||
+          !payableLine || (params.feeAmount > 0 && !commissionLine) ||
+          existingJournal.descriptionAr !== expectedDescription(existingByKey.transferNumber)) {
+        return {
+          success: false,
+          error: 'معرف الحوالة الصادرة مستخدم سابقاً مع بيانات مختلفة أو قيد محاسبي غير مطابق. لم تُنفذ حركة جديدة.',
+        };
+      }
+      return {
+        success: true,
+        record: existingByKey,
+        journalEntry: existingJournal,
+        accounts: serverAccountingEngine.getAccounts(),
+        replayed: true,
+      };
+    }
+
+    const orphanJournal = serverAccountingEngine.getJournalEntries().find(
+      (entry) => entry.idempotencyKey === params.idempotencyKey
+    );
+    if (orphanJournal) {
+      const recovery = serverAccountingEngine.beginFinancialTransaction({
+        operation: 'outgoing_remittance_orphan_recovery',
+        referenceId: orphanJournal.referenceId,
+        amount: totalPaid,
+        currency: params.currency,
+      });
+      if (recovery.success) serverAccountingEngine.markFinancialRecoveryRequired();
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: 'وجد النظام قيد حوالة صادرة بنفس معرف العملية دون سجل حوالة رئيسي مطابق. تم إيقاف التسجيل ويلزم فحص الدفاتر.',
+      };
+    }
+
+    const numberingMode = this.settings.numberingMode;
+    let transferNumber = '';
+    let nextSettings = { ...this.settings };
+    let sequence: number | undefined;
+
+    if (numberingMode === 'manual') {
+      if (typeof params.manualTransferNumber !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9-]{2,63}$/.test(params.manualTransferNumber.trim())) {
+        return { success: false, error: 'رقم الحوالة إلزامي وصالح في وضع الترقيم اليدوي.' };
+      }
+      transferNumber = params.manualTransferNumber.trim().toUpperCase();
+    } else {
+      sequence = this.settings.nextSequence;
+      if (!Number.isSafeInteger(sequence) || sequence < 1 ||
+          typeof this.settings.prefix !== 'string' || !this.settings.prefix.trim()) {
+        return { success: false, error: 'إعداد الترقيم التلقائي غير صالح؛ راجع إعدادات ترقيم الحوالات.' };
+      }
+      while (true) {
+        transferNumber = `${this.settings.prefix}${String(sequence).padStart(6, '0')}`;
+        const normalized = transferNumber.trim().toUpperCase();
+        if (!this.registeredNumbers.has(normalized) && !this.masterRemittances.has(normalized)) break;
+        sequence += 1;
+        if (!Number.isSafeInteger(sequence)) {
+          return { success: false, error: 'نفد نطاق الترقيم التلقائي. راجع إعدادات الترقيم.' };
+        }
+      }
+      nextSettings = {
+        ...this.settings,
+        nextSequence: sequence + 1,
+        updatedAt: getYemenDateTimeString(),
+        updatedBy: params.tellerName.trim(),
+        updatedByRole: params.tellerRole,
+      };
+    }
+
+    const cleanNumber = transferNumber.trim().toUpperCase();
+    if (this.registeredNumbers.has(cleanNumber) || this.masterRemittances.has(cleanNumber)) {
+      return {
+        success: false,
+        error: `رقم الحوالة (${cleanNumber}) مسجل أو محجوز مسبقاً. لم تُنفذ أي حركة مالية.`,
+      };
+    }
+
+    const started = serverAccountingEngine.beginFinancialTransaction({
+      operation: 'outgoing_remittance',
+      referenceId: cleanNumber,
+      amount: totalPaid,
+      currency: params.currency,
+      actorId: params.tellerId.trim(),
+    });
+    if (!started.success || !started.transactionId) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: started.error || 'تعذر بدء معاملة الحوالة الصادرة الآمنة.',
+      };
+    }
+
+    const accountingResult = serverAccountingEngine.executeOutgoingRemittance({
+      transferNumber: cleanNumber,
+      amount: params.amount,
+      feeAmount: params.feeAmount,
+      currency: params.currency,
+      senderName: params.senderName.trim(),
+      recipientName: params.recipientName.trim(),
+      networkName: params.networkName.trim(),
+      notes,
+      tellerId: params.tellerId.trim(),
+      tellerName: params.tellerName.trim(),
+      branchId: params.branchId.trim(),
+      idempotencyKey: params.idempotencyKey,
+    });
+
+    if (!accountingResult.success) {
+      if (accountingResult.errorCode === 'COMMIT_PENDING_RECOVERY') {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: accountingResult.error || 'فشل حفظ دفتر الحوالة الصادرة؛ لا تعاود الطلب.',
+        };
+      }
+      const cancelled = serverAccountingEngine.cancelFinancialTransaction(started.transactionId);
+      if (!cancelled.success) {
+        serverAccountingEngine.markFinancialRecoveryRequired();
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: cancelled.error || 'تعذر إلغاء علامة معاملة الحوالة الصادرة.',
+        };
+      }
+      return {
+        success: false,
+        error: accountingResult.error || 'رفض محرك الحسابات الحوالة الصادرة.',
+      };
+    }
+
+    const createdAt = getYemenDateTimeString();
+    const record: RemittanceMasterRecord = {
+      id: `rem-out-${crypto.randomUUID()}`,
+      idempotencyKey: params.idempotencyKey,
+      transferNumber: cleanNumber,
+      direction: 'outgoing',
+      status: 'approved',
+      senderName: params.senderName.trim(),
+      senderPhone,
+      recipientName: params.recipientName.trim(),
+      recipientPhone,
+      networkName: params.networkName.trim(),
+      amount: params.amount,
+      currency: params.currency,
+      feeAmount: params.feeAmount,
+      totalPaid,
+      branchName: params.branchName.trim(),
+      branchId: params.branchId.trim(),
+      tellerId: params.tellerId.trim(),
+      tellerName: params.tellerName.trim(),
+      tellerRole: params.tellerRole,
+      createdAt,
+      notes,
+      voucherNumber: accountingResult.journalEntry!.voucherNumber,
+      journalEntryReference: accountingResult.journalEntry!.entryNumber,
+      cashMovementReference: accountingResult.journalEntry!.voucherNumber,
+      numberingMode,
+    };
+
+    const reservation = {
+      number: cleanNumber,
+      registeredAt: createdAt,
+      registeredBy: params.tellerName.trim(),
+      mode: numberingMode,
+    };
+    const auditEntry: RemittanceAuditRecord = {
+      id: `audit-outgoing-${crypto.randomUUID()}`,
+      category: 'financial',
+      action: 'تسجيل حوالة صادرة وقيد التزام الشبكة والعمولة',
+      details: `تم تسجيل الحوالة الصادرة ${cleanNumber} بمبلغ ${params.amount} ${params.currency} وعمولة ${params.feeAmount}، إجمالي مستلم ${totalPaid}، عبر ${params.networkName.trim()}`,
+      performedBy: params.tellerName.trim(),
+      userRole: params.tellerRole,
+      timestamp: createdAt,
+      newValue: JSON.stringify({
+        transferNumber: cleanNumber,
+        amount: params.amount,
+        feeAmount: params.feeAmount,
+        currency: params.currency,
+        totalPaid,
+        journalEntryReference: record.journalEntryReference,
+      }),
+    };
+
+    this.masterRemittances.set(cleanNumber, record);
+    this.registeredNumbers.set(cleanNumber, reservation);
+    this.auditLogs.unshift(auditEntry);
+    const previousSettings = this.settings;
+    this.settings = nextSettings;
+
+    try {
+      this.saveMasterRemittancesToDisk();
+      this.saveNumbersToDisk();
+      this.saveAuditLogsToDisk();
+      if (numberingMode === 'automatic') this.saveSettingsToDisk();
+    } catch (error: any) {
+      this.masterRemittances.delete(cleanNumber);
+      this.registeredNumbers.delete(cleanNumber);
+      this.auditLogs.shift();
+      this.settings = previousSettings;
+      serverAccountingEngine.markFinancialRecoveryRequired();
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ سجل الحوالة الصادرة أو حجز رقمها أو التدقيق. لا تعاود العملية؛ أوقف النظام وطابق دفتر الأستاذ وسجل الحوالات. ${error.message}`,
+      };
+    }
+
+    const completed = serverAccountingEngine.completeFinancialTransaction(started.transactionId);
+    if (!completed.success) {
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        record,
+        journalEntry: accountingResult.journalEntry,
+        error: completed.error || 'تعذر إغلاق علامة معاملة الحوالة الصادرة.',
+      };
+    }
+
+    return {
+      success: true,
+      record,
+      journalEntry: accountingResult.journalEntry,
+      accounts: accountingResult.accounts,
+      replayed: false,
+    };
   }
 
   public getMasterRemittance(transferNumber: string): RemittanceMasterRecord | undefined {
@@ -435,7 +1093,6 @@ class RemittanceRegistry {
     clientAmount?: number;
     clientCurrency?: string;
     cashierDrawerBalance?: number;
-    voucherNumber?: string;
     journalEntryReference?: string;
     managerOverride?: boolean;
     managerOverrideReason?: string;
@@ -445,6 +1102,7 @@ class RemittanceRegistry {
     masterRemittance?: RemittanceMasterRecord;
     journalEntry?: ServerJournalEntry;
     error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
     isDuplicate?: boolean;
   } {
     if (!params.transferNumber || typeof params.transferNumber !== 'string') {
@@ -466,10 +1124,26 @@ class RemittanceRegistry {
       const compositeKey = `${cleanNum}:${params.tellerId}:${params.idempotencyKey}`;
       if (this.idempotencyStore.has(compositeKey)) {
         const existing = this.idempotencyStore.get(compositeKey)!;
+        const existingMaster = this.masterRemittances.get(cleanNum);
+        const existingJournal = serverAccountingEngine.getJournalEntries().find(
+          (entry) => entry.entryNumber === existing.journalEntryReference
+        );
+
+        // Do not report a replay as successful when its master record or accounting evidence is missing.
+        if (!existingMaster || !existingJournal) {
+          return {
+            success: false,
+            isDuplicate: true,
+            record: existing,
+            error: 'توقف آمن: سجل الصرف السابق موجود لكن مستند الحوالة أو قيد اليومية المرتبط به غير موجود. لا تعاود الصرف؛ يلزم إجراء مطابقة محاسبية.',
+          };
+        }
+
         return {
           success: true,
           record: existing,
-          masterRemittance: this.masterRemittances.get(cleanNum),
+          masterRemittance: existingMaster,
+          journalEntry: existingJournal,
         };
       }
     }
@@ -565,6 +1239,22 @@ class RemittanceRegistry {
         params.managerOverride && (params.tellerRole === 'owner' || params.tellerRole === 'general_manager')
       );
 
+      // Mark the entire multi-file payout transaction before touching the ledger.
+      const transaction = serverAccountingEngine.beginFinancialTransaction({
+        operation: 'remittance_payout',
+        referenceId: cleanNum,
+        amount: masterRem.amount,
+        currency: masterRem.currency,
+        actorId: params.tellerId,
+      });
+      if (!transaction.success || !transaction.transactionId) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: transaction.error || 'تعذر بدء معاملة الصرف الآمنة.',
+        };
+      }
+
       // C3: تنفيذ القيد المحاسبي المزدوج وخصم الصندوق الفعلي على الخادم
       const accountingRes = serverAccountingEngine.executeRemittancePayout({
         transferNumber: cleanNum,
@@ -582,6 +1272,24 @@ class RemittanceRegistry {
       });
 
       if (!accountingRes.success) {
+        if (accountingRes.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return {
+            success: false,
+            errorCode: 'COMMIT_PENDING_RECOVERY',
+            error: accountingRes.error || 'فشل حفظ الدفتر المالي؛ لا تعاود الصرف.',
+          };
+        }
+
+        const cancelled = serverAccountingEngine.cancelFinancialTransaction(transaction.transactionId);
+        if (!cancelled.success) {
+          serverAccountingEngine.markFinancialRecoveryRequired();
+          return {
+            success: false,
+            errorCode: 'COMMIT_PENDING_RECOVERY',
+            error: cancelled.error || 'تعذر إلغاء علامة المعاملة بعد رفض العملية؛ يلزم فحص يدوي.',
+          };
+        }
+
         return {
           success: false,
           error: accountingRes.error || 'فشلت معالجة القيد المحاسبي وصندوق الكاشير على الخادم.',
@@ -589,7 +1297,8 @@ class RemittanceRegistry {
       }
 
       const yemenPaidAt = getYemenDateTimeString();
-      const voucherNum = params.voucherNumber || `V-PAY-${Date.now().toString().slice(-4)}`;
+      // إصدار رقم سند صرف من الخادم فقط؛ UUID يمنع تصادم الأرقام عند العمليات المتزامنة أو السريعة.
+      const voucherNum = `V-PAY-${new Date().getFullYear()}-${crypto.randomUUID().toUpperCase()}`;
       const entryNum = accountingRes.journalEntry!.entryNumber;
 
       const payoutRecord: RemittancePayoutRecord = {
@@ -631,7 +1340,7 @@ class RemittanceRegistry {
       this.masterRemittances.set(cleanNum, masterRem);
 
       const auditEntry: RemittanceAuditRecord = {
-        id: `audit-pay-${Date.now()}`,
+        id: `audit-pay-${crypto.randomUUID()}`,
         category: 'financial',
         action: 'صرف حوالة وتسليم نقدية للمستفيد (معتمد ذرياً بقيد خادمي)',
         details: `تم صرف الحوالة ${cleanNum} بمبلغ ${masterRem.amount} ${masterRem.currency} للمستفيد (${masterRem.recipientName} - إثبات هوية: ${params.recipientIdType} ${params.recipientIdNumber}) بواسطة ${params.tellerName}. سند: ${voucherNum}، قيد: ${entryNum}`,
@@ -644,10 +1353,34 @@ class RemittanceRegistry {
 
       this.auditLogs.unshift(auditEntry);
 
-      // حفظ التغييرات ذرياً
-      this.savePayoutsToDisk();
-      this.saveMasterRemittancesToDisk();
-      this.saveAuditLogsToDisk();
+      // Persist all payout-side records while the pending transaction marker remains on disk.
+      try {
+        this.savePayoutsToDisk();
+        this.saveMasterRemittancesToDisk();
+        this.saveAuditLogsToDisk();
+      } catch (saveError: any) {
+        serverAccountingEngine.markFinancialRecoveryRequired();
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: `فشل حفظ أحد سجلات الصرف بعد تحديث دفتر الأستاذ. لا تعاود الصرف؛ أوقف النظام وطابق الحسابات والقيود والحوالة وسجل الصرف. ${saveError.message}`,
+          record: payoutRecord,
+          masterRemittance: masterRem,
+          journalEntry: accountingRes.journalEntry,
+        };
+      }
+
+      const committed = serverAccountingEngine.completeFinancialTransaction(transaction.transactionId);
+      if (!committed.success) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: committed.error || 'تعذر اعتماد اكتمال المعاملة المالية؛ لا تعاود الصرف.',
+          record: payoutRecord,
+          masterRemittance: masterRem,
+          journalEntry: accountingRes.journalEntry,
+        };
+      }
 
       return {
         success: true,

@@ -13,8 +13,10 @@ import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../ut
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = path.resolve(__dirname, '../../../data');
-const USERS_FILE = path.resolve(DATA_DIR, 'system_users.json');
+const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
+  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
+  : path.resolve(__dirname, '../../../data');
+const USERS_FILE = path.resolve(DATA_DIR, 'system_users.local.json');
 const JWT_SECRET_FILE = path.resolve(DATA_DIR, '.jwt_secret');
 
 export interface AuthenticatedUser {
@@ -30,6 +32,8 @@ export interface StoredUserRecord extends AuthenticatedUser {
   pinSalt: string;
   pinHash: string;
   isActive: boolean;
+  mustChangePin: boolean;
+  sessionVersion: string;
   createdAt: string;
 }
 
@@ -49,6 +53,7 @@ export interface AuthTokenPayload {
   role: AuthenticatedUser['role'];
   branchId: string;
   branchName: string;
+  sessionVersion: string;
   iat: number;
   exp: number;
 }
@@ -133,123 +138,60 @@ class AuthService {
   }
 
   private loadUsersFromDisk(): void {
-    const defaultUsers: StoredUserRecord[] = [
-      {
-        id: 'usr-001',
-        name: 'عمرو النماري',
-        username: 'amro',
-        role: 'owner',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-002',
-        name: 'عبد الله الصبري',
-        username: 'abdullah',
-        role: 'general_manager',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-006',
-        name: 'منصور الحمادي',
-        username: 'mansoor',
-        role: 'branch_manager',
-        branchId: 'br-khadeer',
-        branchName: 'فرع خدير',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-003',
-        name: 'صديق علي الفتاحي',
-        username: 'sedeek',
-        role: 'teller',
-        branchId: 'br-khadeer',
-        branchName: 'فرع خدير - الكاشير المعتمد',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-004',
-        name: 'محمد عبد الرقيب الشميري',
-        username: 'mohammed',
-        role: 'auditor',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-005',
-        name: 'أحمد سعيد الأصبحي',
-        username: 'ahmed',
-        role: 'accountant',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-007',
-        name: 'فؤاد المخلافي',
-        username: 'fouad',
-        role: 'compliance_officer',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-    ];
+    // لا توجد حسابات أو PIN افتراضية في الكود؛ ملف المستخدمين جزء إلزامي من بيانات التشغيل.
+    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
 
-    // تهيئة الرموز الافتراضية لأول تشغيل
-    const initialPins: Record<string, string> = {
-      amro: '1234',
-      abdullah: '2345',
-      mansoor: '3456',
-      sedeek: '3456',
-      mohammed: '4567',
-      ahmed: '5678',
-      fouad: '6789',
-    };
-
-    for (const u of defaultUsers) {
-      const pin = initialPins[u.username] || '1234';
-      u.pinHash = hashPinWithSalt(pin, u.pinSalt);
+    if (!Array.isArray(loadedUsers) || loadedUsers.length !== 1) {
+      throw new Error('توقف آمن: يجب أن يحتوي النظام على حساب مالك واحد فقط. شغّل الأمر npm run setup:owner لإنشاء حساب واحد بأمان مع حفظ نسخة احتياطية من الحسابات السابقة.');
     }
 
-    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, defaultUsers, { failOnCorruption: false });
+    const allowedRoles: AuthenticatedUser['role'][] = [
+      'owner',
+      'general_manager',
+      'branch_manager',
+      'teller',
+      'auditor',
+      'accountant',
+      'compliance_officer',
+    ];
+    const usernames = new Set<string>();
+
+    for (const user of loadedUsers) {
+      if (!user || typeof user.id !== 'string' || !user.id.trim() ||
+          typeof user.name !== 'string' || !user.name.trim() ||
+          typeof user.username !== 'string' || !user.username.trim() ||
+          !allowedRoles.includes(user.role) ||
+          typeof user.branchId !== 'string' || !user.branchId.trim() ||
+          typeof user.branchName !== 'string' || !user.branchName.trim() ||
+          typeof user.pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(user.pinSalt) ||
+          typeof user.pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(user.pinHash) ||
+          typeof user.sessionVersion !== 'string' || !/^[a-f0-9]{32}$/i.test(user.sessionVersion) ||
+          user.role !== 'owner' || user.isActive !== true || user.mustChangePin !== false) {
+        throw new Error('توقف آمن: حساب المالك غير مهيأ أو ما زال يستخدم بيانات اعتماد قديمة. شغّل npm run setup:owner لتغيير PIN وإيقاف الحسابات الأخرى مع حفظ نسخة احتياطية محلية.');
+      }
+
+      const normalizedUsername = user.username.trim().toLowerCase();
+      if (usernames.has(normalizedUsername)) {
+        throw new Error(`توقف آمن: اسم المستخدم مكرر في ملف الحسابات (${normalizedUsername}).`);
+      }
+      usernames.add(normalizedUsername);
+    }
+
     this.users.clear();
-    for (const u of loadedUsers) {
-      this.users.set(u.username, u);
-      this.users.set(u.role, u);
+    for (const user of loadedUsers) {
+      this.users.set(user.username, user);
+      this.users.set(user.role, user);
     }
   }
-
   public saveUsersToDisk(): void {
     const list = Array.from(new Set(this.users.values()));
     safeAtomicWriteJson(USERS_FILE, list);
   }
 
-  public getAllPublicUsers(): Omit<StoredUserRecord, 'pinSalt' | 'pinHash'>[] {
+  public getAllPublicUsers(): Omit<StoredUserRecord, 'pinSalt' | 'pinHash' | 'mustChangePin' | 'sessionVersion'>[] {
     const unique = Array.from(new Set(this.users.values()));
     return unique.map(({ id, name, username, role, branchId, branchName, isActive, createdAt }) => ({
       id,
@@ -267,7 +209,7 @@ class AuthService {
     return this.users.get(roleOrUsername);
   }
 
-  public generateToken(user: AuthenticatedUser): string {
+  public generateToken(user: StoredUserRecord): string {
     const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
     const now = Math.floor(Date.now() / 1000);
     const exp = now + this.TOKEN_EXPIRY_HOURS * 3600;
@@ -279,6 +221,7 @@ class AuthService {
       role: user.role,
       branchId: user.branchId,
       branchName: user.branchName,
+      sessionVersion: user.sessionVersion,
       iat: now,
       exp,
     };
@@ -318,7 +261,17 @@ class AuthService {
     try {
       const payload: AuthTokenPayload = JSON.parse(Buffer.from(data, 'base64url').toString('utf-8'));
       const now = Math.floor(Date.now() / 1000);
-      if (payload.exp && payload.exp < now) {
+      if (!payload || typeof payload.userId !== 'string' || typeof payload.username !== 'string' ||
+          typeof payload.role !== 'string' || typeof payload.sessionVersion !== 'string' ||
+          !Number.isSafeInteger(payload.exp) || payload.exp <= now) {
+        return null;
+      }
+
+      // إيقاف الجلسات فور تعطيل الحساب أو تغير هويته/صلاحياته في ملف المستخدمين.
+      const currentUser = this.users.get(payload.username);
+      if (!currentUser || !currentUser.isActive || currentUser.id !== payload.userId ||
+          currentUser.role !== payload.role || currentUser.branchId !== payload.branchId ||
+          currentUser.sessionVersion !== payload.sessionVersion) {
         return null;
       }
       return payload;
@@ -332,7 +285,10 @@ class AuthService {
     pin?: string,
     ip = '127.0.0.1'
   ): { success: boolean; token?: string; user?: AuthenticatedUser; error?: string; locked?: boolean } {
-    const lockKey = `${roleOrUsername}:${ip}`;
+    const user = this.findUser(roleOrUsername);
+    // Bind aliases (for example, "owner" and the owner's username) to one lockout counter.
+    const lockIdentity = user?.id || String(roleOrUsername).trim().toLowerCase();
+    const lockKey = `${lockIdentity}:${ip}`;
     const now = Date.now();
     const failRecord = this.failedLogins.get(lockKey);
 
@@ -351,7 +307,6 @@ class AuthService {
       };
     }
 
-    const user = this.findUser(roleOrUsername);
     if (!user) {
       const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'المستخدم غير مسجل في النظام');
       return {
@@ -363,7 +318,17 @@ class AuthService {
       };
     }
 
-    if (!pin || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
+    if (!user.isActive) {
+      this.recordSecurityEvent({
+        event: 'LOGIN_FAILED',
+        usernameOrRole: user.username,
+        ip,
+        details: 'تم رفض تسجيل الدخول لأن حساب المستخدم معطل.',
+      });
+      return { success: false, error: 'هذا الحساب معطل. راجع مالك النظام لإعادة تفعيله.' };
+    }
+
+    if (typeof pin !== 'string' || !/^\d{6}$/.test(pin) || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
       const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'رمز PIN غير مطابق للتجزئة المعتمدة');
       return {
         success: false,

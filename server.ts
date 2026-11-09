@@ -5,6 +5,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import crypto from 'node:crypto';
 import { metaWhatsAppService, getMetaConfig, isValidMetaToken } from './src/server/services/metaWhatsAppService.js';
 import { dispatchRegistry } from './src/server/services/dispatchRegistry.js';
 import { remittanceRegistry } from './src/server/services/remittanceRegistry.js';
@@ -17,11 +18,13 @@ import {
   AuthenticatedUser,
 } from './src/server/services/authService.js';
 import { serverAccountingEngine, CurrencyCode } from './src/server/services/serverAccountingEngine.js';
+import { serverExchangeRateRegistry } from './src/server/services/serverExchangeRateRegistry.js';
+import { serverCashBoxShiftRegistry } from './src/server/services/serverCashBoxShiftRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
+export async function startServer(options: { port?: number; host?: string; useVite?: boolean } = {}) {
   const app = express();
   const PORT = 3000;
 
@@ -64,10 +67,10 @@ async function startServer() {
         if (host && originHost === host.toLowerCase()) {
           isAllowed = true;
         } else if (
-          originHost.startsWith('localhost') ||
-          originHost.startsWith('127.0.0.1') ||
-          originHost.endsWith('.run.app') ||
-          originHost.endsWith('.googleusercontent.com')
+          originHost === 'localhost' ||
+          originHost.startsWith('localhost:') ||
+          originHost === '127.0.0.1' ||
+          originHost.startsWith('127.0.0.1:')
         ) {
           isAllowed = true;
         }
@@ -88,15 +91,65 @@ async function startServer() {
     next();
   });
 
+  // Block all financial write endpoints after any uncertain multi-file commit.
+  // Read-only reports and authentication remain available for diagnosis.
+  app.use((req, res, next) => {
+    const isNonFinancialPost =
+      req.path.startsWith('/api/auth/') ||
+      req.path.startsWith('/api/whatsapp/');
+    if (
+      req.method === 'POST' &&
+      req.path.startsWith('/api/') &&
+      !isNonFinancialPost &&
+      serverAccountingEngine.isFinancialWriteBlocked()
+    ) {
+      return res.status(503).json({
+        success: false,
+        errorCode: 'FINANCIAL_RECOVERY_REQUIRED',
+        doNotRetry: true,
+        error: 'النظام في وضع حماية مالية بعد فشل حفظ غير محسوم. توقفت كل العمليات المالية حتى مطابقة الملفات يدوياً.',
+      });
+    }
+    next();
+  });
+
+  // A cashier drawer cannot process money unless the server confirms an active shift.
+  // This check is intentionally server-side; localStorage state is never authoritative.
+  const shiftRequiredWritePaths = new Set([
+    '/api/remittances/payout',
+    '/api/remittances/outgoing',
+    '/api/remittances/incoming',
+    '/api/accounting/exchanges',
+    '/api/accounting/fund-drawer',
+    '/api/accounting/expenses',
+    '/api/accounting/internal-transfers',
+  ]);
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && shiftRequiredWritePaths.has(req.path) &&
+        !serverCashBoxShiftRegistry.getActiveShift()) {
+      const authorization = req.headers.authorization;
+      const token = authorization?.startsWith('Bearer ') ? authorization.substring(7) : '';
+      // Let the route's requireAuth middleware return 401 for missing/invalid sessions.
+      if (!token || !authService.verifyToken(token)) return next();
+      return res.status(409).json({
+        success: false,
+        errorCode: 'CASHIER_SHIFT_REQUIRED',
+        error: 'لا توجد وردية مفتوحة على الخادم. افتح وردية جديدة قبل تنفيذ أي عملية مالية.',
+      });
+    }
+    next();
+  });
+
   // =========================================================================
   // Authentication & Session Endpoints (FIND-002, FIND-010, H5)
   // =========================================================================
   app.post('/api/auth/login', (req: Request, res: Response) => {
-    const { roleOrUsername, pin } = req.body;
-    if (!roleOrUsername) {
+    const { roleOrUsername, pin } = req.body || {};
+    if (typeof roleOrUsername !== 'string' || !roleOrUsername.trim() ||
+        typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
       return res.status(400).json({
         success: false,
-        error: 'اسم المستخدم أو الدور مطلوب لتسجيل الدخول',
+        error: 'اسم المستخدم ورمز PIN المكوّن من 6 أرقام مطلوبان لتسجيل الدخول.',
       });
     }
 
@@ -132,7 +185,7 @@ async function startServer() {
   });
 
   // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
-  app.get('/api/auth/users', requireAuth, (_req: Request, res: Response) => {
+  app.get('/api/auth/users', requireAuth, requireRoles(['owner', 'general_manager']), (_req: Request, res: Response) => {
     const users = authService.getAllPublicUsers();
     return res.status(200).json({ success: true, users });
   });
@@ -641,10 +694,8 @@ async function startServer() {
         clientAmount,
         clientCurrency,
         cashierDrawerBalance,
-        voucherNumber,
         managerOverride,
         managerOverrideReason,
-        idempotencyKey,
       } = req.body;
 
       const authenticatedUser = req.user as AuthenticatedUser;
@@ -656,10 +707,16 @@ async function startServer() {
         });
       }
 
-      const effectiveIdempotencyKey = idempotencyKey || (req.headers['x-idempotency-key'] as string);
+      // Stable server-owned idempotency key: retries for the same teller + transfer reuse the same key.
+      // Ignore client-generated timestamps so a network retry cannot become a second financial operation.
+      const normalizedTransferNumber = transferNumber.trim().toUpperCase();
+      const stableIdempotencyKey = crypto
+        .createHash('sha256')
+        .update(`remittance-payout:${authenticatedUser.id}:${normalizedTransferNumber}`)
+        .digest('hex');
 
       const payoutResult = remittanceRegistry.payoutRemittance({
-        idempotencyKey: effectiveIdempotencyKey,
+        idempotencyKey: stableIdempotencyKey,
         transferId: transferId || transferNumber,
         transferNumber,
         recipientIdType: recipientIdType || 'national_id',
@@ -673,12 +730,22 @@ async function startServer() {
         clientAmount: typeof clientAmount === 'number' ? clientAmount : (typeof amount === 'number' ? amount : undefined),
         clientCurrency: clientCurrency || currency,
         cashierDrawerBalance: typeof cashierDrawerBalance === 'number' ? cashierDrawerBalance : undefined,
-        voucherNumber,
         managerOverride: Boolean(managerOverride),
         managerOverrideReason: managerOverrideReason || (managerOverride ? 'موافقة استثنائية من المدير المباشر' : undefined),
       });
 
       if (!payoutResult.success) {
+        if (payoutResult.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: payoutResult.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: payoutResult.error || 'حالة الصرف غير محسومة. أوقف النظام ولا تعاود العملية حتى مطابقة الدفاتر.',
+            record: payoutResult.record,
+            journalEntry: payoutResult.journalEntry,
+          });
+        }
         return res.status(409).json({
           success: false,
           isDuplicate: remittanceRegistry.isRemittancePaid(transferNumber),
@@ -718,6 +785,179 @@ async function startServer() {
       remittances: masterList,
     });
   });
+
+  // Server-authoritative outgoing registration and balanced cash/payable/commission posting.
+  app.post(
+    '/api/remittances/outgoing',
+    requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        idempotencyKey,
+        manualTransferNumber,
+        senderName,
+        senderPhone,
+        recipientName,
+        recipientPhone,
+        networkName,
+        amount,
+        currency,
+        feeAmount,
+        notes,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof idempotencyKey !== 'string' ||
+          typeof senderName !== 'string' ||
+          typeof recipientName !== 'string' ||
+          typeof networkName !== 'string' ||
+          typeof amount !== 'number' || !Number.isFinite(amount) ||
+          typeof feeAmount !== 'number' || !Number.isFinite(feeAmount) ||
+          typeof currency !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'معرف العملية وأسماء المرسل والمستفيد والشبكة والمبلغ والعمولة والعملة مطلوبة بصيغ صحيحة.',
+        });
+      }
+      if (manualTransferNumber !== undefined && typeof manualTransferNumber !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة اليدوي يجب أن يكون نصاً صالحاً.',
+        });
+      }
+
+      const result = remittanceRegistry.registerOutgoingRemittance({
+        idempotencyKey,
+        manualTransferNumber,
+        senderName,
+        senderPhone: typeof senderPhone === 'string' ? senderPhone : '',
+        recipientName,
+        recipientPhone: typeof recipientPhone === 'string' ? recipientPhone : '',
+        networkName,
+        amount,
+        currency: currency as CurrencyCode,
+        feeAmount,
+        notes: typeof notes === 'string' ? notes : '',
+        branchName: authenticatedUser.branchName,
+        branchId: authenticatedUser.branchId,
+        tellerId: authenticatedUser.id,
+        tellerName: authenticatedUser.name,
+        tellerRole: authenticatedUser.role,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة تسجيل الحوالة الصادرة غير محسومة. أوقف النظام ولا تعاود الطلب حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          error: result.error || 'رفض الخادم تسجيل الحوالة الصادرة.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        replayed: Boolean(result.replayed),
+        message: result.replayed
+          ? 'الحوالة الصادرة مسجلة سابقاً بالبيانات نفسها؛ تم إرجاع القيد والسجل الموجودين.'
+          : 'تم تسجيل الحوالة الصادرة وقيد الصندوق والتزام الشبكة والعمولة على الخادم.',
+        record: result.record,
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+        settings: remittanceRegistry.getSettings(),
+      });
+    }
+  );
+
+  // Server-authoritative incoming remittance registration (master, number reservation and audit in one guarded commit).
+  app.post(
+    '/api/remittances/incoming',
+    requireAuth,
+    requireRoles(['branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        transferNumber,
+        senderName,
+        senderPhone,
+        recipientName,
+        recipientPhone,
+        networkName,
+        amount,
+        currency,
+        notes,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'مبلغ الحوالة يجب أن يكون رقماً موجباً.',
+        });
+      }
+      if (typeof transferNumber !== 'string' ||
+          typeof senderName !== 'string' ||
+          typeof recipientName !== 'string' ||
+          typeof networkName !== 'string' ||
+          typeof currency !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة واسم المرسل واسم المستفيد والشبكة والعملة حقول إلزامية.',
+        });
+      }
+
+      const result = remittanceRegistry.registerMasterRemittance({
+        id: '',
+        transferNumber,
+        direction: 'incoming',
+        status: 'available',
+        senderName,
+        senderPhone: typeof senderPhone === 'string' ? senderPhone : '',
+        recipientName,
+        recipientPhone: typeof recipientPhone === 'string' ? recipientPhone : '',
+        networkName,
+        amount,
+        currency,
+        feeAmount: 0,
+        totalPaid: amount,
+        branchName: authenticatedUser.branchName,
+        tellerName: authenticatedUser.name,
+        tellerRole: authenticatedUser.role,
+        createdAt: '',
+        notes: typeof notes === 'string' ? notes : '',
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'تسجيل الحوالة غير محسوم. أوقف النظام ولا تعاود إدخالها قبل مطابقة السجلات.',
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          error: result.error || 'رفض الخادم تسجيل الحوالة الواردة.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        replayed: Boolean(result.replayed),
+        message: result.replayed
+          ? 'الحوالة مسجلة سابقاً بالبيانات نفسها؛ تم إرجاع السجل الموجود.'
+          : 'تم تسجيل الحوالة الواردة وحجز رقمها وتوثيقها على الخادم.',
+        record: result.record,
+      });
+    }
+  );
 
   // C2: حصر تسجيل الحوالات الواردة الخارجية بالمدير والمالك لمنع اختلاق حوالات وهمية من الكاشير
   app.post(
@@ -799,6 +1039,67 @@ async function startServer() {
     }
   );
 
+  // Server-authoritative cashier shift lifecycle. Expected balances always come from the ledger.
+  app.get('/api/accounting/shifts/active', requireAuth, (_req: Request, res: Response) => {
+    return res.status(200).json({
+      success: true,
+      activeShift: serverCashBoxShiftRegistry.getActiveShift(),
+      history: serverCashBoxShiftRegistry.getHistory(),
+    });
+  });
+
+  app.post(
+    '/api/accounting/shifts/open',
+    requireAuth,
+    requireRoles(['owner']),
+    (req: any, res: Response) => {
+      const actor = req.user as AuthenticatedUser;
+      const cashier = serverAccountingEngine.getAccounts().find((account) => account.id === 'acc-1102');
+      if (!cashier) {
+        return res.status(503).json({ success: false, error: 'حساب صندوق الكاشير غير موجود في دفتر الخادم.' });
+      }
+      const result = serverCashBoxShiftRegistry.openShift({
+        idempotencyKey: req.body?.idempotencyKey,
+        balances: cashier.balances,
+        actorId: actor.id,
+        actorName: actor.name,
+        actorRole: actor.role,
+        boxId: cashier.id,
+        boxNameAr: cashier.nameAr,
+      });
+      if (!result.success) {
+        return res.status(result.errorCode === 'SHIFT_SAVE_FAILED' ? 500 : 409).json(result);
+      }
+      return res.status(200).json({ ...result, message: result.replayed ? 'الوردية مفتوحة بالفعل؛ أُعيدت النتيجة السابقة.' : 'تم فتح الوردية واعتماد رصيدها الافتتاحي من دفتر الخادم.' });
+    }
+  );
+
+  app.post(
+    '/api/accounting/shifts/close',
+    requireAuth,
+    requireRoles(['owner']),
+    (req: any, res: Response) => {
+      const actor = req.user as AuthenticatedUser;
+      const cashier = serverAccountingEngine.getAccounts().find((account) => account.id === 'acc-1102');
+      if (!cashier) {
+        return res.status(503).json({ success: false, error: 'حساب صندوق الكاشير غير موجود في دفتر الخادم.' });
+      }
+      const result = serverCashBoxShiftRegistry.closeShift({
+        idempotencyKey: req.body?.idempotencyKey,
+        shiftId: req.body?.shiftId,
+        expectedBalances: cashier.balances,
+        actualBalances: req.body?.actualBalances,
+        notes: req.body?.notes,
+        actorId: actor.id,
+        actorName: actor.name,
+      });
+      if (!result.success) {
+        return res.status(result.errorCode === 'SHIFT_SAVE_FAILED' ? 500 : 409).json(result);
+      }
+      return res.status(200).json({ ...result, message: result.replayed ? 'تم استرجاع محضر الإقفال السابق دون إنشاء محضر جديد.' : 'تم حفظ محضر الجرد وإقفال الوردية على الخادم.' });
+    }
+  );
+
   // =========================================================================
   // Server-Authoritative Accounting Endpoints (C3)
   // =========================================================================
@@ -818,13 +1119,141 @@ async function startServer() {
     });
   });
 
+  // Exchange rates and their audit history are server-owned. Unapproved zero rates are never executable.
+  app.get('/api/accounting/exchange-rates', requireAuth, (_req: Request, res: Response) => {
+    return res.status(200).json({
+      success: true,
+      rates: serverExchangeRateRegistry.getRates(),
+      auditLogs: serverExchangeRateRegistry.getAuditLogs(),
+    });
+  });
+
+  app.put(
+    '/api/accounting/exchange-rates/:rateId',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const { buyRate, sellRate, note } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+      const result = serverExchangeRateRegistry.updateRate({
+        rateId: req.params.rateId,
+        buyRate,
+        sellRate,
+        note,
+        actorId: authenticatedUser.id,
+        actorName: authenticatedUser.name,
+      });
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم تحديث سعر الصرف.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        rate: result.rate,
+        rates: result.rates,
+        auditLogs: result.auditLogs,
+      });
+    }
+  );
+
+  app.post(
+    '/api/accounting/exchanges',
+    requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        idempotencyKey,
+        rateId,
+        rateMode,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount,
+        commission,
+        customerName,
+        customerPhone,
+        notes,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof rateId !== 'string' || typeof rateMode !== 'string' ||
+          typeof sourceCurrency !== 'string' || typeof targetCurrency !== 'string' ||
+          typeof sourceAmount !== 'number' || typeof commission !== 'number') {
+        return res.status(400).json({
+          success: false,
+          error: 'معرف السعر ونوع العملية والعملتان والمبلغ والعمولة حقول إلزامية.',
+        });
+      }
+
+      const approvedRate = serverExchangeRateRegistry.getRates().find((rate) => rate.id === rateId);
+      if (!approvedRate) {
+        return res.status(409).json({
+          success: false,
+          error: 'سعر الصرف المطلوب غير موجود في قائمة الأسعار المعتمدة على الخادم.',
+        });
+      }
+
+      const result = serverAccountingEngine.executeExchange({
+        rate: approvedRate,
+        rateMode: rateMode as 'buy' | 'sell',
+        sourceCurrency: sourceCurrency as CurrencyCode,
+        targetCurrency: targetCurrency as CurrencyCode,
+        sourceAmount,
+        commission,
+        customerName: typeof customerName === 'string' ? customerName : 'عميل نقدي',
+        customerPhone: typeof customerPhone === 'string' ? customerPhone : '',
+        notes: typeof notes === 'string' ? notes : '',
+        operatorId: authenticatedUser.id,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+        idempotencyKey,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة الصرافة غير محسومة. أوقف النظام ولا تعاود العملية حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم عملية الصرافة.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+        effectiveRate: result.effectiveRate,
+        grossTargetAmount: result.grossTargetAmount,
+        targetAmount: result.targetAmount,
+        voucherNumber: result.journalEntry?.voucherNumber,
+      });
+    }
+  );
+
   app.post(
     '/api/accounting/fund-drawer',
     requireAuth,
     requireRoles(['owner', 'general_manager', 'branch_manager']),
     (req: any, res: Response) => {
-      const { fromAccountId, toAccountId, amount, currency } = req.body;
+      const { fromAccountId, toAccountId, amount, currency, idempotencyKey } = req.body || {};
       const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof idempotencyKey !== 'string' || !/^[a-f0-9-]{36}$/i.test(idempotencyKey)) {
+        return res.status(400).json({
+          success: false,
+          error: 'مفتاح العملية غير صالح؛ لا يمكن تنفيذ تغذية صندوق دون مفتاح يمنع تكرار الخصم.',
+        });
+      }
 
       const result = serverAccountingEngine.fundCashierDrawer({
         fromAccountId: fromAccountId || 'acc-1101',
@@ -833,9 +1262,19 @@ async function startServer() {
         currency: currency as CurrencyCode,
         operatorName: authenticatedUser.name,
         branchId: authenticatedUser.branchId,
+        idempotencyKey,
       });
 
       if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة تغذية الصندوق غير محسومة. أوقف النظام ولا تعاود العملية حتى مطابقة الدفاتر.',
+          });
+        }
         return res.status(400).json({
           success: false,
           error: result.error,
@@ -847,6 +1286,110 @@ async function startServer() {
         message: 'تمت تغذية الصندوق بنجاح وتوثيق القيد المحاسبي المزدوج.',
         journalEntry: result.journalEntry,
         accounts: serverAccountingEngine.getAccounts(),
+      });
+    }
+  );
+
+  // Server-authoritative operating expense vouchers.
+  app.post(
+    '/api/accounting/expenses',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const {
+        expenseType,
+        amount,
+        currency,
+        notes,
+        idempotencyKey,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      const result = serverAccountingEngine.executeOperatingExpense({
+        expenseType,
+        amount: Number(amount),
+        currency: currency as CurrencyCode,
+        notes,
+        operatorId: authenticatedUser.id,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+        idempotencyKey,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'حالة المصروف غير محسومة. أوقف النظام ولا تنفذ سنداً جديداً حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم سند المصروف.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'اعتمد الخادم سند المصروف وحفظ القيد المزدوج.',
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
+      });
+    }
+  );
+
+  // Server-authoritative internal asset-to-asset transfers.
+  app.post(
+    '/api/accounting/internal-transfers',
+    requireAuth,
+    requireRoles(['owner', 'general_manager']),
+    (req: any, res: Response) => {
+      const {
+        fromAccountId,
+        toAccountId,
+        currency,
+        amount,
+        description,
+        idempotencyKey,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      const result = serverAccountingEngine.executeInternalTransfer({
+        fromAccountId,
+        toAccountId,
+        currency: currency as CurrencyCode,
+        amount: Number(amount),
+        description,
+        operatorId: authenticatedUser.id,
+        operatorName: authenticatedUser.name,
+        branchId: authenticatedUser.branchId,
+        idempotencyKey,
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'نتيجة المناقلة غير محسومة. أوقف النظام ولا تنفذ مناقلة أخرى حتى مطابقة الدفاتر.',
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: result.error || 'رفض الخادم المناقلة الداخلية.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'اعتمد الخادم المناقلة الداخلية وحفظ القيد المحاسبي.',
+        journalEntry: result.journalEntry,
+        accounts: result.accounts,
       });
     }
   );
@@ -867,13 +1410,20 @@ async function startServer() {
 
   // Public health check endpoint
   app.get('/api/health', (_req: Request, res: Response) => {
-    return res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+    const recoveryRequired = serverAccountingEngine.isFinancialWriteBlocked();
+    return res.status(recoveryRequired ? 503 : 200).json({
+      status: recoveryRequired ? 'financial_recovery_required' : 'healthy',
+      financialWritesEnabled: !recoveryRequired,
+      timestamp: new Date().toISOString(),
+    });
   });
 
   const httpServer = http.createServer(app);
 
   // Mount Vite development server as middleware, or serve dist in production
-  if (process.env.NODE_ENV === 'production') {
+  if (options.useVite === false || process.env.NODE_ENV === 'test') {
+    // HTTP integration tests exercise the production Express routes without mounting Vite.
+  } else if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
@@ -890,9 +1440,22 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Amro Alnamari Production Server] Running securely on http://0.0.0.0:${PORT}`);
+  // Single-device Windows deployment: never expose the financial API to the LAN.
+  const listenPort = options.port ?? Number(process.env.PORT || PORT);
+  const listenHost = options.host || '127.0.0.1';
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(listenPort, listenHost, () => {
+      httpServer.off('error', reject);
+      resolve();
+    });
   });
+  return httpServer;
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test') {
+  startServer().catch((error) => {
+    console.error('[Amro Alnamari Local Server] Startup failed safely:', error);
+    process.exitCode = 1;
+  });
+}

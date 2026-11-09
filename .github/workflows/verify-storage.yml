@@ -1,0 +1,68 @@
+name: Verify storage safety and build
+
+on:
+  push:
+    branches:
+      - main
+      - "audit/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Storage safety, TypeScript, and production build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install project dependencies
+        run: bun install --frozen-lockfile
+
+      # Deliberately do not run the legacy enterprise_audit_verification.ts suite:
+      # it imports live services and mutates files under data/.
+      - name: Run isolated financial-storage tests
+        run: bun run test:storage
+
+      - name: Run isolated internal transfer tests
+        run: bun run test:internal-transfers
+
+      - name: Run chart reconciliation tests
+        run: bun run test:chart-reconciliation
+
+      - name: Run operating expense tests
+        run: bun run test:operating-expense
+
+      - name: Run incoming remittance registration tests
+        run: bun run test:incoming-remittances
+
+      - name: Run outgoing remittance tests
+        run: bun run test:outgoing-remittances
+
+      - name: Run exchange accounting tests
+        run: bun run test:exchange-accounting
+
+      - name: Run exchange-rate registry tests
+        run: bun run test:exchange-rate-registry
+
+      - name: Run server exchange tests
+        run: bun run test:server-exchange
+
+      - name: Run cashier shift lifecycle tests
+        run: bun run test:cashier-shifts
+
+      - name: Run authenticated HTTP integration tests
+        run: bun run test:http-integration
+
+      - name: TypeScript validation
+        run: bun run lint
+
+      - name: Production frontend build
+        run: bun run build

@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UserProfile, UserRole } from '../types/exchange';
-import { AVAILABLE_ROLES } from '../data/initialData';
+import { UserProfile } from '../types/exchange';
 import {
   ArrowDownLeft,
   ArrowLeftRight,
@@ -35,7 +34,6 @@ interface HeaderProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   currentUser: UserProfile;
-  onRequestRoleChange: (role: UserRole) => void;
   isOnline: boolean;
   setIsOnline: (online: boolean) => void;
   onOpenRatesModal: () => void;
@@ -51,7 +49,6 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   currentUser,
-  onRequestRoleChange,
   isOnline,
   setIsOnline,
   onOpenRatesModal,
@@ -80,7 +77,7 @@ export const Header: React.FC<HeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const roleConfigMap: Record<UserRole, { label: string; badgeClass: string; icon: React.ReactNode }> = {
+  const roleConfigMap: Partial<Record<UserProfile['role'], { label: string; badgeClass: string; icon: React.ReactNode }>> = {
     owner: {
       label: 'المالك والمشرف العام',
       badgeClass: 'bg-amber-950/80 text-amber-300 border-amber-600/60 ring-1 ring-amber-500/30',
@@ -479,18 +476,12 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>{roleConfig.label}</span>
               </div>
 
-              <select
-                value={currentUser.role}
-                onChange={(e) => onRequestRoleChange(e.target.value as UserRole)}
-                className="bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer font-medium"
-                title="تبديل صلاحية المستخدم (يتطلب رمز PIN للإداريين)"
+              <span
+                className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-xl px-2.5 py-1.5 font-medium"
+                title="إصدار محلي مخصص لحساب مالك واحد"
               >
-                {AVAILABLE_ROLES.map((r) => (
-                  <option key={r.role} value={r.role}>
-                    {r.titleAr.split('(')[0].trim()}
-                  </option>
-                ))}
-              </select>
+                مستخدم واحد
+              </span>
             </div>
           </div>
         </div>

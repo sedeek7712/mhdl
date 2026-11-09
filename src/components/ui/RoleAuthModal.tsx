@@ -10,6 +10,7 @@ interface RoleAuthModalProps {
   onClose: () => void;
   targetRole: UserRole;
   onSuccess: (authenticatedUser: UserProfile) => void;
+  isRequired?: boolean;
 }
 
 export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
@@ -17,6 +18,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
   onClose,
   targetRole,
   onSuccess,
+  isRequired = false,
 }) => {
   const [pin, setPin] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -70,8 +72,8 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pin.trim()) {
-      setErrorMsg('الرمز السري (PIN) إلزامي للتحقق');
+    if (!/^\d{6}$/.test(pin)) {
+      setErrorMsg('أدخل رمز PIN مكوّناً من 6 أرقام بالضبط.');
       return;
     }
 
@@ -79,7 +81,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
     setErrorMsg(null);
 
     try {
-      const res = await apiClient.login(targetRole, pin.trim());
+      const res = await apiClient.login(targetRole, pin);
       if (res.success && res.user) {
         const updatedUser: UserProfile = {
           id: res.user.id || `usr-${targetRole}`,
@@ -109,7 +111,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
   return (
     <div
       onClick={(e) => {
-        if (e.target === e.currentTarget && !isLoading) onClose();
+        if (!isRequired && e.target === e.currentTarget && !isLoading) onClose();
       }}
       className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-55 flex items-center justify-center p-3 sm:p-4 overflow-y-auto no-print"
       dir="rtl"
@@ -127,17 +129,19 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
               {currentRoleInfo.isHighPrivilege ? <ShieldAlert className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
             </div>
             <div>
-              <h3 className="text-sm sm:text-base font-bold text-white">التحقق الأمني من الصلاحيات</h3>
-              <p className="text-[11px] text-slate-400 font-mono">التبديل إلى: {currentRoleInfo.title}</p>
+              <h3 className="text-sm sm:text-base font-bold text-white">{isRequired ? 'تسجيل الدخول الآمن' : 'التحقق الأمني من الصلاحيات'}</h3>
+              <p className="text-[11px] text-slate-400 font-mono">{isRequired ? 'الحساب:' : 'التبديل إلى:'} {currentRoleInfo.title}</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            disabled={isLoading}
-            className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {!isRequired && (
+            <button
+              onClick={onClose}
+              disabled={isLoading}
+              className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         <p className="text-xs text-slate-300 leading-relaxed bg-slate-850 p-3 rounded-xl border border-slate-800">
@@ -155,16 +159,20 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
           <div>
             <label className="block text-xs text-slate-300 mb-1.5 font-medium flex items-center justify-between">
               <span>رمز المرور السري (PIN):</span>
-              <span className="text-[10px] text-slate-500 font-mono">التحقق المباشر عبر الخادم</span>
+              <span className="text-[10px] text-slate-500 font-mono">6 أرقام · التحقق عبر الخادم</span>
             </label>
             <div className="relative">
               <input
                 type="password"
                 maxLength={6}
+                minLength={6}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                autoComplete="off"
                 autoFocus
-                placeholder="••••"
+                placeholder="••••••"
                 value={pin}
-                onChange={(e) => setPin(e.target.value)}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 className="w-full bg-slate-850 border border-slate-700 rounded-xl px-4 py-2.5 text-center text-lg tracking-widest font-mono text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 required
               />
@@ -177,9 +185,11 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
           </div>
 
           <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-2 border-t border-slate-800">
-            <Button variant="secondary" size="md" onClick={onClose} disabled={isLoading} type="button">
-              إلغاء
-            </Button>
+            {!isRequired && (
+              <Button variant="secondary" size="md" onClick={onClose} disabled={isLoading} type="button">
+                إلغاء
+              </Button>
+            )}
             <Button
               variant={currentRoleInfo.isHighPrivilege ? 'amber' : 'primary'}
               size="md"
@@ -187,7 +197,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
               isLoading={isLoading}
               icon={<UserCheck className="w-4 h-4" />}
             >
-              تأكيد المصادقة وتغيير الدور
+              {isRequired ? 'تسجيل الدخول والمتابعة' : 'تأكيد المصادقة وتغيير الدور'}
             </Button>
           </div>
         </form>

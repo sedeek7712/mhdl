@@ -84,6 +84,25 @@ class ApiClient {
     }
   }
 
+  public async getSession(): Promise<{ success: boolean; user?: any; error?: string }> {
+    if (!this.token) {
+      return { success: false, error: 'لا توجد جلسة دخول محفوظة.' };
+    }
+
+    try {
+      const res = await this.fetch('/api/auth/session');
+      const data = await res.json();
+      if (!res.ok || !data.success || !data.user) {
+        this.clearSession();
+        return { success: false, error: data.error || 'انتهت جلسة الدخول أو أصبحت غير صالحة.' };
+      }
+      this.currentUser = data.user;
+      return { success: true, user: data.user };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر التحقق من جلسة الدخول.' };
+    }
+  }
+
   /**
    * استدعاء آمن مع إرفاق رمز المصادقة (Bearer) تلقائياً
    */
@@ -119,14 +138,9 @@ class ApiClient {
     voucherNumber?: string;
     managerOverride?: boolean;
     managerOverrideReason?: string;
-    idempotencyKey?: string;
   }): Promise<{ success: boolean; isDuplicate?: boolean; record?: any; journalEntry?: any; accounts?: any[]; error?: string; message?: string }> {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (payload.idempotencyKey) {
-        headers['X-Idempotency-Key'] = payload.idempotencyKey;
-      }
-
       const res = await this.fetch('/api/remittances/payout', {
         method: 'POST',
         headers,
@@ -137,6 +151,116 @@ class ApiClient {
       return data;
     } catch (err: any) {
       return { success: false, error: err.message || 'تعذر الاتصال بالخادم لصرف الحوالة' };
+    }
+  }
+
+  /**
+   * جلب أسعار الصرف المعتمدة وسجل تدقيقها من الخادم
+   */
+  public async getExchangeRates(): Promise<{
+    success: boolean;
+    rates?: any[];
+    auditLogs?: any[];
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/exchange-rates');
+      const data = await response.json();
+      return response.ok ? data : { success: false, error: data.error || 'تعذر جلب أسعار الصرف المعتمدة.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر الاتصال بخادم أسعار الصرف.' };
+    }
+  }
+
+  /**
+   * تحديث سعر الصرف من المالك/المدير العام مع سجل تدقيق خادمي
+   */
+  public async updateExchangeRate(payload: {
+    rateId: string;
+    buyRate: number;
+    sellRate: number;
+    note: string;
+  }): Promise<{
+    success: boolean;
+    rate?: any;
+    rates?: any[];
+    auditLogs?: any[];
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch(`/api/accounting/exchange-rates/${encodeURIComponent(payload.rateId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          buyRate: payload.buyRate,
+          sellRate: payload.sellRate,
+          note: payload.note,
+        }),
+      });
+      const data = await response.json();
+      return response.ok ? data : { success: false, error: data.error || 'رفض الخادم تحديث سعر الصرف.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر الاتصال بخادم أسعار الصرف.' };
+    }
+  }
+
+  public async getActiveCashierShift(): Promise<{
+    success: boolean;
+    activeShift?: any | null;
+    history?: any[];
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/shifts/active');
+      const data = await response.json();
+      return response.ok ? data : { success: false, error: data.error || 'تعذر جلب الوردية من الخادم.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر الاتصال بخادم الورديات.' };
+    }
+  }
+
+  public async openCashierShift(payload: { idempotencyKey: string }): Promise<{
+    success: boolean;
+    shift?: any;
+    replayed?: boolean;
+    outcomeUncertain?: boolean;
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return { ...data, outcomeUncertain: !response.ok && response.status >= 500 };
+    } catch (error: any) {
+      return { success: false, outcomeUncertain: true, error: error.message || 'انقطع الاتصال أثناء فتح الوردية؛ أعد الطلب بالمفتاح نفسه.' };
+    }
+  }
+
+  public async closeCashierShift(payload: {
+    idempotencyKey: string;
+    shiftId: string;
+    actualBalances: Record<string, number>;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    shift?: any;
+    replayed?: boolean;
+    outcomeUncertain?: boolean;
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/shifts/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return { ...data, outcomeUncertain: !response.ok && response.status >= 500 };
+    } catch (error: any) {
+      return { success: false, outcomeUncertain: true, error: error.message || 'انقطع الاتصال أثناء إقفال الوردية؛ أعد الطلب بالمفتاح نفسه.' };
     }
   }
 
@@ -167,6 +291,53 @@ class ApiClient {
   }
 
   /**
+   * تنفيذ صرافة العملات باستخدام سعر معتمد ودفتر الخادم فقط
+   */
+  public async executeExchange(payload: {
+    idempotencyKey: string;
+    rateId: string;
+    rateMode: 'buy' | 'sell';
+    sourceCurrency: string;
+    targetCurrency: string;
+    sourceAmount: number;
+    commission: number;
+    customerName: string;
+    customerPhone: string;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    effectiveRate?: number;
+    grossTargetAmount?: number;
+    targetAmount?: number;
+    voucherNumber?: string;
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/exchanges', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تنفيذ الصرافة؛ قد تكون العملية حُفظت في الخادم.',
+      };
+    }
+  }
+
+  /**
    * تغذية صندوق الكاشير من الخزينة المركزية بقيد خادمي معتمد
    */
   public async fundCashierDrawer(payload: {
@@ -174,7 +345,17 @@ class ApiClient {
     toAccountId: string;
     amount: number;
     currency: string;
-  }): Promise<{ success: boolean; journalEntry?: any; accounts?: any[]; error?: string; message?: string }> {
+    idempotencyKey: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    message?: string;
+    errorCode?: string;
+    doNotRetry?: boolean;
+    outcomeUncertain?: boolean;
+  }> {
     try {
       const res = await this.fetch('/api/accounting/fund-drawer', {
         method: 'POST',
@@ -182,9 +363,174 @@ class ApiClient {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      return data;
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!res.ok && res.status >= 500),
+      };
     } catch (err: any) {
-      return { success: false, error: err.message || 'تعذر الاتصال بالخادم لتغذية الصندوق' };
+      // A lost HTTP response may occur after the server has already committed the transfer.
+      // Preserve the caller's idempotency key and do not treat this as a definitive rejection.
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: err.message || 'تعذر الاتصال بالخادم لتغذية الصندوق؛ قد تكون نتيجة الطلب غير محسومة.',
+      };
+    }
+  }
+
+  public async registerOutgoingRemittance(payload: {
+    idempotencyKey: string;
+    manualTransferNumber?: string;
+    senderName: string;
+    senderPhone: string;
+    recipientName: string;
+    recipientPhone: string;
+    networkName: string;
+    amount: number;
+    currency: string;
+    feeAmount: number;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    record?: any;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    replayed?: boolean;
+    settings?: any;
+  }> {
+    try {
+      const response = await this.fetch('/api/remittances/outgoing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تسجيل الحوالة الصادرة؛ قد تكون العملية حفظت في الخادم.',
+      };
+    }
+  }
+
+  public async registerIncomingRemittance(payload: {
+    transferNumber: string;
+    senderName: string;
+    senderPhone: string;
+    recipientName: string;
+    recipientPhone: string;
+    networkName: string;
+    amount: number;
+    currency: string;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    record?: any;
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    replayed?: boolean;
+  }> {
+    try {
+      const response = await this.fetch('/api/remittances/incoming', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تسجيل الحوالة؛ قد يكون الخادم قد حفظها بالفعل.',
+      };
+    }
+  }
+
+  public async executeOperatingExpense(payload: {
+    expenseType: string;
+    amount: number;
+    currency: string;
+    notes: string;
+    idempotencyKey: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    message?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء اعتماد المصروف؛ قد تكون النتيجة غير محسومة.',
+      };
+    }
+  }
+
+  public async executeInternalTransfer(payload: {
+    fromAccountId: string;
+    toAccountId: string;
+    currency: string;
+    amount: number;
+    description: string;
+    idempotencyKey: string;
+  }): Promise<{
+    success: boolean;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    message?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/internal-transfers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تنفيذ المناقلة؛ قد تكون نتيجة العملية غير محسومة.',
+      };
     }
   }
 

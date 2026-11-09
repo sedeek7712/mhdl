@@ -9,7 +9,21 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts",
+    "setup:owner": "node --import tsx scripts/bootstrapOwner.ts",
+    "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts",
+    "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts",
+    "setup:chart-of-accounts": "node --import tsx scripts/reconcileChartOfAccounts.ts",
+    "test:chart-reconciliation": "node --import tsx --test tests/chartOfAccountsMigration.test.ts",
+    "test:operating-expense": "node --import tsx --test tests/operatingExpense.test.ts",
+    "test:incoming-remittances": "node --import tsx --test tests/incomingRemittanceRegistration.test.ts",
+    "test:outgoing-remittances": "node --import tsx --test tests/outgoingRemittance.test.ts",
+    "test:exchange-accounting": "node --import tsx --test tests/exchangeAccounting.test.ts",
+    "test:exchange-rate-registry": "node --import tsx --test tests/exchangeRateRegistry.test.ts",
+    "test:server-exchange": "node --import tsx --test tests/serverExchange.test.ts",
+    "test:cashier-shifts": "node --import tsx --test tests/serverCashBoxShift.test.ts",
+    "test:http-integration": "node --import tsx --test tests/serverHttpIntegration.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

@@ -8,7 +8,7 @@ interface ExchangeRatesModalProps {
   currentUser: UserProfile;
   isOpen: boolean;
   onClose: () => void;
-  onUpdateRate: (rateId: string, newBuyRate: number, newSellRate: number, note?: string) => void;
+  onUpdateRate: (rateId: string, newBuyRate: number, newSellRate: number, note?: string) => Promise<boolean> | boolean;
 }
 
 export const ExchangeRatesModal: React.FC<ExchangeRatesModalProps> = ({
@@ -36,10 +36,10 @@ export const ExchangeRatesModal: React.FC<ExchangeRatesModalProps> = ({
     setEditNote('تعديل اعتيادي تماشياً مع حركة السوق المصرفي');
   };
 
-  const handleSaveEdit = (rateId: string) => {
+  const handleSaveEdit = async (rateId: string) => {
     if (editBuy <= 0 || editSell <= 0) return;
-    onUpdateRate(rateId, editBuy, editSell, editNote);
-    setEditingRateId(null);
+    const saved = await onUpdateRate(rateId, editBuy, editSell, editNote);
+    if (saved) setEditingRateId(null);
   };
 
   return (
