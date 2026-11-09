@@ -20,6 +20,7 @@ import {
 import { serverAccountingEngine, CurrencyCode } from './src/server/services/serverAccountingEngine.js';
 import { serverExchangeRateRegistry } from './src/server/services/serverExchangeRateRegistry.js';
 import { serverCashBoxShiftRegistry } from './src/server/services/serverCashBoxShiftRegistry.js';
+import { resolveAuthoritativeVoucher } from './src/server/services/authoritativeVoucher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -261,6 +262,7 @@ export async function startServer(options: { port?: number; host?: string; useVi
   app.post(
     '/api/whatsapp/dispatch-voucher',
     requireAuth,
+    requireRoles(['teller', 'branch_manager', 'general_manager', 'owner']),
     dispatchRateLimiter,
     async (req: any, res: Response) => {
       try {
@@ -269,16 +271,82 @@ export async function startServer(options: { port?: number; host?: string; useVi
           transactionId,
           voucherType,
           recipientPhone,
-          caption,
           imageData,
           snapshot,
           forceRetry = false,
         } = req.body;
 
-        if (!voucherNumber || !recipientPhone) {
+        if (typeof voucherNumber !== 'string' || !voucherNumber.trim() ||
+            typeof transactionId !== 'string' || !transactionId.trim() ||
+            typeof voucherType !== 'string' ||
+            typeof recipientPhone !== 'string' || !/^\\+?\\d{8,15}$/.test(recipientPhone.trim())) {
           return res.status(400).json({
             success: false,
-            error: 'رقم السند ورقم هاتف المستلم حقول إلزامية',
+            error: 'رقم السند ورقم العملية ونوع السند ورقم هاتف صحيح حقول إلزامية',
+          });
+        }
+        if (forceRetry !== false && forceRetry !== true) {
+          return res.status(400).json({ success: false, error: 'قيمة إعادة الإرسال غير صالحة.' });
+        }
+
+        const authenticatedUser = req.user as AuthenticatedUser;
+        let voucherSnapshot: WhatsAppVoucherSnapshot;
+        try {
+          const masterRemittance = remittanceRegistry.getMasterRemittance(transactionId);
+          const payoutRecord = remittanceRegistry.getPayoutRecord(transactionId);
+          const verified = resolveAuthoritativeVoucher({
+            input: {
+              voucherNumber,
+              transactionId,
+              voucherType,
+              recipientPhone,
+              snapshot: snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+                ? snapshot as Record<string, unknown>
+                : undefined,
+            },
+            actor: {
+              id: authenticatedUser.id,
+              name: authenticatedUser.name,
+              role: authenticatedUser.role,
+              branchId: authenticatedUser.branchId,
+              branchName: authenticatedUser.branchName,
+            },
+            journalEntries: serverAccountingEngine.getJournalEntries(),
+            accountIds: serverAccountingEngine.getAccounts().map((account) => account.id),
+            masterRemittance,
+            payoutRecord,
+          });
+          voucherSnapshot = {
+            voucherNumber: verified.voucherNumber,
+            transactionId: verified.transactionId,
+            type: verified.type,
+            date: verified.date,
+            time: verified.time,
+            partyName: verified.partyName,
+            partyPhone: verified.partyPhone || '',
+            amount: verified.amount,
+            currency: verified.currency,
+            amountInWordsAr: '',
+            branchName: verified.branchName,
+            tellerName: verified.tellerName,
+            referenceNumber: verified.referenceNumber,
+            senderName: verified.senderName,
+            recipientName: verified.recipientName,
+            recipientPhone: verified.recipientPhone,
+            networkName: verified.networkName,
+            commission: verified.commission,
+            receivedAmount: verified.receivedAmount,
+            receivedCurrency: verified.receivedCurrency,
+            exchangeRate: verified.exchangeRate,
+            notes: verified.notes,
+          };
+        } catch (verificationError) {
+          return res.status(409).json({
+            success: false,
+            errorCode: 'VOUCHER_LEDGER_MISMATCH',
+            error: verificationError instanceof Error
+              ? verificationError.message
+              : 'تعذر مطابقة السند مع دفتر الأستاذ.',
           });
         }
 
@@ -360,32 +428,15 @@ export async function startServer(options: { port?: number; host?: string; useVi
         const sha256 = dispatchRegistry.calculateSha256(buffer);
         const storageKey = dispatchRegistry.archiveVoucherImage(buffer, voucherNumber, sha256);
 
-        // Bind teller to authenticated session (FIND-002/003)
-        const authenticatedUser = req.user as AuthenticatedUser;
-
-        const voucherSnapshot: WhatsAppVoucherSnapshot = snapshot || {
-          voucherNumber,
-          transactionId: transactionId || voucherNumber,
-          type: voucherType || 'exchange',
-          date: new Date().toISOString().split('T')[0],
-          time: new Date().toTimeString().split(' ')[0],
-          partyName: 'عميل',
-          partyPhone: recipientPhone,
-          amount: 0,
-          currency: 'YER',
-          amountInWordsAr: '',
-          branchName: authenticatedUser.branchName || 'الفرع الرئيسي',
-          tellerName: authenticatedUser.name || 'الصراف المعتمد',
-          referenceNumber: voucherNumber,
-        };
-
-        // Step 4: Create or update dispatch record in registry
+        // Step 4: Create a server-derived snapshot; ignore client-supplied financial captions.
+        const authoritativeCaption =
+          `سند ${voucherSnapshot.type} رقم ${voucherSnapshot.voucherNumber} | ${voucherSnapshot.amount} ${voucherSnapshot.currency} | ${voucherSnapshot.partyName}`;
         const record = dispatchRegistry.createOrUpdateAttempt({
           voucherNumber,
-          transactionId: transactionId || voucherNumber,
-          voucherType: voucherType || 'exchange',
+          transactionId,
+          voucherType: voucherSnapshot.type,
           recipientPhone,
-          caption: caption || `سند مالي رسمي معتمد - شركة عمرو النماري للصرافة رقم ${voucherNumber}`,
+          caption: authoritativeCaption,
           sha256,
           fileSizeBytes: buffer.length,
           storageKey,
@@ -751,7 +802,7 @@ export async function startServer(options: { port?: number; host?: string; useVi
         tellerId: authenticatedUser.id,
         tellerName: authenticatedUser.name,
         tellerRole: authenticatedUser.role,
-        tellerBranch: authenticatedUser.branchName,
+        tellerBranch: authenticatedUser.branchId,
         amount: Number(amount) || Number(clientAmount) || 0,
         currency: currency || clientCurrency || 'YER',
         clientAmount: typeof clientAmount === 'number' ? clientAmount : (typeof amount === 'number' ? amount : undefined),
