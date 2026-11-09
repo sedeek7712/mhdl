@@ -26,6 +26,7 @@ interface OwnerRecord extends ExistingOwner {
   pinHash: string;
   isActive: true;
   mustChangePin: false;
+  sessionVersion: string;
   createdAt: string;
 }
 
@@ -168,6 +169,7 @@ async function main(): Promise<void> {
     pinHash: createPinHash(pin, pinSalt),
     isActive: true,
     mustChangePin: false,
+    sessionVersion: crypto.randomBytes(16).toString('hex'),
     createdAt: owner.createdAt || getYemenDateTimeString(),
   };
 
