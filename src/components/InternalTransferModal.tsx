@@ -14,7 +14,7 @@ interface InternalTransferModalProps {
     currency: CurrencyCode;
     amount: number;
     description: string;
-  }) => void;
+  }) => Promise<boolean>;
 }
 
 export const InternalTransferModal: React.FC<InternalTransferModalProps> = ({
@@ -29,6 +29,7 @@ export const InternalTransferModal: React.FC<InternalTransferModalProps> = ({
   const [currency, setCurrency] = useState<CurrencyCode>('SAR');
   const [amount, setAmount] = useState<number>(0);
   const [description, setDescription] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
@@ -37,18 +38,24 @@ export const InternalTransferModal: React.FC<InternalTransferModalProps> = ({
   const availableInFrom = fromAcc.balances[currency] || 0;
   const isLiquiditySufficient = availableInFrom >= amount;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (amount <= 0 || !isLiquiditySufficient || fromAccountId === toAccountId) return;
+    if (isSubmitting || amount <= 0 || !Number.isFinite(amount) ||
+        !isLiquiditySufficient || fromAccountId === toAccountId) return;
 
-    onExecuteTransfer({
-      fromAccountId,
-      toAccountId,
-      currency,
-      amount,
-      description: description.trim() || 'تحويل مالي داخلي بين الحسابات',
-    });
-    onClose();
+    setIsSubmitting(true);
+    try {
+      const accepted = await onExecuteTransfer({
+        fromAccountId,
+        toAccountId,
+        currency,
+        amount,
+        description: description.trim() || 'تحويل مالي داخلي بين الحسابات',
+      });
+      if (accepted) onClose();
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -85,7 +92,7 @@ export const InternalTransferModal: React.FC<InternalTransferModalProps> = ({
                 className="w-full bg-slate-850 border border-slate-700 rounded-xl px-3 py-2.5 min-h-[44px] text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
               >
                 {accounts
-                  .filter((a) => a.type === 'asset' || a.category === 'bank')
+                  .filter((a) => a.type === 'asset')
                   .map((acc) => (
                     <option key={acc.id} value={acc.id} disabled={acc.id === toAccountId}>
                       {acc.code} - {acc.nameAr}
@@ -170,17 +177,18 @@ export const InternalTransferModal: React.FC<InternalTransferModalProps> = ({
             <button
               type="button"
               onClick={onClose}
+              disabled={isSubmitting}
               className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 rounded-xl text-xs font-semibold cursor-pointer"
             >
               إلغاء
             </button>
             <button
               type="submit"
-              disabled={!isLiquiditySufficient || amount <= 0}
+              disabled={isSubmitting || !isLiquiditySufficient || amount <= 0 || fromAccountId === toAccountId}
               className="min-h-[44px] px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-950/40 cursor-pointer"
             >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>تنفيذ التحويل وتوليد القيد المزدوج</span>
+              {isSubmitting ? <span className="animate-spin border-2 border-white/30 border-t-white rounded-full w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+              <span>{isSubmitting ? 'جارٍ اعتماد المناقلة من الخادم...' : 'تنفيذ المناقلة والقيد المزدوج'}</span>
             </button>
           </div>
         </form>
