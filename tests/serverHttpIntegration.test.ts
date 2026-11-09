@@ -42,7 +42,9 @@ test('real HTTP routes enforce authentication, RBAC, active shifts, idempotency 
   const zero = { YER_OLD: 0, YER_NEW: 0, SAR: 0, USD: 0 };
   const accounts = [
     { id: 'acc-1101', code: '1101', nameAr: 'الخزينة الرئيسية', type: 'asset', category: 'cash_box', balances: { ...zero } },
-    { id: 'acc-1102', code: '1102', nameAr: 'صندوق الكاشير', type: 'asset', category: 'cash_box', balances: { ...zero } },
+    { id: 'acc-1102', code: '1102', nameAr: 'صندوق الكاشير', type: 'asset', category: 'cash_box', balances: { ...zero, YER_OLD: 10000 } },
+    { id: 'acc-2101', code: '2101', nameAr: 'أمانات العملاء ووسيط التسوية', type: 'liability', category: 'customer', balances: { ...zero } },
+    { id: 'acc-4101', code: '4101', nameAr: 'إيرادات عمولات الصرافة', type: 'revenue', category: 'commission', balances: { ...zero } },
   ];
   const openingBalances = Object.fromEntries(accounts.map((account) => [
     account.id,
@@ -71,6 +73,19 @@ test('real HTTP routes enforce authentication, RBAC, active shifts, idempotency 
   writeJson(dataDirectory, 'remittance_payouts_registry.json', []);
   writeJson(dataDirectory, 'remittance_audit_logs.json', []);
   writeJson(dataDirectory, 'remittances_master.json', []);
+  writeJson(dataDirectory, 'exchange_rate_state.json', {
+    schemaVersion: 1,
+    rates: [{
+      id: 'rate-usd-old',
+      fromCurrency: 'USD',
+      toCurrency: 'YER_OLD',
+      buyRate: 535,
+      sellRate: 538,
+      updatedAt: '2026-11-09 00:00',
+      updatedBy: owner.name,
+    }],
+    auditLogs: [],
+  });
 
   let httpServer: any;
   let rbacServer: any;
@@ -153,7 +168,7 @@ test('real HTTP routes enforce authentication, RBAC, active shifts, idempotency 
   const openedBody = await opened.json() as any;
   assert.equal(openedBody.success, true);
   const shiftId = openedBody.shift.id as string;
-  assert.equal(openedBody.shift.openingBalances.YER_OLD, 0);
+  assert.equal(openedBody.shift.openingBalances.YER_OLD, 10000);
 
   const replayedOpen = await openRequest();
   assert.equal(replayedOpen.status, 200);
@@ -173,6 +188,51 @@ test('real HTTP routes enforce authentication, RBAC, active shifts, idempotency 
   });
   assert.equal(afterOpenInvalidExchange.status, 400, 'open shift should pass the shift guard and reach endpoint validation');
 
+  const exchangeKey = crypto.randomUUID();
+  const exchangeRequest = {
+    idempotencyKey: exchangeKey,
+    rateId: 'rate-usd-old',
+    rateMode: 'buy',
+    sourceCurrency: 'USD',
+    targetCurrency: 'YER_OLD',
+    sourceAmount: 10,
+    commission: 50,
+    customerName: 'عميل HTTP',
+    customerPhone: '700000000',
+    notes: 'اختبار HTTP لعملية الصرافة',
+  };
+  const executeExchange = () => fetch(`${baseUrl}/api/accounting/exchanges`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify(exchangeRequest),
+  });
+  const exchange = await executeExchange();
+  assert.equal(exchange.status, 200);
+  const exchangeBody = await exchange.json() as any;
+  assert.equal(exchangeBody.success, true);
+  assert.equal(exchangeBody.effectiveRate, 535);
+  assert.equal(exchangeBody.grossTargetAmount, 5350);
+  assert.equal(exchangeBody.targetAmount, 5300);
+  const journalId = exchangeBody.journalEntry.id;
+
+  const replayedExchange = await executeExchange();
+  assert.equal(replayedExchange.status, 200);
+  assert.equal((await replayedExchange.json() as any).journalEntry.id, journalId);
+
+  const mismatchedExchange = await fetch(`${baseUrl}/api/accounting/exchanges`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ ...exchangeRequest, commission: 60 }),
+  });
+  assert.equal(mismatchedExchange.status, 400);
+  const ledgerResponse = await fetch(`${baseUrl}/api/accounting/accounts`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const ledgerBody = await ledgerResponse.json() as any;
+  const cashier = ledgerBody.accounts.find((account: any) => account.id === 'acc-1102');
+  assert.equal(cashier.balances.YER_OLD, 4700);
+  assert.equal(cashier.balances.USD, 10);
+
   const closeKey = crypto.randomUUID();
   const closeRequest = (notes: string) => fetch(`${baseUrl}/api/accounting/shifts/close`, {
     method: 'POST',
@@ -180,7 +240,7 @@ test('real HTTP routes enforce authentication, RBAC, active shifts, idempotency 
     body: JSON.stringify({
       idempotencyKey: closeKey,
       shiftId,
-      actualBalances: { ...zero, YER_OLD: 10 },
+      actualBalances: { ...zero, YER_OLD: 4690, USD: 10 },
       notes,
     }),
   });
