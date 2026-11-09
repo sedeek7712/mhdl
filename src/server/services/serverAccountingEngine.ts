@@ -5,6 +5,7 @@
  */
 
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
 
@@ -13,6 +14,7 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../../data');
 const ACCOUNTS_FILE = path.resolve(DATA_DIR, 'accounts_ledger.json');
 const JOURNAL_FILE = path.resolve(DATA_DIR, 'journal_entries.json');
+const PENDING_FINANCIAL_TRANSACTION_FILE = path.resolve(DATA_DIR, 'financial_transaction_pending.json');
 
 export type CurrencyCode = 'YER_OLD' | 'YER_NEW' | 'SAR' | 'USD';
 
@@ -49,6 +51,8 @@ export interface ServerJournalEntry {
 }
 
 class ServerAccountingEngine {
+  private storageWriteBlocked = false;
+  private activeTransactionId: string | null = null;
   private accounts: Map<string, ServerAccount> = new Map();
   private journalEntries: ServerJournalEntry[] = [];
 
@@ -57,6 +61,18 @@ class ServerAccountingEngine {
   }
 
   private loadState(): void {
+    // A surviving marker means the previous process stopped during a multi-file financial commit.
+    // Never clear it automatically: require manual ledger reconciliation first.
+    if (fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
+      let transactionDetails = 'تفاصيل المعاملة غير متاحة';
+      try {
+        transactionDetails = fs.readFileSync(PENDING_FINANCIAL_TRANSACTION_FILE, 'utf8').slice(0, 1000);
+      } catch {
+        // The presence of the marker is enough to stop startup.
+      }
+      throw new Error(`توقف آمن: توجد معاملة مالية غير مكتملة. لا تحذف علامة الاسترداد ولا تعاود الصرف قبل مطابقة الملفات يدوياً. التفاصيل: ${transactionDetails}`);
+    }
+
     // الدفاتر المالية ملفات إلزامية: لا ننشئ أرصدة افتراضية عند فقدانها أو تلفها.
     const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, [], {
       failOnCorruption: true,
@@ -109,6 +125,66 @@ class ServerAccountingEngine {
     this.journalEntries = loadedJournalEntries;
   }
 
+  public beginFinancialTransaction(metadata: {
+    operation: string;
+    referenceId: string;
+    amount?: number;
+    currency?: string;
+    actorId?: string;
+  }): { success: boolean; transactionId?: string; error?: string } {
+    if (this.storageWriteBlocked) {
+      return { success: false, error: 'الكتابة المالية متوقفة بسبب حالة حفظ غير محسومة. أوقف النظام واطلب مطابقة الدفاتر قبل المتابعة.' };
+    }
+    if (this.activeTransactionId || fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE)) {
+      this.storageWriteBlocked = true;
+      return { success: false, error: 'توجد معاملة مالية أخرى غير مكتملة؛ تم إيقاف العمليات المالية.' };
+    }
+
+    const transactionId = crypto.randomUUID();
+    try {
+      safeAtomicWriteJson(PENDING_FINANCIAL_TRANSACTION_FILE, {
+        transactionId,
+        ...metadata,
+        startedAt: getYemenDateTimeString(),
+        status: 'PENDING',
+      });
+      this.activeTransactionId = transactionId;
+      return { success: true, transactionId };
+    } catch (error: any) {
+      this.storageWriteBlocked = true;
+      return { success: false, error: `تعذر إنشاء علامة حماية المعاملة؛ تم تعطيل الكتابة المالية: ${error.message}` };
+    }
+  }
+
+  public completeFinancialTransaction(transactionId: string): { success: boolean; error?: string } {
+    if (!this.activeTransactionId || this.activeTransactionId !== transactionId) {
+      this.storageWriteBlocked = true;
+      return { success: false, error: 'تعذر مطابقة معرّف المعاملة المالية النشطة؛ تم إيقاف الكتابة.' };
+    }
+
+    try {
+      fs.unlinkSync(PENDING_FINANCIAL_TRANSACTION_FILE);
+      this.activeTransactionId = null;
+      return { success: true };
+    } catch (error: any) {
+      this.storageWriteBlocked = true;
+      return { success: false, error: `تعذر إزالة علامة المعاملة بعد الحفظ؛ يلزم فحص يدوي: ${error.message}` };
+    }
+  }
+
+  public cancelFinancialTransaction(transactionId: string): { success: boolean; error?: string } {
+    // Safe only before any financial file has been changed.
+    return this.completeFinancialTransaction(transactionId);
+  }
+
+  public markFinancialRecoveryRequired(): void {
+    this.storageWriteBlocked = true;
+  }
+
+  public isFinancialWriteBlocked(): boolean {
+    return this.storageWriteBlocked;
+  }
+
   public getAccounts(): ServerAccount[] {
     return Array.from(this.accounts.values()).map((a) => ({
       ...a,
@@ -145,7 +221,11 @@ class ServerAccountingEngine {
     branchId?: string;
     managerOverrideApproved?: boolean;
     managerOverrideBy?: string;
-  }): { success: boolean; journalEntry?: ServerJournalEntry; cashierBalanceAfter?: number; error?: string } {
+  }): { success: boolean; journalEntry?: ServerJournalEntry; cashierBalanceAfter?: number; error?: string; errorCode?: 'COMMIT_PENDING_RECOVERY' } {
+    if (this.storageWriteBlocked) {
+      return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: 'الكتابة المالية متوقفة بسبب معاملة سابقة غير محسومة. لا تعاود العملية؛ يلزم إيقاف النظام ومطابقة الدفاتر.' };
+    }
+
     const cashier = this.accounts.get('acc-1102');
     if (!cashier) {
       return { success: false, error: 'حساب صندوق الكاشير (acc-1102) غير مهيأ في الخادم.' };
@@ -199,6 +279,21 @@ class ServerAccountingEngine {
       return { success: false, error: 'خطأ محاسبي حرج: القيد غير متوازن.' };
     }
 
+    let ownTransactionId: string | null = null;
+    if (!this.activeTransactionId) {
+      const started = this.beginFinancialTransaction({
+        operation: 'remittance_payout',
+        referenceId: params.transferNumber,
+        amount: params.amount,
+        currency: params.currency,
+        actorId: params.tellerId,
+      });
+      if (!started.success || !started.transactionId) {
+        return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: started.error || 'تعذر بدء المعاملة المالية.' };
+      }
+      ownTransactionId = started.transactionId;
+    }
+
     // تحديث الأرصدة
     cashier.balances[params.currency] = (cashier.balances[params.currency] || 0) - params.amount;
     networkAccount.balances[params.currency] = (networkAccount.balances[params.currency] || 0) + params.amount;
@@ -228,7 +323,23 @@ class ServerAccountingEngine {
       cashier.balances[params.currency] += params.amount;
       networkAccount.balances[params.currency] -= params.amount;
       this.journalEntries.shift();
-      return { success: false, error: `فشل الحفظ الذري لدفتر الأستاذ: ${err.message}` };
+      this.storageWriteBlocked = true;
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ ملفات الدفتر ضمن معاملة مالية معلّمة. لا تعاود الصرف؛ يلزم إيقاف النظام ومطابقة الحسابات والقيود. ${err.message}`,
+      };
+    }
+
+    if (ownTransactionId) {
+      const completed = this.completeFinancialTransaction(ownTransactionId);
+      if (!completed.success) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: completed.error || 'تعذر اعتماد اكتمال حفظ المعاملة المالية.',
+        };
+      }
     }
 
     return {
@@ -248,7 +359,11 @@ class ServerAccountingEngine {
     currency: CurrencyCode;
     operatorName: string;
     branchId?: string;
-  }): { success: boolean; journalEntry?: ServerJournalEntry; error?: string } {
+  }): { success: boolean; journalEntry?: ServerJournalEntry; error?: string; errorCode?: 'COMMIT_PENDING_RECOVERY' } {
+    if (this.storageWriteBlocked) {
+      return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: 'الكتابة المالية متوقفة بسبب معاملة سابقة غير محسومة. لا تعاود العملية؛ يلزم إيقاف النظام ومطابقة الدفاتر.' };
+    }
+
     const fromAcc = this.accounts.get(params.fromAccountId);
     const toAcc = this.accounts.get(params.toAccountId);
 
@@ -272,6 +387,16 @@ class ServerAccountingEngine {
     const [dateStr, timeStr] = yemenTime.split(' ');
     const nextSeq = this.journalEntries.length + 1;
     const entryNumber = `JV-FUND-${new Date().getFullYear()}-${String(nextSeq).padStart(4, '0')}`;
+
+    const started = this.beginFinancialTransaction({
+      operation: 'cashier_drawer_funding',
+      referenceId: `${params.fromAccountId}->${params.toAccountId}`,
+      amount: params.amount,
+      currency: params.currency,
+    });
+    if (!started.success || !started.transactionId) {
+      return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: started.error || 'تعذر بدء المعاملة المالية.' };
+    }
 
     fromAcc.balances[params.currency] -= params.amount;
     toAcc.balances[params.currency] = (toAcc.balances[params.currency] || 0) + params.amount;
@@ -318,7 +443,17 @@ class ServerAccountingEngine {
       fromAcc.balances[params.currency] += params.amount;
       toAcc.balances[params.currency] -= params.amount;
       this.journalEntries.shift();
-      return { success: false, error: err.message };
+      this.storageWriteBlocked = true;
+      return {
+        success: false,
+        errorCode: 'COMMIT_PENDING_RECOVERY',
+        error: `فشل حفظ معاملة تغذية الصندوق؛ لا تعاود التغذية قبل مطابقة الدفاتر. ${err.message}`,
+      };
+    }
+
+    const completed = this.completeFinancialTransaction(started.transactionId);
+    if (!completed.success) {
+      return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: completed.error, journalEntry: newJournalEntry };
     }
 
     return { success: true, journalEntry: newJournalEntry };
