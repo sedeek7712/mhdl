@@ -182,7 +182,10 @@ class ServerAccountingEngine {
   }
 
   public isFinancialWriteBlocked(): boolean {
-    return this.storageWriteBlocked;
+    // A marker or active transaction blocks every API write, including other registry mutations.
+    return this.storageWriteBlocked ||
+      this.activeTransactionId !== null ||
+      fs.existsSync(PENDING_FINANCIAL_TRANSACTION_FILE);
   }
 
   public getAccounts(): ServerAccount[] {
