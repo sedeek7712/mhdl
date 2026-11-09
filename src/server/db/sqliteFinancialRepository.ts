@@ -40,6 +40,7 @@ export interface SqliteJournalEntryInput {
   grossTargetAmountMilli?: number;
   targetAmountMilli?: number;
   voucherNumber?: string;
+  customerPhone?: string;
   lines: SqliteJournalLineInput[];
   /** False only when importing historical entries after seeding the current balance snapshot. */
   applyBalanceMovements?: boolean;
@@ -229,6 +230,7 @@ export function insertBalancedJournalEntry(
     grossTargetAmountMilli: entry.grossTargetAmountMilli ?? null,
     targetAmountMilli: entry.targetAmountMilli ?? null,
     voucherNumber: entry.voucherNumber ?? null,
+    customerPhone: entry.customerPhone ?? null,
     lines: normalizedLines,
   };
   const fingerprint = crypto.createHash('sha256')
@@ -269,8 +271,8 @@ export function insertBalancedJournalEntry(
         id, entry_number, entry_date, entry_time, description_ar, reference_type,
         reference_id, branch_id, created_by, created_by_id, is_balanced,
         idempotency_key, request_fingerprint, exchange_rate_micro,
-        gross_target_amount_milli, target_amount_milli, voucher_number, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+        gross_target_amount_milli, target_amount_milli, voucher_number, customer_phone, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       entry.id,
       entry.entryNumber,
@@ -288,6 +290,7 @@ export function insertBalancedJournalEntry(
       entry.grossTargetAmountMilli ?? null,
       entry.targetAmountMilli ?? null,
       entry.voucherNumber || null,
+      entry.customerPhone || null,
       new Date().toISOString()
     );
 
