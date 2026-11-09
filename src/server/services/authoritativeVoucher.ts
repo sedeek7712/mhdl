@@ -365,8 +365,7 @@ function resolvePayout(
       payout.journalEntryReference !== entry.entryNumber ||
       entry.referenceType !== 'transfer_payout' ||
       normalizeNumber(entry.referenceId) !== transferNumber ||
-      entry.branchId !== actor.branchId ||
-      master.branchName !== actor.branchName) {
+      entry.branchId !== actor.branchId) {
     fail('سند صرف الحوالة الواردة لا يطابق سجل الصرف والقيد المحاسبي.');
   }
   assertActorScope(entry, actor);
