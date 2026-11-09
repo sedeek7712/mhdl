@@ -306,3 +306,54 @@ test('rejects an incoming remittance that has not actually been paid', () => {
     recipientPhone: '+967700000002',
   }, entry, { masterRemittance: master }), /قبل تسجيل الصرف/);
 });
+
+test('builds internal-transfer vouchers only from the two balanced server account lines', () => {
+  const voucherNumber = 'V-TRF-001';
+  const entry: VoucherJournalEntry = {
+    id: 'journal-internal-1',
+    entryNumber: 'JV-TRF-2026-0001',
+    date: '2026-11-10',
+    time: '11:15',
+    descriptionAr: 'مناقلة داخلية: تغذية صندوق الكاشير',
+    referenceType: 'internal_transfer',
+    referenceId: voucherNumber,
+    voucherNumber,
+    branchId: actor.branchId,
+    createdBy: actor.name,
+    isBalanced: true,
+    lines: [
+      { accountId: 'acc-1102', accountNameAr: 'صندوق الكاشير', currency: 'YER_OLD', debit: 25000, credit: 0 },
+      { accountId: 'acc-1301', accountNameAr: 'الخزينة المركزية', currency: 'YER_OLD', debit: 0, credit: 25000 },
+    ],
+  };
+  const result = resolve({
+    voucherNumber,
+    transactionId: voucherNumber,
+    voucherType: 'transfer_outgoing',
+    recipientPhone: '+967700000003',
+    snapshot: {
+      voucherNumber,
+      transactionId: voucherNumber,
+      type: 'transfer_outgoing',
+      referenceNumber: voucherNumber,
+      partyName: 'صندوق الكاشير',
+      senderName: 'الخزينة المركزية',
+      recipientName: 'صندوق الكاشير',
+      amount: 25000,
+      currency: 'YER_OLD',
+    },
+  }, entry);
+
+  assert.equal(result.amount, 25000);
+  assert.equal(result.senderName, 'الخزينة المركزية');
+  assert.equal(result.recipientName, 'صندوق الكاشير');
+});
+
+test('rejects a voucher without a linked server journal entry', () => {
+  assert.throws(() => resolve({
+    voucherNumber: 'V-FAKE-001',
+    transactionId: 'V-FAKE-001',
+    voucherType: 'transfer_outgoing',
+    recipientPhone: '+967700000003',
+  }, exchangeEntry()), /لم يتم العثور على عملية مالية معتمدة/);
+});
