@@ -283,7 +283,10 @@ class AuthService {
     pin?: string,
     ip = '127.0.0.1'
   ): { success: boolean; token?: string; user?: AuthenticatedUser; error?: string; locked?: boolean } {
-    const lockKey = `${roleOrUsername}:${ip}`;
+    const user = this.findUser(roleOrUsername);
+    // Bind aliases (for example, "owner" and the owner's username) to one lockout counter.
+    const lockIdentity = user?.id || String(roleOrUsername).trim().toLowerCase();
+    const lockKey = `${lockIdentity}:${ip}`;
     const now = Date.now();
     const failRecord = this.failedLogins.get(lockKey);
 
@@ -302,7 +305,6 @@ class AuthService {
       };
     }
 
-    const user = this.findUser(roleOrUsername);
     if (!user) {
       const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'المستخدم غير مسجل في النظام');
       return {
