@@ -274,12 +274,13 @@ export async function startServer(options: { port?: number; host?: string; useVi
           imageData,
           snapshot,
           forceRetry = false,
-        } = req.body;
+        } = req.body || {};
 
-        if (typeof voucherNumber !== 'string' || !voucherNumber.trim() ||
-            typeof transactionId !== 'string' || !transactionId.trim() ||
+        if (typeof voucherNumber !== 'string' || !voucherNumber.trim() || voucherNumber.length > 128 ||
+            typeof transactionId !== 'string' || !transactionId.trim() || transactionId.length > 128 ||
             typeof voucherType !== 'string' ||
-            typeof recipientPhone !== 'string' || !/^\+?\d{8,15}$/.test(recipientPhone.trim())) {
+            typeof recipientPhone !== 'string' || !/^\+?\d{8,15}$/.test(recipientPhone.trim()) ||
+            !snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
           return res.status(400).json({
             success: false,
             error: 'رقم السند ورقم العملية ونوع السند ورقم هاتف صحيح حقول إلزامية',
@@ -330,6 +331,10 @@ export async function startServer(options: { port?: number; host?: string; useVi
             branchName: verified.branchName,
             tellerName: verified.tellerName,
             referenceNumber: verified.referenceNumber,
+            sourceJournalEntryId: verified.sourceJournalEntryId,
+            ledgerVerifiedAt: new Date().toISOString(),
+            ledgerVerificationStatus: 'verified',
+            imageContentStatus: 'client_rendered_unverified',
             senderName: verified.senderName,
             recipientName: verified.recipientName,
             recipientPhone: verified.recipientPhone,
