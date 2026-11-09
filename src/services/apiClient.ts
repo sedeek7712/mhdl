@@ -243,6 +243,7 @@ class ApiClient {
     outcomeUncertain?: boolean;
     doNotRetry?: boolean;
     replayed?: boolean;
+    settings?: any;
   }> {
     try {
       const response = await this.fetch('/api/remittances/outgoing', {
