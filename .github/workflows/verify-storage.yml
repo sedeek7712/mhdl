@@ -31,6 +31,9 @@ jobs:
       - name: Run isolated financial-storage tests
         run: bun run test:storage
 
+      - name: Run isolated internal transfer tests
+        run: bun run test:internal-transfers
+
       - name: TypeScript validation
         run: bun run lint
 
