@@ -163,7 +163,7 @@ function AppContent() {
 
       if (session.success && session.user?.role === 'owner') {
         setCurrentUser({
-          id: session.user.userId,
+          id: session.user.id,
           name: session.user.name,
           role: 'owner',
           roleTitleAr: 'المالك والمشرف العام',
