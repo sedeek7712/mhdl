@@ -491,6 +491,26 @@ class ServerAccountingEngine {
       entry.descriptionAr.startsWith('تغذية صندوق ')
     );
     if (priorEntry) {
+      const debitLine = priorEntry.lines.find((line) =>
+        line.accountId === params.toAccountId &&
+        line.currency === params.currency &&
+        Math.abs(line.debit - params.amount) <= 0.001 &&
+        line.credit === 0
+      );
+      const creditLine = priorEntry.lines.find((line) =>
+        line.accountId === params.fromAccountId &&
+        line.currency === params.currency &&
+        Math.abs(line.credit - params.amount) <= 0.001 &&
+        line.debit === 0
+      );
+
+      if (!debitLine || !creditLine) {
+        return {
+          success: false,
+          error: 'مفتاح العملية مستخدم سابقاً مع مبلغ أو عملة أو حسابات مختلفة. رُفض الطلب ولم تُنفذ حركة مالية جديدة.',
+        };
+      }
+
       return { success: true, journalEntry: priorEntry };
     }
 
