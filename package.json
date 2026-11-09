@@ -18,7 +18,8 @@
     "test:chart-reconciliation": "node --import tsx --test tests/chartOfAccountsMigration.test.ts",
     "test:operating-expense": "node --import tsx --test tests/operatingExpense.test.ts",
     "test:incoming-remittances": "node --import tsx --test tests/incomingRemittanceRegistration.test.ts",
-    "test:outgoing-remittances": "node --import tsx --test tests/outgoingRemittance.test.ts"
+    "test:outgoing-remittances": "node --import tsx --test tests/outgoingRemittance.test.ts",
+    "test:exchange-accounting": "node --import tsx --test tests/exchangeAccounting.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
