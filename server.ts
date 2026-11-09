@@ -116,6 +116,14 @@ async function startServer() {
     });
   });
 
+  // N3: تغيير الرمز السري (الرمز الحالي + 8 خانات فأكثر)، ويُرجع توكناً جديداً ويبطل القديم
+  const changePinRateLimiter = createRateLimiter(10, 60);
+  app.post('/api/auth/change-pin', requireAuth, changePinRateLimiter, (req: any, res: Response) => {
+    const { currentPin, newPin } = req.body || {};
+    const result = authService.changePin(req.user.username, currentPin, newPin);
+    return res.status(result.success ? 200 : 400).json(result);
+  });
+
   app.get('/api/auth/session', requireAuth, (req: any, res: Response) => {
     return res.status(200).json({
       success: true,
@@ -132,7 +140,7 @@ async function startServer() {
   });
 
   // H5: حماية مسار المستخدمين بالمصادقة لمنع كشف أسماء وأدوار النظام دون تصريح
-  app.get('/api/auth/users', requireAuth, (_req: Request, res: Response) => {
+  app.get('/api/auth/users', requireAuth, requireRoles(['owner', 'general_manager']), (_req: Request, res: Response) => {
     const users = authService.getAllPublicUsers();
     return res.status(200).json({ success: true, users });
   });
@@ -366,7 +374,7 @@ async function startServer() {
         dispatchRegistry.recordMediaUploaded(record.id, metaMediaId);
 
         whatsappMessageId = `wamid.SIMULATED_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-        dispatchRegistry.recordSent(record.id, whatsappMessageId);
+        dispatchRegistry.recordSimulated(record.id, whatsappMessageId);
 
         return res.status(200).json({
           success: true,
@@ -375,7 +383,7 @@ async function startServer() {
           message: 'تم حفظ السند والأرشيف الرقمي (نمط المحاكاة المحلي - لم يتم الإرسال إلى هاتف حقيقي لعدم تهيئة توكن Meta)',
           whatsappMessageId,
           metaMediaId,
-          status: 'SENT_LOCAL_SIMULATION',
+          status: 'SIMULATED',
           record: dispatchRegistry.getByVoucherNumber(voucherNumber),
           notice: 'لإرسال رسائل واتساب حقيقية للعملاء، يجب إدخال WHATSAPP_TOKEN و WHATSAPP_PHONE_NUMBER_ID في ملف متغيرات البيئة.',
         });
@@ -591,13 +599,21 @@ async function startServer() {
     requireAuth,
     registerRateLimiter,
     (req: any, res: Response) => {
-      const { transferNumber, mode } = req.body;
+      const { transferNumber, mode } = req.body || {};
       const authenticatedUser = req.user as AuthenticatedUser;
+
+      // N11: فحص الأنواع قبل أي معالجة نصية (يمنع انهيار .trim() على نوع خاطئ)
+      if (typeof transferNumber !== 'string' || !transferNumber.trim() || transferNumber.length > 40) {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة يجب أن يكون نصاً غير فارغ لا يتجاوز 40 خانة.',
+        });
+      }
 
       const result = remittanceRegistry.registerTransferNumber(
         transferNumber,
         authenticatedUser.name,
-        mode || 'manual'
+        mode === 'automatic' ? 'automatic' : 'manual'
       );
 
       if (!result.success) {
@@ -649,6 +665,14 @@ async function startServer() {
 
       const authenticatedUser = req.user as AuthenticatedUser;
 
+      if (typeof transferNumber !== 'string' || typeof recipientIdNumber !== 'string' ||
+          (recipientIdType !== undefined && typeof recipientIdType !== 'string')) {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة ورقم هوية المستلم يجب أن يكونا نصوصاً صحيحة.',
+        });
+      }
+
       if (!transferNumber || !recipientIdNumber) {
         return res.status(400).json({
           success: false,
@@ -679,6 +703,18 @@ async function startServer() {
       });
 
       if (!payoutResult.success) {
+        if (payoutResult.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: payoutResult.errorCode,
+            moneyDeducted: true,
+            doNotRetry: true,
+            error: payoutResult.error,
+            record: payoutResult.record,
+            journalEntry: payoutResult.journalEntry,
+            accounts: serverAccountingEngine.getAccounts(),
+          });
+        }
         return res.status(409).json({
           success: false,
           isDuplicate: remittanceRegistry.isRemittancePaid(transferNumber),
@@ -748,6 +784,27 @@ async function startServer() {
         });
       }
 
+      // N11: أنواع الحقول (نصوص) ومبلغ/عمولة رقمية فقط، وعمولة غير سالبة
+      const mustBeString: Array<[string, unknown]> = [['رقم الحوالة', transferNumber], ['اسم المستفيد', recipientName], ['العملة', currency]];
+      for (const [label, v] of mustBeString) {
+        if (typeof v !== 'string') {
+          return res.status(400).json({ success: false, error: `حقل ${label} يجب أن يكون نصاً.` });
+        }
+      }
+      for (const [label, v] of [['اسم المرسل', senderName], ['هاتف المرسل', senderPhone], ['هاتف المستفيد', recipientPhone], ['الشبكة', networkName], ['الملاحظات', notes]] as Array<[string, unknown]>) {
+        if (v !== undefined && v !== null && typeof v !== 'string') {
+          return res.status(400).json({ success: false, error: `حقل ${label} يجب أن يكون نصاً.` });
+        }
+      }
+      if ((typeof amount !== 'number' && typeof amount !== 'string') ||
+          (feeAmount !== undefined && feeAmount !== null && feeAmount !== '' && typeof feeAmount !== 'number' && typeof feeAmount !== 'string')) {
+        return res.status(400).json({ success: false, error: 'المبلغ والعمولة يجب أن يكونا أرقاماً.' });
+      }
+      const parsedFee = feeAmount === undefined || feeAmount === null || feeAmount === '' ? 0 : Number(feeAmount);
+      if (!Number.isFinite(parsedFee) || parsedFee < 0) {
+        return res.status(400).json({ success: false, error: 'العمولة يجب أن تكون رقماً غير سالب.' });
+      }
+
       const parsedAmount = Number(amount);
       if (!parsedAmount || parsedAmount <= 0 || !Number.isFinite(parsedAmount)) {
         return res.status(400).json({
@@ -776,8 +833,8 @@ async function startServer() {
         networkName: networkName || 'شبكة النجم للحوالات',
         amount: parsedAmount,
         currency: currency.trim(),
-        feeAmount: Number(feeAmount) || 0,
-        totalPaid: parsedAmount + (Number(feeAmount) || 0),
+        feeAmount: parsedFee,
+        totalPaid: parsedAmount + parsedFee,
         branchName: authenticatedUser.branchName || 'الفرع الرئيسي',
         tellerName: authenticatedUser.name,
         createdAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
@@ -890,8 +947,10 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Amro Alnamari Production Server] Running securely on http://0.0.0.0:${PORT}`);
+  // N6: محلي فقط افتراضياً (جهاز واحد). للتغيير الصريح: HOST=0.0.0.0
+  const HOST = process.env.HOST || '127.0.0.1';
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`[Amro Alnamari Production Server] Running on http://${HOST}:${PORT}`);
   });
 }
 

@@ -210,6 +210,20 @@ class DispatchRegistry {
   }
 
   /**
+   * N9: تسجيل محاكاة محلية بوضوح. لا SENT ولا sentAt ولا ربط بـ webhook،
+   * فلا يُحتسب السند مرسلاً ولا يمكن لأي حدث خارجي ترقيته إلى DELIVERED.
+   */
+  public recordSimulated(recordId: string, simulatedMessageId: string) {
+    const record = this.records.get(recordId);
+    if (!record) return;
+
+    record.whatsappMessageId = simulatedMessageId;
+    record.status = 'SIMULATED';
+    this.saveToDisk();
+    console.log(`[WhatsApp Registry] Voucher ${record.voucherNumber} marked as SIMULATED (nothing was sent).`);
+  }
+
+  /**
    * تحديث الحالة عند وصول إشعار تسليم حقيقي من Webhook
    */
   public recordWebhookEvent(messageId: string, status: 'sent' | 'delivered' | 'read' | 'failed', rawEvent: any): boolean {

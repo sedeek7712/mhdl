@@ -13,6 +13,7 @@ export type WhatsAppLifecycleStatus =
   | 'SENT'            // قبلت Meta الطلب وأرجعت معرف الرسالة (wamid)
   | 'DELIVERED'       // وصل إشعار التسليم الحقيقي من Webhook
   | 'READ'            // وصل إشعار القراءة الحقيقي من Webhook
+  | 'SIMULATED'       // محاكاة محلية: لم يُرسل شيء فعلياً (لا يُحتسب مرسلاً)
   | 'FAILED'          // فشلت العملية في أي مرحلة
   | 'RETRY_PENDING';  // بانتظار إعادة المحاولة بطلب صريح
 

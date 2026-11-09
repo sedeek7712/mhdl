@@ -64,6 +64,15 @@ export function safeAtomicWriteJson(filePath: string, data: any): void {
     fs.fsyncSync(fd);
     fs.closeSync(fd);
 
+    // 4. في safeAtomicWriteJson احتفظ بنسخة .bak من الملف السابق قبل الاستبدال (N2)
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.copyFileSync(filePath, `${filePath}.bak`);
+      } catch (bakErr) {
+        console.warn(`[AtomicStorage BACKUP] Failed to create .bak for ${filePath}:`, bakErr);
+      }
+    }
+
     // 3. إعادة التسمية الذرية (Atomic Rename)
     fs.renameSync(tmpPath, filePath);
   } catch (err: any) {
@@ -80,40 +89,45 @@ export function safeAtomicWriteJson(filePath: string, data: any): void {
 }
 
 /**
- * قراءة آمنة لملف JSON مع حماية ضد بلع الأخطاء وتدمير البيانات السابقة
+ * قراءة آمنة لملف JSON مع حماية ضد بلع الأخطاء وتدمير البيانات السابقة (N2)
  */
 export function safeReadJson<T>(
   filePath: string,
   defaultData: T,
   options: { failOnCorruption?: boolean } = { failOnCorruption: true }
 ): T {
+  const failOnCorruption = options.failOnCorruption !== false;
+
   if (!fs.existsSync(filePath)) {
-    // الملف غير موجود: نكتب البيانات الافتراضية بشكل ذري
+    // الإنشاء بالافتراضيات فقط إذا كان الملف غير موجود
     safeAtomicWriteJson(filePath, defaultData);
     return defaultData;
   }
 
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
+    // N2: الملف الفارغ أو المقطوع يُعامل كتالف (الإنشاء بالافتراضيات فقط إذا كان الملف غير موجود)
     if (!raw.trim()) {
-      return defaultData;
+      throw new Error('الملف فارغ أو مقطوع (0 بايت أو مسافات فقط)');
     }
     return JSON.parse(raw) as T;
   } catch (err: any) {
     console.error(`[AtomicStorage FATAL] Corrupted JSON detected in ${filePath}:`, err.message);
 
-    // أخذ نسخة احتياطية من الملف التالف للتحقيق الجنائي الرقمي
+    // 3. عند التلف: احفظ نسخة .corrupt.<وقت> وأوقف التشغيل برسالة عربية واضحة تذكر الملف وتشير إلى .bak
+    const corruptBackup = `${filePath}.corrupt.${Date.now()}`;
     try {
-      const corruptBackup = `${filePath}.corrupt.${Date.now()}`;
-      fs.copyFileSync(filePath, corruptBackup);
-      console.warn(`[AtomicStorage BACKUP] Corrupted file preserved at: ${corruptBackup}`);
+      if (fs.existsSync(filePath)) {
+        fs.copyFileSync(filePath, corruptBackup);
+        console.warn(`[AtomicStorage BACKUP] Corrupted file preserved at: ${corruptBackup}`);
+      }
     } catch {
       // Ignore
     }
 
-    if (options.failOnCorruption) {
+    if (failOnCorruption) {
       throw new Error(
-        `خطأ حرج في سلامة البيانات: الملف ${path.basename(filePath)} تالف أو غير صالح كـ JSON. تم إيقاف النظام لمنع تصفير البيانات أو إعادة الترقيم الافتراضي.`
+        `خطأ حرج في سلامة البيانات (N2): الملف (${path.basename(filePath)}) تالف أو مقطوع أو غير صالح كـ JSON (${err.message}). تم إيقاف النظام لمنع تصفير البيانات أو استبدال الأرصدة. تم حفظ نسخة تالفة في (${path.basename(corruptBackup)}). يمكنك فحص النسخة الاحتياطية (${path.basename(filePath)}.bak) يدوياً.`
       );
     }
 

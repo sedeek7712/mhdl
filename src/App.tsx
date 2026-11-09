@@ -642,7 +642,8 @@ function AppContent() {
 
     try {
       // 1. Call Server-Side API to enforce atomic duplicate payout prevention & audit registry
-      const idempotencyKey = `pay_${targetRem.transferNumber}_${currentUser.id}_${Date.now()}`;
+      // N7: مفتاح ثابت لكل (حوالة، مستخدم) بلا Date.now؛ إعادة المحاولة تُرجع النتيجة السابقة (isReplay)
+      const idempotencyKey = `pay_${targetRem.transferNumber}_${currentUser.id}`;
       const serverResult = await apiClient.payoutRemittance({
         transferId: targetRem.id,
         transferNumber: targetRem.transferNumber,
@@ -656,6 +657,27 @@ function AppContent() {
       });
 
       if (!serverResult.success) {
+        // R3/N7: الخصم تم على الخادم لكن اعتماد الصرف النهائي لم يُحفظ؛ نحدّث الأرصدة ولا نطلب إعادة المحاولة
+        if (serverResult.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          if (serverResult.accounts && serverResult.accounts.length > 0) setAccounts(serverResult.accounts as Account[]);
+          toast.error('تم الخصم — لا تُعد المحاولة', serverResult.error || 'سيُستكمل الصرف تلقائياً عند إعادة تشغيل النظام.');
+          setIsProcessingPayout(false);
+          return;
+        }
+        // N7: إن كانت الحوالة مصروفة فعلاً على الخادم (محاولة سابقة نجحت ثم انقطع الرد) نزامن الحالة بدل فشل خاطئ
+        if (serverResult.isDuplicate) {
+          try {
+            const [accRes, jvRes] = await Promise.all([apiClient.getAccounts(), apiClient.getJournalEntries()]);
+            if (accRes.success && accRes.accounts && accRes.accounts.length > 0) setAccounts(accRes.accounts as Account[]);
+            if (jvRes.success && jvRes.journalEntries && jvRes.journalEntries.length > 0) setJournalEntries(jvRes.journalEntries as JournalEntry[]);
+          } catch {
+            /* offline: تبقى النسخة المحلية */
+          }
+          setRemittances((prev) => prev.map((r) => (r.id === transferId ? { ...r, status: 'paid' } : r)));
+          toast.error('الحوالة مصروفة مسبقاً', 'سجّل الخادم صرفها سابقاً؛ تمت مزامنة الحالة والأرصدة من الخادم.');
+          setIsProcessingPayout(false);
+          return;
+        }
         toast.error('رفض الخادم عملية الصرف', serverResult.error || 'فشلت مصادقة صرف الحوالة على الخادم المركزي.');
         setIsProcessingPayout(false);
         return;

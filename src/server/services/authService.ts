@@ -29,6 +29,9 @@ export interface AuthenticatedUser {
 export interface StoredUserRecord extends AuthenticatedUser {
   pinSalt: string;
   pinHash: string;
+  pinAlgo?: 'scrypt' | 'pbkdf2';
+  /** يزداد عند تغيير/إعادة ضبط الرمز فتبطل كل التوكنات القديمة */
+  tokenVersion?: number;
   isActive: boolean;
   createdAt: string;
 }
@@ -49,6 +52,8 @@ export interface AuthTokenPayload {
   role: AuthenticatedUser['role'];
   branchId: string;
   branchName: string;
+  /** نسخة توكن المستخدم وقت الإصدار (N10: إلغاء التوكنات القديمة) */
+  tv?: number;
   iat: number;
   exp: number;
 }
@@ -96,19 +101,39 @@ function initializeJwtSecret(): string {
 
 const JWT_SECRET = initializeJwtSecret();
 
-/**
- * دالة تجزئة آمنة للمرور/PIN باستخدام PBKDF2 مع Salt فريد
- */
-export function hashPinWithSalt(pin: string, salt: string): string {
-  return crypto.pbkdf2Sync(pin.trim(), salt, 100000, 32, 'sha256').toString('hex');
+// ---------------------------------------------------------------------------
+// N3: تجزئة scrypt بملح عشوائي لكل مستخدم، وكلمات مرور عشوائية بدل الرموز الثابتة
+// ---------------------------------------------------------------------------
+export const MIN_PIN_LENGTH = 8;
+const GENERATED_PASSWORD_LENGTH = 12;
+
+export function hashPinWithSalt(pin: string, salt: string, algo: 'scrypt' | 'pbkdf2' = 'scrypt'): string {
+  const normalized = pin.trim().normalize('NFKC');
+  if (algo === 'pbkdf2') {
+    // للتوافق مع السجلات القديمة فقط (تُستبدل فوراً عند التحميل)
+    return crypto.pbkdf2Sync(pin.trim(), salt, 100000, 32, 'sha256').toString('hex');
+  }
+  return crypto
+    .scryptSync(normalized, salt, 32, { N: 32768, r: 8, p: 1, maxmem: 128 * 1024 * 1024 })
+    .toString('hex');
+}
+
+export function createPinCredentials(pin: string): { pinSalt: string; pinHash: string; pinAlgo: 'scrypt' } {
+  const pinSalt = crypto.randomBytes(16).toString('hex');
+  return { pinSalt, pinHash: hashPinWithSalt(pin, pinSalt, 'scrypt'), pinAlgo: 'scrypt' };
 }
 
 /**
  * فحص الرمز السري بطريقة آمنة ومقاومة لهجمات التوقيت (Timing-Attack Resistant)
  */
-export function verifyPinHash(providedPin: string, salt: string, expectedHash: string): boolean {
+export function verifyPinHash(
+  providedPin: string,
+  salt: string,
+  expectedHash: string,
+  algo: 'scrypt' | 'pbkdf2' = 'scrypt'
+): boolean {
   if (!providedPin || typeof providedPin !== 'string') return false;
-  const calculatedHash = hashPinWithSalt(providedPin, salt);
+  const calculatedHash = hashPinWithSalt(providedPin, salt, algo);
   const calcBuf = Buffer.from(calculatedHash, 'hex');
   const expBuf = Buffer.from(expectedHash, 'hex');
 
@@ -117,6 +142,43 @@ export function verifyPinHash(providedPin: string, salt: string, expectedHash: s
   }
 
   return crypto.timingSafeEqual(calcBuf, expBuf);
+}
+
+export function generatePassword(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  let out = '';
+  for (let i = 0; i < GENERATED_PASSWORD_LENGTH; i++) out += alphabet[crypto.randomInt(alphabet.length)];
+  return out;
+}
+
+const COMMON_WEAK_PINS = new Set(['12345678', '123456789', '1234567890', '87654321', '00000000', '11111111', 'password', 'qwertyui', 'admin123', '12341234']);
+
+export function isWeakPin(pin: string): boolean {
+  const p = (pin || '').trim();
+  if (p.length < MIN_PIN_LENGTH) return true;
+  if (/^(.)\1+$/.test(p)) return true; // حرف مكرر فقط
+  if (COMMON_WEAK_PINS.has(p.toLowerCase())) return true;
+  return false;
+}
+
+/**
+ * N3: ترحيل السجلات القديمة (PBKDF2 / رموز تافهة): كل سجل غير scrypt يُستبدل بكلمة مرور عشوائية جديدة
+ * ويُزاد tokenVersion لإبطال التوكنات القديمة. دالة نقية بلا I/O (قابلة للاختبار).
+ */
+export function migrateLegacyUsers(list: StoredUserRecord[]): {
+  users: StoredUserRecord[];
+  issued: Array<{ username: string; role: string; password: string }>;
+} {
+  const issued: Array<{ username: string; role: string; password: string }> = [];
+  const users = list.map((u) => {
+    if (u.pinAlgo === 'scrypt') {
+      return { ...u, tokenVersion: u.tokenVersion ?? 0 };
+    }
+    const password = generatePassword();
+    issued.push({ username: u.username, role: u.role, password });
+    return { ...u, ...createPinCredentials(password), tokenVersion: (u.tokenVersion ?? 0) + 1 };
+  });
+  return { users, issued };
 }
 
 /**
@@ -220,28 +282,93 @@ class AuthService {
       },
     ];
 
-    // تهيئة الرموز الافتراضية لأول تشغيل
-    const initialPins: Record<string, string> = {
-      amro: '1234',
-      abdullah: '2345',
-      mansoor: '3456',
-      sedeek: '3456',
-      mohammed: '4567',
-      ahmed: '5678',
-      fouad: '6789',
-    };
+    // N2/N3: الملف غير الموجود = أول تشغيل؛ الملف التالف/الفارغ يوقف التشغيل (failOnCorruption)
+    const fileExists = fs.existsSync(USERS_FILE);
+    const loadedUsers: StoredUserRecord[] = fileExists
+      ? safeReadJson<StoredUserRecord[]>(USERS_FILE, [], { failOnCorruption: true })
+      : defaultUsers;
 
-    for (const u of defaultUsers) {
-      const pin = initialPins[u.username] || '1234';
-      u.pinHash = hashPinWithSalt(pin, u.pinSalt);
+    const { users: migrated, issued } = migrateLegacyUsers(loadedUsers);
+
+    if (issued.length > 0) {
+      safeAtomicWriteJson(USERS_FILE, migrated);
+      const reason = fileExists
+        ? 'تم اكتشاف رموز قديمة ضعيفة (PBKDF2) فجرى استبدالها بكلمات مرور عشوائية جديدة وإبطال كل الجلسات القديمة'
+        : 'أول تشغيل: أُنشئت كلمات مرور عشوائية للمستخدمين';
+      console.warn(
+        `\n================ [Security] ${reason} ================\n` +
+          'احفظ كلمات المرور التالية الآن، فهي لا تظهر مرة أخرى (لإعادة الضبط: npm run reset-pin -- <username>):\n' +
+          issued.map((i) => `   ${i.role.padEnd(20)} (${i.username}) : ${i.password}`).join('\n') +
+          '\n=====================================================================\n'
+      );
     }
 
-    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, defaultUsers, { failOnCorruption: false });
     this.users.clear();
-    for (const u of loadedUsers) {
+    for (const u of migrated) {
       this.users.set(u.username, u);
       this.users.set(u.role, u);
     }
+  }
+
+  /** N10: التحقق من أن جلسة التوكن ما زالت صالحة (المستخدم موجود ونشط ونسخة التوكن مطابقة) */
+  public validateSession(payload: AuthTokenPayload): boolean {
+    const u = this.users.get(payload.username);
+    if (!u || u.isActive === false) return false;
+    return (payload.tv ?? 0) === (u.tokenVersion ?? 0);
+  }
+
+  public listUsernames(): string[] {
+    return Array.from(new Set(Array.from(this.users.values()).map((u) => u.username)));
+  }
+
+  /**
+   * N3: تغيير الرمز من المستخدم نفسه (يتطلب الرمز الحالي، حداً أدنى 8، ويرفض الضعيف والمكرر)
+   * يرفع tokenVersion فتبطل التوكنات القديمة، ويُرجع توكناً جديداً.
+   */
+  public changePin(
+    username: string,
+    currentPin: string,
+    newPin: string
+  ): { success: boolean; error?: string; token?: string } {
+    const user = this.users.get(username);
+    if (!user || user.isActive === false) return { success: false, error: 'المستخدم غير موجود أو معطّل' };
+    if (typeof currentPin !== 'string' || typeof newPin !== 'string') {
+      return { success: false, error: 'صيغة الرمز غير صحيحة' };
+    }
+    if (!verifyPinHash(currentPin, user.pinSalt, user.pinHash, user.pinAlgo ?? 'scrypt')) {
+      this.recordSecurityEvent({ event: 'LOGIN_FAILED', usernameOrRole: username, ip: 'local', details: 'فشل تغيير الرمز: الرمز الحالي غير صحيح' });
+      return { success: false, error: 'الرمز الحالي غير صحيح' };
+    }
+    if (newPin.trim().length < MIN_PIN_LENGTH) {
+      return { success: false, error: `الرمز الجديد يجب ألا يقل عن ${MIN_PIN_LENGTH} خانات` };
+    }
+    if (isWeakPin(newPin)) {
+      return { success: false, error: 'الرمز الجديد ضعيف (مكرر أو شائع)؛ اختر رمزاً أقوى' };
+    }
+    if (newPin.trim() === currentPin.trim()) {
+      return { success: false, error: 'الرمز الجديد يجب أن يختلف عن الحالي' };
+    }
+
+    const previous = { pinSalt: user.pinSalt, pinHash: user.pinHash, pinAlgo: user.pinAlgo, tokenVersion: user.tokenVersion };
+    Object.assign(user, createPinCredentials(newPin), { tokenVersion: (user.tokenVersion ?? 0) + 1 });
+    try {
+      this.saveUsersToDisk();
+    } catch {
+      Object.assign(user, previous);
+      return { success: false, error: 'تعذر حفظ الرمز الجديد على القرص؛ لم يتغير شيء' };
+    }
+    this.recordSecurityEvent({ event: 'LOGIN_SUCCESS', usernameOrRole: username, ip: 'local', details: 'تم تغيير الرمز السري وإبطال الجلسات القديمة' });
+    return { success: true, token: this.generateToken(user, user.tokenVersion ?? 0) };
+  }
+
+  /** أداة إدارة محلية (لا تُعرَّض عبر API): كلمة مرور عشوائية جديدة لمستخدم */
+  public adminResetPin(username: string): { username: string; password: string } | null {
+    const user = this.users.get(username);
+    if (!user) return null;
+    const password = generatePassword();
+    Object.assign(user, createPinCredentials(password), { tokenVersion: (user.tokenVersion ?? 0) + 1 });
+    this.saveUsersToDisk();
+    return { username: user.username, password };
   }
 
   public saveUsersToDisk(): void {
@@ -267,7 +394,7 @@ class AuthService {
     return this.users.get(roleOrUsername);
   }
 
-  public generateToken(user: AuthenticatedUser): string {
+  public generateToken(user: AuthenticatedUser, tokenVersion = 0): string {
     const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
     const now = Math.floor(Date.now() / 1000);
     const exp = now + this.TOKEN_EXPIRY_HOURS * 3600;
@@ -279,6 +406,7 @@ class AuthService {
       role: user.role,
       branchId: user.branchId,
       branchName: user.branchName,
+      tv: tokenVersion,
       iat: now,
       exp,
     };
@@ -363,7 +491,7 @@ class AuthService {
       };
     }
 
-    if (!pin || !verifyPinHash(pin, user.pinSalt, user.pinHash)) {
+    if (user.isActive === false || !pin || !verifyPinHash(pin, user.pinSalt, user.pinHash, user.pinAlgo ?? 'scrypt')) {
       const isLocked = this.recordFailedAttempt(lockKey, roleOrUsername, ip, 'رمز PIN غير مطابق للتجزئة المعتمدة');
       return {
         success: false,
@@ -375,7 +503,7 @@ class AuthService {
     }
 
     this.failedLogins.delete(lockKey);
-    const token = this.generateToken(user);
+    const token = this.generateToken(user, user.tokenVersion ?? 0);
 
     this.recordSecurityEvent({
       event: 'LOGIN_SUCCESS',
@@ -459,6 +587,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return res.status(401).json({
       success: false,
       error: 'رمز المصادقة غير صالح أو منتهي الصلاحية. يرجى تسجيل الدخول مجدداً.',
+    });
+  }
+
+  if (!authService.validateSession(payload)) {
+    return res.status(401).json({
+      success: false,
+      error: 'الجلسة لم تعد صالحة (تغيّر الرمز أو عُطّل الحساب). يرجى تسجيل الدخول مجدداً.',
     });
   }
 

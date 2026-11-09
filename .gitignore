@@ -12,3 +12,8 @@ data/.jwt_secret
 data/*.tmp*
 data/*.corrupt*
 data/archived_vouchers/
+data/*.bak
+data/*.legacy*
+data/system_users.json
+data/*.json
+!data/*.example.json

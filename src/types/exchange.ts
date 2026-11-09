@@ -277,6 +277,7 @@ export type WhatsAppLifecycleStatus =
   | 'SENT'
   | 'DELIVERED'
   | 'READ'
+  | 'SIMULATED'
   | 'FAILED'
   | 'RETRY_PENDING';
 
