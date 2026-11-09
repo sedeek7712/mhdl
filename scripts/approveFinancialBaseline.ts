@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -33,6 +34,8 @@ interface OwnerRecord {
   name: string;
   role: string;
   isActive: boolean;
+  pinSalt: string;
+  pinHash: string;
 }
 
 const CURRENCIES: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
@@ -66,6 +69,52 @@ function ask(question: string): Promise<string> {
   });
 }
 
+function readHidden(question: string): Promise<string> {
+  const input = process.stdin;
+  if (!input.isTTY || typeof input.setRawMode !== 'function') {
+    return Promise.reject(new Error('يجب تشغيل اعتماد الأرصدة من نافذة طرفية تفاعلية لإدخال PIN بشكل مخفي.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const cleanup = () => {
+      input.off('data', onData);
+      input.setRawMode(false);
+      input.pause();
+      process.stdout.write('\\n');
+    };
+    const onData = (chunk: Buffer) => {
+      for (const byte of chunk) {
+        if (byte === 3) {
+          cleanup();
+          reject(new Error('تم إلغاء اعتماد الأرصدة.'));
+          return;
+        }
+        if (byte === 13 || byte === 10) {
+          cleanup();
+          resolve(value);
+          return;
+        }
+        if (byte === 8 || byte === 127) {
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            process.stdout.write('\\b \\b');
+          }
+          continue;
+        }
+        if (byte >= 48 && byte <= 57 && value.length < 6) {
+          value += String.fromCharCode(byte);
+          process.stdout.write('*');
+        }
+      }
+    };
+    process.stdout.write(question);
+    input.setRawMode(true);
+    input.resume();
+    input.on('data', onData);
+  });
+}
+
 function normalBalanceSign(type: AccountType): number {
   return type === 'asset' || type === 'expense' ? 1 : -1;
 }
@@ -84,8 +133,19 @@ async function main(): Promise<void> {
     failOnMissing: true,
   });
   if (!Array.isArray(users) || users.length !== 1 ||
-      users[0].role !== 'owner' || users[0].isActive !== true) {
-    throw new Error('ملف المستخدمين لا يحتوي حساب مالك واحداً نشطاً؛ تم إيقاف اعتماد الأرصدة.');
+      users[0].role !== 'owner' || users[0].isActive !== true ||
+      typeof users[0].pinSalt !== 'string' || typeof users[0].pinHash !== 'string') {
+    throw new Error('ملف المستخدمين لا يحتوي حساب مالك واحداً نشطاً ببيانات اعتماد صحيحة؛ تم إيقاف اعتماد الأرصدة.');
+  }
+
+  const ownerPin = await readHidden('أدخل PIN المالك للتحقق قبل اعتماد الأرصدة: ');
+  if (!/^\\d{6}$/.test(ownerPin)) {
+    throw new Error('يجب إدخال PIN مكوّن من 6 أرقام.');
+  }
+  const enteredHash = crypto.pbkdf2Sync(ownerPin, users[0].pinSalt, 100000, 32, 'sha256');
+  const storedHash = Buffer.from(users[0].pinHash, 'hex');
+  if (enteredHash.length !== storedHash.length || !crypto.timingSafeEqual(enteredHash, storedHash)) {
+    throw new Error('PIN المالك غير صحيح. لم يتم اعتماد الأرصدة.');
   }
 
   const accounts = safeReadJson<AccountRecord[]>(ACCOUNTS_FILE, [], {
@@ -124,13 +184,13 @@ async function main(): Promise<void> {
     movements.set(account.id, { YER_OLD: 0, YER_NEW: 0, SAR: 0, USD: 0 });
   }
 
-  const journalTotals = new Map<CurrencyCode, { debit: number; credit: number }>();
   for (const entry of journalEntries) {
     if (!entry || typeof entry.id !== 'string' ||
         typeof entry.entryNumber !== 'string' || !Array.isArray(entry.lines) || entry.lines.length < 2) {
       throw new Error('يوجد قيد يومية غير صالح. لم يتم إنشاء اعتماد.');
     }
 
+    const entryTotals = new Map<CurrencyCode, { debit: number; credit: number }>();
     for (const line of entry.lines) {
       const account = accountMap.get(line.accountId);
       if (!account || !CURRENCIES.includes(line.currency) ||
@@ -140,19 +200,19 @@ async function main(): Promise<void> {
         throw new Error(`سطر قيد غير صالح في ${entry.entryNumber}.`);
       }
 
-      const total = journalTotals.get(line.currency) || { debit: 0, credit: 0 };
+      const total = entryTotals.get(line.currency) || { debit: 0, credit: 0 };
       total.debit += line.debit;
       total.credit += line.credit;
-      journalTotals.set(line.currency, total);
+      entryTotals.set(line.currency, total);
 
       const accountMovement = movements.get(line.accountId)!;
       accountMovement[line.currency] += normalBalanceSign(account.type) * (line.debit - line.credit);
     }
-  }
 
-  for (const [currency, total] of journalTotals) {
-    if (Math.abs(total.debit - total.credit) > 0.001) {
-      throw new Error(`قيود اليومية غير متوازنة بعملة ${currency}. لم يتم إنشاء اعتماد.`);
+    for (const [currency, total] of entryTotals) {
+      if (Math.abs(total.debit - total.credit) > 0.001) {
+        throw new Error(`القيد ${entry.entryNumber} غير متوازن بعملة ${currency}. لم يتم إنشاء اعتماد.`);
+      }
     }
   }
 
