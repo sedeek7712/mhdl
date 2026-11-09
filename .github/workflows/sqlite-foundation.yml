@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - 'storage/**'
     paths:
       - 'package.json'
       - 'src/server/db/**'
