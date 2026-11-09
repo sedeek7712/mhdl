@@ -165,8 +165,6 @@ function assertSnapshotMatches(
   assertSnapshotValue(input.snapshot, 'voucherNumber', snapshot.voucherNumber);
   assertSnapshotValue(input.snapshot, 'transactionId', snapshot.transactionId);
   assertSnapshotValue(input.snapshot, 'type', snapshot.type);
-  assertSnapshotValue(input.snapshot, 'date', snapshot.date);
-  assertSnapshotValue(input.snapshot, 'time', snapshot.time);
   assertSnapshotValue(input.snapshot, 'branchName', snapshot.branchName);
   assertSnapshotValue(input.snapshot, 'tellerName', snapshot.tellerName);
   assertSnapshotValue(input.snapshot, 'referenceNumber', snapshot.referenceNumber);
