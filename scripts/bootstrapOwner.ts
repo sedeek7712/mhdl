@@ -6,19 +6,26 @@ import { fileURLToPath } from 'node:url';
 
 import { getYemenDateTimeString, safeAtomicWriteJson } from '../src/server/utils/atomicFileStorage.js';
 
-interface ExistingOwner {
+type UserRole = 'owner' | 'general_manager' | 'branch_manager' | 'teller' | 'auditor' | 'accountant' | 'compliance_officer';
+
+interface ExistingUserRecord {
   id: string;
   name: string;
   username: string;
-  role: 'owner';
+  role: UserRole;
   branchId: string;
   branchName: string;
   pinSalt?: string;
   pinHash?: string;
   isActive?: boolean;
   mustChangePin?: boolean;
+  sessionVersion?: string;
   createdAt?: string;
   [key: string]: unknown;
+}
+
+interface ExistingOwner extends ExistingUserRecord {
+  role: 'owner';
 }
 
 interface OwnerRecord extends ExistingOwner {
@@ -108,6 +115,7 @@ function validatePin(pin: string): void {
 
 async function main(): Promise<void> {
   let owner: ExistingOwner;
+  let preservedUsers: ExistingUserRecord[] = [];
 
   const sourceUsersFile = fs.existsSync(USERS_FILE) ? USERS_FILE : LEGACY_USERS_FILE;
   if (fs.existsSync(sourceUsersFile)) {
@@ -117,8 +125,15 @@ async function main(): Promise<void> {
       throw new Error('ملف المستخدمين ليس قائمة JSON صحيحة. لم يتم تعديل أي ملف.');
     }
 
+    const userRoles: UserRole[] = [
+      'owner', 'general_manager', 'branch_manager', 'teller', 'auditor', 'accountant', 'compliance_officer',
+    ];
+    if (parsed.some((user) => !user || typeof user !== 'object' ||
+        !userRoles.includes((user as ExistingUserRecord).role))) {
+      throw new Error('ملف المستخدمين يحتوي سجلاً أو دوراً غير معروف. لم يتم تعديل أي ملف.');
+    }
     const owners = parsed.filter((user): user is ExistingOwner =>
-      Boolean(user && typeof user === 'object' && (user as ExistingOwner).role === 'owner')
+      Boolean(user && typeof user === 'object' && (user as ExistingUserRecord).role === 'owner')
     );
     if (owners.length !== 1) {
       throw new Error('لم يتم العثور على حساب مالك واحد بالضبط. أوقف الإعداد لحماية الحسابات؛ يلزم فحص يدوي قبل المتابعة.');
@@ -129,8 +144,39 @@ async function main(): Promise<void> {
       throw new Error('بيانات حساب المالك غير مكتملة. لم يتم تعديل أي ملف.');
     }
 
+    const staff = parsed.filter((user): user is ExistingUserRecord =>
+      Boolean(user && typeof user === 'object' && (user as ExistingUserRecord).role !== 'owner')
+    );
+    const seenUsernames = new Set<string>([owner.username.trim().toLowerCase()]);
+    const seenIds = new Set<string>([owner.id]);
+    preservedUsers = staff.map((rawUser) => {
+      const user = rawUser as ExistingUserRecord;
+      const username = typeof user.username === 'string' ? user.username.trim().toLowerCase() : '';
+      if (!user.id || !user.name || !/^[a-z0-9._-]{3,32}$/.test(username) ||
+          !user.branchId || !user.branchName ||
+          typeof user.pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(user.pinSalt) ||
+          typeof user.pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(user.pinHash) ||
+          seenUsernames.has(username) || seenIds.has(user.id)) {
+        throw new Error('يوجد حساب موظف قديم غير مكتمل أو مكرر. لم يتم حذف الحسابات أو تعديل الملف؛ يلزم فحصه يدوياً.');
+      }
+      seenUsernames.add(username);
+      seenIds.add(user.id);
+      const alreadyModern = typeof user.sessionVersion === 'string' && /^[a-f0-9]{32}$/i.test(user.sessionVersion);
+      return {
+        ...user,
+        username,
+        // Legacy credentials are disabled until the owner resets their PIN; no employee record is deleted.
+        isActive: alreadyModern && user.isActive === true,
+        mustChangePin: !alreadyModern || user.mustChangePin === true,
+        sessionVersion: alreadyModern ? user.sessionVersion! : crypto.randomBytes(16).toString('hex'),
+        createdAt: typeof user.createdAt === 'string' && user.createdAt.trim()
+          ? user.createdAt
+          : getYemenDateTimeString(),
+      };
+    });
+
     const confirm = await ask(
-      'سيتم الاحتفاظ بحساب المالك وحده، وأرشفة ملف المستخدمين الحالي محلياً، وتعطيل الحسابات الأخرى في النسخة النشطة. اكتب نعم للمتابعة: '
+      'سيتم تحديث PIN المالك مع الاحتفاظ بحسابات الموظفين. الحسابات القديمة التي لا تحتوي جلسة حديثة ستُعطّل مؤقتاً حتى يعيد المالك ضبط PIN لها. اكتب نعم للمتابعة: '
     );
     if (confirm !== 'نعم') {
       throw new Error('لم يتم إجراء أي تغيير.');
@@ -175,12 +221,12 @@ async function main(): Promise<void> {
 
   let backupPath: string | undefined;
   if (fs.existsSync(sourceUsersFile)) {
-    backupPath = `${USERS_FILE}.pre-single-user.${Date.now()}.bak`;
+    backupPath = `${USERS_FILE}.before-owner-pin-reset.${Date.now()}.bak`;
     fs.copyFileSync(sourceUsersFile, backupPath);
   }
 
-  safeAtomicWriteJson(USERS_FILE, [ownerRecord]);
-  console.log('تم إعداد حساب المالك الوحيد بنجاح. لم يتم حفظ PIN كنص صريح.');
+  safeAtomicWriteJson(USERS_FILE, [...preservedUsers, ownerRecord]);
+  console.log(`تم إعداد حساب المالك وحفظ ${preservedUsers.length} حساب موظف دون حذفها. لم يتم حفظ PIN كنص صريح.`);
   if (backupPath) {
     console.log(`تم حفظ نسخة احتياطية للحسابات السابقة محلياً: ${path.basename(backupPath)}`);
   }
