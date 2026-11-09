@@ -225,8 +225,10 @@ function AppContent() {
             record && typeof record.id === 'string' &&
             typeof record.transferNumber === 'string' &&
             (record.direction === 'incoming' || record.direction === 'outgoing') &&
+            ['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'].includes(record.status) &&
+            ['YER_OLD', 'YER_NEW', 'SAR', 'USD'].includes(record.currency) &&
             typeof record.recipientName === 'string' &&
-            typeof record.amount === 'number'
+            typeof record.amount === 'number' && Number.isFinite(record.amount) && record.amount > 0
           )
           .map((record: any) => ({
             id: record.id,
@@ -976,10 +978,11 @@ function AppContent() {
     const validStatuses = ['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'];
     if (!record || record.direction !== 'incoming' ||
         !validStatuses.includes(record.status) ||
+        !['YER_OLD', 'YER_NEW', 'SAR', 'USD'].includes(record.currency) ||
         typeof record.id !== 'string' ||
         typeof record.transferNumber !== 'string' ||
         typeof record.voucherNumber !== 'string' ||
-        typeof record.amount !== 'number') {
+        typeof record.amount !== 'number' || !Number.isFinite(record.amount) || record.amount <= 0) {
       toast.error(
         'سجل الحوالة الوارد غير مكتمل',
         'لم نحدّث الشاشة أو نمسح بيانات المحاولة. راجع السجل المركزي قبل تكرار التسجيل.'
