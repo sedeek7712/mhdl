@@ -1082,6 +1082,8 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
   }
 
   report.validation.completeSystemParity =
+    report.status === 'PASS' &&
+    report.issues.length === 0 &&
     report.validation.operationalDataImported &&
     report.validation.voucherArchivesVerified &&
     report.validation.openingBalanceReconciliation === 'MATCHED' &&
