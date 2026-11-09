@@ -11,6 +11,8 @@ import { fileURLToPath } from 'url';
 import { Request, Response, NextFunction } from 'express';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
 import { loadOrCreateJwtSecret } from '../security/jwtSecret.js';
+import { createSqliteAuthRuntime } from './sqliteAuthRuntime.js';
+import type { SqliteAuthService } from './sqliteAuthService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -505,7 +507,23 @@ class AuthService {
   }
 }
 
-export const authService = new AuthService();
+const configuredAuthBackend = (process.env.ALNAMARI_AUTH_BACKEND || 'json').trim().toLowerCase();
+if (configuredAuthBackend !== 'json' && configuredAuthBackend !== 'sqlite') {
+  throw new Error('Invalid ALNAMARI_AUTH_BACKEND. Use either json or sqlite.');
+}
+
+const sqliteAuthRuntime = configuredAuthBackend === 'sqlite'
+  ? createSqliteAuthRuntime({ jwtSecret: JWT_SECRET, env: process.env })
+  : null;
+
+export const authService: AuthService | SqliteAuthService =
+  sqliteAuthRuntime?.service ?? new AuthService();
+export const sqliteAuthRouter = sqliteAuthRuntime?.router ?? null;
+export const authBackend = sqliteAuthRuntime ? 'sqlite' : 'json';
+
+export function closeAuthService(): void {
+  sqliteAuthRuntime?.close();
+}
 
 /**
  * Middleware: التحقق من التوكن وصلاحيات الجلسة
