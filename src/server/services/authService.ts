@@ -133,117 +133,53 @@ class AuthService {
   }
 
   private loadUsersFromDisk(): void {
-    const defaultUsers: StoredUserRecord[] = [
-      {
-        id: 'usr-001',
-        name: 'عمرو النماري',
-        username: 'amro',
-        role: 'owner',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-002',
-        name: 'عبد الله الصبري',
-        username: 'abdullah',
-        role: 'general_manager',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-006',
-        name: 'منصور الحمادي',
-        username: 'mansoor',
-        role: 'branch_manager',
-        branchId: 'br-khadeer',
-        branchName: 'فرع خدير',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-003',
-        name: 'صديق علي الفتاحي',
-        username: 'sedeek',
-        role: 'teller',
-        branchId: 'br-khadeer',
-        branchName: 'فرع خدير - الكاشير المعتمد',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-004',
-        name: 'محمد عبد الرقيب الشميري',
-        username: 'mohammed',
-        role: 'auditor',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-005',
-        name: 'أحمد سعيد الأصبحي',
-        username: 'ahmed',
-        role: 'accountant',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-      {
-        id: 'usr-007',
-        name: 'فؤاد المخلافي',
-        username: 'fouad',
-        role: 'compliance_officer',
-        branchId: 'br-main',
-        branchName: 'المركز الرئيسي - تعز',
-        pinSalt: crypto.randomBytes(16).toString('hex'),
-        pinHash: '',
-        isActive: true,
-        createdAt: '2026-11-01 08:00',
-      },
-    ];
+    // لا توجد حسابات أو PIN افتراضية في الكود؛ ملف المستخدمين جزء إلزامي من بيانات التشغيل.
+    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
 
-    // تهيئة الرموز الافتراضية لأول تشغيل
-    const initialPins: Record<string, string> = {
-      amro: '1234',
-      abdullah: '2345',
-      mansoor: '3456',
-      sedeek: '3456',
-      mohammed: '4567',
-      ahmed: '5678',
-      fouad: '6789',
-    };
-
-    for (const u of defaultUsers) {
-      const pin = initialPins[u.username] || '1234';
-      u.pinHash = hashPinWithSalt(pin, u.pinSalt);
+    if (!Array.isArray(loadedUsers) || loadedUsers.length === 0) {
+      throw new Error('توقف آمن: ملف المستخدمين فارغ أو لا يحتوي حساباً صالحاً. يجب تنفيذ تهيئة المالك بصورة صريحة قبل تشغيل النظام.');
     }
 
-    const loadedUsers = safeReadJson<StoredUserRecord[]>(USERS_FILE, defaultUsers, { failOnCorruption: false });
+    const allowedRoles: AuthenticatedUser['role'][] = [
+      'owner',
+      'general_manager',
+      'branch_manager',
+      'teller',
+      'auditor',
+      'accountant',
+      'compliance_officer',
+    ];
+    const usernames = new Set<string>();
+
+    for (const user of loadedUsers) {
+      if (!user || typeof user.id !== 'string' || !user.id.trim() ||
+          typeof user.name !== 'string' || !user.name.trim() ||
+          typeof user.username !== 'string' || !user.username.trim() ||
+          !allowedRoles.includes(user.role) ||
+          typeof user.branchId !== 'string' || !user.branchId.trim() ||
+          typeof user.branchName !== 'string' || !user.branchName.trim() ||
+          typeof user.pinSalt !== 'string' || !/^[a-f0-9]{32}$/i.test(user.pinSalt) ||
+          typeof user.pinHash !== 'string' || !/^[a-f0-9]{64}$/i.test(user.pinHash) ||
+          typeof user.isActive !== 'boolean') {
+        throw new Error('توقف آمن: ملف المستخدمين يحتوي بيانات اعتماد أو صلاحيات غير مكتملة؛ لن يتم إنشاء PIN افتراضي.');
+      }
+
+      const normalizedUsername = user.username.trim().toLowerCase();
+      if (usernames.has(normalizedUsername)) {
+        throw new Error(`توقف آمن: اسم المستخدم مكرر في ملف الحسابات (${normalizedUsername}).`);
+      }
+      usernames.add(normalizedUsername);
+    }
+
     this.users.clear();
-    for (const u of loadedUsers) {
-      this.users.set(u.username, u);
-      this.users.set(u.role, u);
+    for (const user of loadedUsers) {
+      this.users.set(user.username, user);
+      this.users.set(user.role, user);
     }
   }
-
   public saveUsersToDisk(): void {
     const list = Array.from(new Set(this.users.values()));
     safeAtomicWriteJson(USERS_FILE, list);
