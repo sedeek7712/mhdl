@@ -329,6 +329,11 @@ export function insertSqliteRemittance(
 ): SqliteWriteResult {
   assertText(remittance.id, 'remittance.id');
   assertText(remittance.transferNumber, 'remittance.transferNumber');
+  const cleanTransferNumber = remittance.transferNumber.trim();
+  if (cleanTransferNumber.length < 3 || cleanTransferNumber.length > 64 ||
+      !/^[A-Za-z0-9][A-Za-z0-9-]{2,63}$/.test(cleanTransferNumber)) {
+    throw new Error('Transfer number must be 3 to 64 letters, digits, or hyphens and start with a letter or digit.');
+  }
   assertText(remittance.senderName, 'remittance.senderName');
   assertText(remittance.recipientName, 'remittance.recipientName');
   assertText(remittance.networkName, 'remittance.networkName');
@@ -338,7 +343,7 @@ export function insertSqliteRemittance(
   assertSafeInteger(remittance.feeAmountMilli, 'remittance.feeAmountMilli');
   assertSafeInteger(remittance.totalPaidMilli, 'remittance.totalPaidMilli');
 
-  const normalizedNumber = remittance.transferNumber.trim().toUpperCase();
+  const normalizedNumber = cleanTransferNumber.toUpperCase();
   return withImmediateTransaction(db, () => {
     db.prepare(`
       INSERT INTO remittance_number_reservations (
