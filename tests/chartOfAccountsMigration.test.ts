@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { INITIAL_ACCOUNTS } from '../src/data/initialData.ts';
 
 import { buildChartReconciliationPlan } from '../src/server/services/chartOfAccountsMigration.ts';
 
@@ -81,4 +84,30 @@ test('chart reconciliation rejects duplicate IDs in the current ledger', () => {
     () => buildChartReconciliationPlan([account, account], chart),
     /مكرر/
   );
+});
+
+
+test('current repository ledger matches the chart metadata and identifies only the six missing accounts', () => {
+  const ledgerPath = path.resolve(process.cwd(), 'data/accounts_ledger.json');
+  const currentLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  const chartDefinitions = INITIAL_ACCOUNTS.map((account) => ({
+    id: account.id,
+    code: account.code,
+    nameAr: account.nameAr,
+    type: account.type,
+    category: account.category,
+  }));
+
+  const plan = buildChartReconciliationPlan(currentLedger, chartDefinitions);
+
+  assert.equal(currentLedger.length, 5);
+  assert.equal(plan.accounts.length, 11);
+  assert.deepEqual(
+    plan.added.map((account) => account.id).sort(),
+    ['acc-2101', 'acc-2201', 'acc-3101', 'acc-4101', 'acc-4102', 'acc-5101']
+  );
+
+  for (let index = 0; index < currentLedger.length; index += 1) {
+    assert.deepEqual(plan.accounts[index], currentLedger[index]);
+  }
 });
