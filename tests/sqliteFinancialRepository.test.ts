@@ -145,6 +145,23 @@ test('balanced journal is persisted atomically and updates account balances in t
   );
 });
 
+test('journal customer phone is preserved and protected by the idempotency fingerprint', (t) => {
+  const db = createDatabase(t);
+  seedAccounts(db);
+  const input = balancedEntry({ customerPhone: '+967700000001' });
+
+  assert.deepEqual(insertBalancedJournalEntry(db, input), { id: 'journal-1', replayed: false });
+  const row = db.prepare(
+    'SELECT customer_phone FROM journal_entries WHERE id=?'
+  ).get('journal-1') as { customer_phone: string | null };
+  assert.equal(row.customer_phone, '+967700000001');
+  assert.deepEqual(insertBalancedJournalEntry(db, input), { id: 'journal-1', replayed: true });
+  assert.throws(
+    () => insertBalancedJournalEntry(db, { ...input, customerPhone: '+967700000002' }),
+    /reused with a different request/
+  );
+});
+
 test('unbalanced entry is rejected before any journal line or balance is committed', (t) => {
   const db = createDatabase(t);
   seedAccounts(db);
