@@ -55,6 +55,9 @@ jobs:
       - name: Run server exchange tests
         run: bun run test:server-exchange
 
+      - name: Run cashier shift lifecycle tests
+        run: bun run test:cashier-shifts
+
       - name: TypeScript validation
         run: bun run lint
 
