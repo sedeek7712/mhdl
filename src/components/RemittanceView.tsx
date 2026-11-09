@@ -84,6 +84,43 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
   const [numberValidationStatus, setNumberValidationStatus] = useState<'idle' | 'valid' | 'duplicate' | 'empty'>('idle');
   const [numberValidationError, setNumberValidationError] = useState('');
 
+  // Restore an unresolved outgoing-remittance request after app/browser restart.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('alnamari_pending_outgoing_remittance_v1');
+      if (!raw) return;
+      const pending = JSON.parse(raw);
+      const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+      if (!pending || typeof pending.idempotencyKey !== 'string' ||
+          typeof pending.senderName !== 'string' ||
+          typeof pending.recipientName !== 'string' ||
+          typeof pending.networkName !== 'string' ||
+          typeof pending.amount !== 'number' || !Number.isFinite(pending.amount) ||
+          typeof pending.feeAmount !== 'number' || !Number.isFinite(pending.feeAmount) ||
+          !currencies.includes(pending.currency)) {
+        return;
+      }
+
+      setSenderName(pending.senderName);
+      setSenderPhone(typeof pending.senderPhone === 'string' ? pending.senderPhone : '');
+      setRecipientName(pending.recipientName);
+      setRecipientPhone(typeof pending.recipientPhone === 'string' ? pending.recipientPhone : '');
+      setNetworkName(pending.networkName);
+      setAmount(pending.amount);
+      setCurrency(pending.currency);
+      setFeeAmount(pending.feeAmount);
+      setNotes(typeof pending.notes === 'string' ? pending.notes : '');
+      setManualTransferNumber(typeof pending.manualTransferNumber === 'string' ? pending.manualTransferNumber : '');
+      setActiveTab('new_outgoing');
+      toast.warning(
+        'تم استرجاع محاولة حوالة صادرة غير محسومة',
+        'راجع البيانات المستعادة ثم أعد إرسال الحوالة نفسها لاسترجاع نتيجة الخادم دون تكرار القيد.'
+      );
+    } catch {
+      // Invalid pending data is not used to create or retry a financial transaction.
+    }
+  }, []);
+
   // Validate manual transfer number on change
   useEffect(() => {
     if (remittanceSettings.numberingMode !== 'manual') {
@@ -153,13 +190,7 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
         toast.warning('يرجى إدخال رقم الحوالة (حقل إلزامي في وضع الترقيم اليدوي).');
         return;
       }
-      const isDuplicate = remittances.some(
-        (r) => r.transferNumber.trim().toUpperCase() === trimmed.toUpperCase()
-      );
-      if (isDuplicate) {
-        toast.error('رقم الحوالة مستخدم مسبقاً', `رفض النظام: رقم الحوالة (${trimmed}) مستخدم مسبقاً لمنع التكرار.`);
-        return;
-      }
+      // Final uniqueness and pending-replay checks are authoritative on the server.
     }
 
     setIsSubmittingOutgoing(true);
@@ -174,7 +205,7 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
         currency,
         feeAmount,
         notes: notes.trim(),
-        manualTransferNumber: remittanceSettings.numberingMode === 'manual'
+        manualTransferNumber: manualTransferNumber.trim()
           ? manualTransferNumber.trim().toUpperCase()
           : undefined,
       });
@@ -524,7 +555,7 @@ export const RemittanceView: React.FC<RemittanceViewProps> = ({
                 type="submit"
                 disabled={isSubmittingOutgoing || !senderName.trim() || !recipientName.trim() || !networkName.trim() ||
                   !Number.isFinite(amount) || amount <= 0 || !Number.isFinite(feeAmount) || feeAmount < 0 ||
-                  (remittanceSettings.numberingMode === 'manual' && (numberValidationStatus === 'duplicate' || !manualTransferNumber.trim()))}
+                  (remittanceSettings.numberingMode === 'manual' && !manualTransferNumber.trim())}
                 className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:border disabled:border-slate-700 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-600/20 transition-all cursor-pointer"
               >
                 {isSubmittingOutgoing ? <span className="animate-spin border-2 border-white/30 border-t-white rounded-full w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
