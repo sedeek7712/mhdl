@@ -61,6 +61,7 @@ export interface ServerJournalEntry {
   branchId: string;
   createdBy: string;
   isBalanced: boolean;
+  idempotencyKey?: string;
 }
 
 class ServerAccountingEngine {
@@ -425,6 +426,7 @@ class ServerAccountingEngine {
       branchId: params.branchId || 'br-khadeer',
       createdBy: params.tellerName,
       isBalanced: true,
+      idempotencyKey: params.idempotencyKey,
     };
 
     this.journalEntries.unshift(newJournalEntry);
@@ -474,7 +476,23 @@ class ServerAccountingEngine {
     currency: CurrencyCode;
     operatorName: string;
     branchId?: string;
+    idempotencyKey: string;
   }): { success: boolean; journalEntry?: ServerJournalEntry; error?: string; errorCode?: 'COMMIT_PENDING_RECOVERY' } {
+    if (typeof params.idempotencyKey !== 'string' || !/^[a-f0-9-]{36}$/i.test(params.idempotencyKey)) {
+      return { success: false, error: 'مفتاح العملية غير صالح. أعد فتح الطلب من الواجهة.' };
+    }
+
+    // Safe retry: if the original request committed but its HTTP response was lost,
+    // return the original journal entry without applying the balances a second time.
+    const priorEntry = this.journalEntries.find((entry) =>
+      entry.idempotencyKey === params.idempotencyKey &&
+      entry.referenceType === 'internal_transfer' &&
+      entry.descriptionAr.startsWith('تغذية صندوق ')
+    );
+    if (priorEntry) {
+      return { success: true, journalEntry: priorEntry };
+    }
+
     if (this.storageWriteBlocked) {
       return { success: false, errorCode: 'COMMIT_PENDING_RECOVERY', error: 'الكتابة المالية متوقفة بسبب معاملة سابقة غير محسومة. لا تعاود العملية؛ يلزم إيقاف النظام ومطابقة الدفاتر.' };
     }
