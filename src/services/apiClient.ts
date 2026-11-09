@@ -206,9 +206,18 @@ class ApiClient {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      return data;
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!res.ok && res.status >= 500),
+      };
     } catch (err: any) {
-      return { success: false, error: err.message || 'تعذر الاتصال بالخادم لتغذية الصندوق' };
+      // A lost HTTP response may occur after the server has already committed the transfer.
+      // Preserve the caller's idempotency key and do not treat this as a definitive rejection.
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: err.message || 'تعذر الاتصال بالخادم لتغذية الصندوق؛ قد تكون نتيجة الطلب غير محسومة.',
+      };
     }
   }
 
