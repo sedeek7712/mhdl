@@ -251,7 +251,7 @@ class AuthService {
         !branchId || !branchName || !roles.includes(params.role)) {
       return { success: false, error: 'بيانات الموظف أو اسم الدخول أو الدور أو الفرع غير صالحة.' };
     }
-    if (this.users.has(username) || Array.from(this.users.values()).some((user) => user.id === username)) {
+    if (this.users.has(username)) {
       return { success: false, error: 'اسم المستخدم مستخدم مسبقاً.' };
     }
     if (!this.validStrongPin(params.pin)) {
@@ -299,11 +299,13 @@ class AuthService {
     if (!target) return { success: false, error: 'حساب المستخدم غير موجود.' };
     if (target.role === 'owner') return { success: false, error: 'غيّر PIN المالك من جلسة المالك نفسها.' };
     if (!this.validStrongPin(newPin)) return { success: false, error: 'PIN الجديد ضعيف أو غير صالح.' };
+    if (verifyPinHash(newPin, target.pinSalt, target.pinHash)) return { success: false, error: 'اختر PIN مختلفاً عن الرمز الحالي.' };
     const salt = crypto.randomBytes(16).toString('hex');
     const updated = {
       ...target,
       pinSalt: salt,
       pinHash: hashPinWithSalt(newPin, salt),
+      isActive: true,
       mustChangePin: false,
       sessionVersion: crypto.randomBytes(16).toString('hex'),
     };
