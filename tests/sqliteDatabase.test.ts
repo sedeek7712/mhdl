@@ -51,15 +51,20 @@ test('default database path is outside the application directory and prefers Win
     'C:\\Users\\Tester'
   );
 
-  assert.match(databasePath, /AmroAlnamariExchange[\\/]exchange\\.sqlite$/);
-  assert.match(databasePath, /AppData[\\/]Local/);
+  assert.equal(
+    databasePath,
+    path.win32.join('C:\\Users\\Tester\\AppData\\Local', 'AmroAlnamariExchange', 'exchange.sqlite')
+  );
 
   const fallbackPath = getDefaultSqliteDatabasePath(
     { APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming' },
     'win32',
     'C:\\Users\\Tester'
   );
-  assert.match(fallbackPath, /AppData[\\/]Roaming/);
+  assert.equal(
+    fallbackPath,
+    path.win32.join('C:\\Users\\Tester\\AppData\\Roaming', 'AmroAlnamariExchange', 'exchange.sqlite')
+  );
 });
 test('SQLite enables foreign keys, FULL synchronous mode, WAL, and configured busy timeout', (t) => {
   const directory = makeTempDirectory(t);
