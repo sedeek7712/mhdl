@@ -72,7 +72,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!/^\\d{6}$/.test(pin)) {
+    if (!/^\d{6}$/.test(pin)) {
       setErrorMsg('أدخل رمز PIN مكوّناً من 6 أرقام بالضبط.');
       return;
     }
@@ -172,7 +172,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
                 autoFocus
                 placeholder="••••••"
                 value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/\\D/g, '').slice(0, 6))}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 className="w-full bg-slate-850 border border-slate-700 rounded-xl px-4 py-2.5 text-center text-lg tracking-widest font-mono text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 required
               />
