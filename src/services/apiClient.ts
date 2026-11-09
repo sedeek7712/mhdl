@@ -221,6 +221,49 @@ class ApiClient {
     }
   }
 
+  public async registerOutgoingRemittance(payload: {
+    idempotencyKey: string;
+    manualTransferNumber?: string;
+    senderName: string;
+    senderPhone: string;
+    recipientName: string;
+    recipientPhone: string;
+    networkName: string;
+    amount: number;
+    currency: string;
+    feeAmount: number;
+    notes: string;
+  }): Promise<{
+    success: boolean;
+    record?: any;
+    journalEntry?: any;
+    accounts?: any[];
+    error?: string;
+    errorCode?: string;
+    outcomeUncertain?: boolean;
+    doNotRetry?: boolean;
+    replayed?: boolean;
+  }> {
+    try {
+      const response = await this.fetch('/api/remittances/outgoing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      return {
+        ...data,
+        outcomeUncertain: Boolean(data.outcomeUncertain) || (!response.ok && response.status >= 500),
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        outcomeUncertain: true,
+        error: error.message || 'انقطع الاتصال أثناء تسجيل الحوالة الصادرة؛ قد تكون العملية حفظت في الخادم.',
+      };
+    }
+  }
+
   public async registerIncomingRemittance(payload: {
     transferNumber: string;
     senderName: string;
