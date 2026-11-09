@@ -249,8 +249,8 @@ test('remittance insertion rolls back reservation when the remittance row violat
   const db = createDatabase(t);
 
   assert.throws(
-    () => insertSqliteRemittance(db, remittance({ amountMilli: 0 })),
-    /amountMilli/
+    () => insertSqliteRemittance(db, remittance({ currency: 'INVALID' as any })),
+    /CHECK constraint failed/
   );
 
   const reservations = db.prepare(
