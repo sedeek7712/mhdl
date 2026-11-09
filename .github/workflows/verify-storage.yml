@@ -23,7 +23,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Install locked dependencies
+      - name: Install project dependencies
         run: bun install --no-save
 
       # Deliberately do not run the legacy enterprise_audit_verification.ts suite:
