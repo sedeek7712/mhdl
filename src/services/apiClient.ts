@@ -84,6 +84,25 @@ class ApiClient {
     }
   }
 
+  public async getSession(): Promise<{ success: boolean; user?: any; error?: string }> {
+    if (!this.token) {
+      return { success: false, error: 'لا توجد جلسة دخول محفوظة.' };
+    }
+
+    try {
+      const res = await this.fetch('/api/auth/session');
+      const data = await res.json();
+      if (!res.ok || !data.success || !data.user) {
+        this.clearSession();
+        return { success: false, error: data.error || 'انتهت جلسة الدخول أو أصبحت غير صالحة.' };
+      }
+      this.currentUser = data.user;
+      return { success: true, user: data.user };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'تعذر التحقق من جلسة الدخول.' };
+    }
+  }
+
   /**
    * استدعاء آمن مع إرفاق رمز المصادقة (Bearer) تلقائياً
    */
