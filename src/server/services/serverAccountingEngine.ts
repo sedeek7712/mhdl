@@ -427,7 +427,6 @@ class ServerAccountingEngine {
       branchId: params.branchId || 'br-khadeer',
       createdBy: params.tellerName,
       isBalanced: true,
-      idempotencyKey: params.idempotencyKey,
     };
 
     this.journalEntries.unshift(newJournalEntry);
