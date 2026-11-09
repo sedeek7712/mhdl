@@ -97,8 +97,8 @@ function createPinHash(pin: string, salt: string): string {
 }
 
 function validatePin(pin: string): void {
-  if (!/^\d{4,10}$/.test(pin)) {
-    throw new Error('يجب أن يتكون PIN من 4 إلى 10 أرقام.');
+  if (!/^\d{6}$/.test(pin)) {
+    throw new Error('يجب أن يتكون PIN من 6 أرقام بالضبط.');
   }
   if (/^(\d)\1+$/.test(pin) || ['123456', '654321', '000000', '111111', '222222', '123321'].includes(pin)) {
     throw new Error('هذا PIN ضعيف وشائع؛ اختر أرقاماً غير متسلسلة وغير مكررة.');
