@@ -442,7 +442,7 @@ function AppContent() {
   };
 
   // 2. Create Outgoing Remittance (إرسال حوالة صادرة)
-  const handleCreateOutgoingRemittance = (data: {
+  const handleCreateOutgoingRemittance = async (data: {
     senderName: string;
     senderPhone: string;
     recipientName: string;
@@ -453,196 +453,252 @@ function AppContent() {
     feeAmount: number;
     notes?: string;
     manualTransferNumber?: string;
-  }) => {
-    const totalPaid = data.amount + data.feeAmount;
+  }): Promise<Remittance | null> => {
+    const request = {
+      senderName: data.senderName.trim(),
+      senderPhone: data.senderPhone.trim(),
+      recipientName: data.recipientName.trim(),
+      recipientPhone: data.recipientPhone.trim(),
+      networkName: data.networkName.trim(),
+      amount: data.amount,
+      currency: data.currency,
+      feeAmount: data.feeAmount,
+      notes: (data.notes || '').trim(),
+      manualTransferNumber: data.manualTransferNumber?.trim().toUpperCase() || undefined,
+    };
 
-    // Numbering Mode Policy Execution (Automatic vs Manual with UNIQUE constraint)
-    let transferNum = '';
-    const mode = remittanceSettings.numberingMode;
+    if (!request.senderName || !request.recipientName || !request.networkName ||
+        !Number.isFinite(request.amount) || request.amount <= 0 ||
+        !Number.isFinite(request.feeAmount) || request.feeAmount < 0) {
+      toast.warning('بيانات الحوالة الصادرة غير مكتملة أو غير صالحة.');
+      return null;
+    }
 
-    if (mode === 'manual') {
-      if (!data.manualTransferNumber || !data.manualTransferNumber.trim()) {
-        toast.warning('رقم الحوالة إلزامي في وضع الترقيم اليدوي.');
-        return;
+    if (remittanceSettings.numberingMode === 'manual' && !request.manualTransferNumber) {
+      toast.warning('رقم الحوالة إلزامي في وضع الترقيم اليدوي.');
+      return null;
+    }
+
+    const pendingStorageKey = 'alnamari_pending_outgoing_remittance_v1';
+    let idempotencyKey: string;
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          senderName?: string;
+          senderPhone?: string;
+          recipientName?: string;
+          recipientPhone?: string;
+          networkName?: string;
+          amount?: number;
+          currency?: string;
+          feeAmount?: number;
+          notes?: string;
+          manualTransferNumber?: string;
+        };
+
+        const sameRequest =
+          pending.senderName === request.senderName &&
+          pending.senderPhone === request.senderPhone &&
+          pending.recipientName === request.recipientName &&
+          pending.recipientPhone === request.recipientPhone &&
+          pending.networkName === request.networkName &&
+          pending.amount === request.amount &&
+          pending.currency === request.currency &&
+          pending.feeAmount === request.feeAmount &&
+          pending.notes === request.notes &&
+          (pending.manualTransferNumber || undefined) === request.manualTransferNumber;
+        if (!pending.idempotencyKey || !sameRequest) {
+          toast.warning(
+            'توجد حوالة صادرة سابقة لم تُحسم',
+            'لا تنشئ حوالة أخرى الآن. أعد إرسال نفس بيانات الحوالة السابقة لاسترجاع نتيجتها، أو اطلب مطابقة الدفتر.'
+          );
+          return null;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          ...request,
+          createdAt: new Date().toISOString(),
+        }));
       }
-      const cleanManualNum = data.manualTransferNumber.trim().toUpperCase();
-
-      // Check Unique constraint locally
-      const isDuplicate = remittances.some(
-        (r) => r.transferNumber.trim().toUpperCase() === cleanManualNum
+    } catch {
+      toast.error(
+        'تعذر حفظ معرف عملية الحوالة',
+        'أوقف التسجيل؛ يجب حفظ معرف ثابت قبل إرسال الطلب حتى لا تتكرر حركة الصندوق بعد انقطاع الاتصال.'
       );
-      if (isDuplicate) {
-        toast.error(
-          'رقم الحوالة مستخدم مسبقاً',
-          `رفض النظام: رقم الحوالة (${cleanManualNum}) مستخدم مسبقاً في النظام ولا يمكن تكراره (UNIQUE Constraint).`
-        );
-        return;
-      }
-
-      transferNum = cleanManualNum;
-    } else {
-      // Automatic Mode: sequential atomic unique generation
-      let currentSeq = remittanceSettings.nextSequence;
-      transferNum = `${remittanceSettings.prefix}${String(currentSeq).padStart(6, '0')}`;
-
-      // Prevent collision with any existing remittances
-      while (
-        remittances.some((r) => r.transferNumber.trim().toUpperCase() === transferNum.toUpperCase())
-      ) {
-        currentSeq += 1;
-        transferNum = `${remittanceSettings.prefix}${String(currentSeq).padStart(6, '0')}`;
-      }
-
-      // Update next sequence
-      setRemittanceSettings((prev) => ({
-        ...prev,
-        nextSequence: currentSeq + 1,
-      }));
+      return null;
     }
 
-    // Register with backend server if online
-    if (isOnline) {
-      apiClient.fetch('/api/remittances/register-number', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transferNumber: transferNum,
-          mode,
-        }),
-      }).catch((err) => console.warn('Could not register number with central server:', err));
-    }
-
-    const voucherNum = `V-${new Date().getFullYear()}-${String(remittances.length + 1).padStart(4, '0')}`;
-    const entryNum = `JV-${new Date().getFullYear()}-${String(journalEntries.length + 1).padStart(4, '0')}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-
-    // Update balances: Cashier box gets totalPaid, Network account owed the amount, Commission account gets fee
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + totalPaid,
-            },
-          };
-        }
-        if (acc.id === 'acc-1301') {
-          // Network account (liability to pay recipient network)
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) - data.amount,
-            },
-          };
-        }
-        if (acc.id === 'acc-4101' && data.feeAmount > 0) {
-          // Commission revenue
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + data.feeAmount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
-
-    // Remittance object with numberingMode tracking
-    const newRemittance: Remittance = {
-      id: `rem-${Date.now()}`,
-      transferNumber: transferNum,
-      direction: 'outgoing',
-      status: 'approved',
-      senderName: data.senderName,
-      senderPhone: data.senderPhone,
-      recipientName: data.recipientName,
-      recipientPhone: data.recipientPhone,
-      networkName: data.networkName,
-      amount: data.amount,
-      currency: data.currency,
-      feeAmount: data.feeAmount,
-      totalPaid,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      createdAt: `${dateStr} ${timeStr}`,
-      voucherNumber: voucherNum,
-      notes: data.notes,
-      numberingMode: mode,
-    };
-
-    setRemittances((prev) => [newRemittance, ...prev]);
-
-    // Balanced Journal Entry
-    const newJournalEntry: JournalEntry = {
-      id: `jv-rem-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `إرسال حوالة صادرة ${transferNum} للمستلم ${data.recipientName} عبر ${data.networkName}`,
-      lines: [
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'صندوق كاشير الصراف 1',
-          currency: data.currency,
-          debit: totalPaid,
-          credit: 0,
-          note: 'قبض من المرسل مع العمولة',
-        },
-        {
-          accountId: 'acc-1301',
-          accountNameAr: `حساب ${data.networkName}`,
-          currency: data.currency,
-          debit: 0,
-          credit: data.amount,
-          note: 'مستحق للشبكة',
-        },
-        ...(data.feeAmount > 0
-          ? [
-              {
-                accountId: 'acc-4101',
-                accountNameAr: 'إيرادات عمولات الحوالات',
-                currency: data.currency,
-                debit: 0,
-                credit: data.feeAmount,
-                note: 'أجور تحويل مستحقة',
-              },
-            ]
-          : []),
-      ],
-      referenceType: 'transfer_send',
-      referenceId: transferNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
-
-    setJournalEntries((prev) => [...prev, newJournalEntry]);
-
-    // Create Official Voucher via Central Voucher Engine
-    const newVoucher = voucherEngine.createOutgoingTransferVoucher({
-      voucherNumber: voucherNum,
-      transferNumber: transferNum,
-      senderName: data.senderName,
-      senderPhone: data.senderPhone,
-      recipientName: data.recipientName,
-      recipientPhone: data.recipientPhone,
-      networkName: data.networkName,
-      amount: data.amount,
-      currency: data.currency,
-      feeAmount: data.feeAmount,
-      branchName: currentUser.branchName,
-      tellerName: currentUser.name,
-      notes: data.notes,
+    const result = await apiClient.registerOutgoingRemittance({
+      idempotencyKey,
+      manualTransferNumber: request.manualTransferNumber,
+      senderName: request.senderName,
+      senderPhone: request.senderPhone,
+      recipientName: request.recipientName,
+      recipientPhone: request.recipientPhone,
+      networkName: request.networkName,
+      amount: request.amount,
+      currency: request.currency,
+      feeAmount: request.feeAmount,
+      notes: request.notes,
     });
 
-    setActiveVoucher(newVoucher);
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'الحوالة الصادرة غير محسومة محاسبياً',
+          result.error || 'أوقف النظام ولا تعاود تسجيل الحوالة. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return null;
+      }
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد إرسال نفس بيانات الحوالة لاسترجاع النتيجة باستخدام معرف العملية السابق.'
+        );
+        return null;
+      }
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // A definitive rejection did not create a ledger movement.
+      }
+      toast.error('رفض الخادم تسجيل الحوالة الصادرة', result.error || 'لم يتم تنفيذ العملية.');
+      return null;
+    }
+
+    const record = result.record;
+    const journalEntry = result.journalEntry;
+    const totalPaid = request.amount + request.feeAmount;
+    const cashLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-1102' &&
+      line.currency === request.currency &&
+      Math.abs(line.debit - totalPaid) <= 0.0000001 &&
+      line.credit === 0
+    );
+    const payableLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-2201' &&
+      line.currency === request.currency &&
+      Math.abs(line.credit - request.amount) <= 0.0000001 &&
+      line.debit === 0
+    );
+    const commissionLine = request.feeAmount > 0
+      ? journalEntry?.lines?.find((line: any) =>
+          line.accountId === 'acc-4101' &&
+          line.currency === request.currency &&
+          Math.abs(line.credit - request.feeAmount) <= 0.0000001 &&
+          line.debit === 0
+        )
+      : true;
+
+    if (!record || record.direction !== 'outgoing' ||
+        record.status !== 'approved' ||
+        typeof record.id !== 'string' ||
+        typeof record.transferNumber !== 'string' ||
+        typeof record.voucherNumber !== 'string' ||
+        record.idempotencyKey !== idempotencyKey ||
+        !journalEntry ||
+        journalEntry.referenceType !== 'transfer_send' ||
+        journalEntry.referenceId !== record.transferNumber ||
+        journalEntry.idempotencyKey !== idempotencyKey ||
+        typeof journalEntry.entryNumber !== 'string' ||
+        !cashLine || !payableLine || !commissionLine ||
+        !Array.isArray(result.accounts)) {
+      toast.error(
+        'استجابة الحوالة الصادرة غير مكتملة',
+        'لم نحدث الأرصدة أو نمسح معرف المحاولة. لا تسجل حوالة أخرى قبل مطابقة دفتر الخادم.'
+      );
+      return null;
+    }
+
+    const registeredRemittance: Remittance = {
+      id: record.id,
+      transferNumber: record.transferNumber,
+      direction: 'outgoing',
+      status: record.status,
+      senderName: record.senderName,
+      senderPhone: record.senderPhone || '',
+      recipientName: record.recipientName,
+      recipientPhone: record.recipientPhone || '',
+      networkName: record.networkName,
+      amount: record.amount,
+      currency: record.currency as CurrencyCode,
+      feeAmount: record.feeAmount,
+      totalPaid: record.totalPaid,
+      branchName: record.branchName,
+      tellerName: record.tellerName,
+      createdAt: record.createdAt,
+      voucherNumber: record.voucherNumber,
+      notes: record.notes || '',
+      numberingMode: record.numberingMode || 'manual',
+    };
+
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((entry) =>
+        entry.id === journalEntry.id || entry.entryNumber === journalEntry.entryNumber
+      );
+      return exists ? previous : [journalEntry as JournalEntry, ...previous];
+    });
+    setRemittances((previous) => {
+      const exists = previous.some(
+        (item) => item.transferNumber.trim().toUpperCase() === registeredRemittance.transferNumber
+      );
+      return exists
+        ? previous.map((item) =>
+            item.transferNumber.trim().toUpperCase() === registeredRemittance.transferNumber
+              ? registeredRemittance
+              : item
+          )
+        : [registeredRemittance, ...previous];
+    });
+    if (result.settings) {
+      setRemittanceSettings(result.settings as RemittanceSettings);
+    }
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // Server journal and master record retain the idempotency key, so a replay remains safe.
+    }
+
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${journalEntry.id}`,
+      category: 'financial',
+      timestamp: `${journalEntry.date} ${journalEntry.time}`,
+      action: 'تسجيل حوالة صادرة',
+      details: `اعتمد الخادم الحوالة ${record.transferNumber} بمبلغ ${formatMoney(record.amount, record.currency)} وعمولة ${formatMoney(record.feeAmount, record.currency)} بالقيد ${journalEntry.entryNumber}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
+    };
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
+
+    const voucher = voucherEngine.createOutgoingTransferVoucher({
+      voucherNumber: record.voucherNumber,
+      transferNumber: record.transferNumber,
+      senderName: record.senderName,
+      senderPhone: record.senderPhone || '',
+      recipientName: record.recipientName,
+      recipientPhone: record.recipientPhone || '',
+      networkName: record.networkName,
+      amount: record.amount,
+      currency: record.currency as CurrencyCode,
+      feeAmount: record.feeAmount,
+      branchName: record.branchName,
+      tellerName: record.tellerName,
+      notes: record.notes || '',
+    });
+    setActiveVoucher(voucher);
+
+    toast.success(
+      result.replayed ? 'الحوالة الصادرة مسجلة مسبقاً' : 'تم اعتماد الحوالة الصادرة من الخادم',
+      `الحوالة ${record.transferNumber} بالقيد ${journalEntry.entryNumber}. تم تحديث الأرصدة من دفتر الخادم.`
+    );
+    return registeredRemittance;
   };
 
   // 2.1 Save Remittance Settings (التحكم في طريقة إصدار أرقام الحوالات وتوثيق التدقيق)
