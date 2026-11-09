@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -48,6 +49,21 @@ export function createSqliteAuthRuntime(options: SqliteAuthRuntimeOptions = {}):
   const databaseFile = configuredDatabaseFile === ':memory:'
     ? ':memory:'
     : path.resolve(configuredDatabaseFile);
+
+  if (databaseFile !== ':memory:') {
+    let databaseStat: fs.Stats;
+    try {
+      databaseStat = fs.lstatSync(databaseFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error('SQLite auth database file does not exist. Run the reviewed account import against the exact configured database path before enabling SQLite auth.');
+      }
+      throw error;
+    }
+    if (databaseStat.isSymbolicLink() || !databaseStat.isFile()) {
+      throw new Error('SQLite auth database path must reference an existing regular file, not a symbolic link or directory.');
+    }
+  }
 
   const secretFile = options.jwtSecretFile ||
     resolveJwtSecretFilePath(__dirname, env);
