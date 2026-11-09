@@ -20,7 +20,7 @@ interface SourceFileSnapshot {
   bytes: number;
   sha256: string;
   records: number;
-  disposition: 'imported' | 'validated_only' | 'optional_missing';
+  disposition: 'imported' | 'validated_only' | 'deferred' | 'optional_missing';
 }
 
 interface DryRunIssue {
@@ -476,8 +476,8 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       if (item) {
         loaded.set(name, item);
         payloads.set(name, item.payload);
-        const deferred = name.startsWith('system_users') || name === 'whatsapp_dispatch_registry.json';
-        addSnapshot(report.sourceFiles, name, item, deferred ? 'validated_only' : 'imported');
+        const deferred = name.startsWith('system_users') || name === 'whatsapp_dispatch_registry.json' || name === 'exchange_rate_state.json' || name === 'cash_box_shift_state.json';
+        addSnapshot(report.sourceFiles, name, item, deferred ? 'deferred' : 'imported');
       } else {
         addSnapshot(report.sourceFiles, name, null, 'optional_missing');
       }
