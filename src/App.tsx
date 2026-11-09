@@ -255,7 +255,17 @@ function AppContent() {
             numberingMode: record.numberingMode || 'manual',
           }));
 
-        setRemittances(serverRemittances);
+        // Keep legacy local-only entries visible until their operations are migrated,
+        // but the server record always wins when the same transfer number exists centrally.
+        setRemittances((previous) => {
+          const serverNumbers = new Set(
+            serverRemittances.map((item) => item.transferNumber.trim().toUpperCase())
+          );
+          const localOnly = previous.filter(
+            (item) => !serverNumbers.has(item.transferNumber.trim().toUpperCase())
+          );
+          return [...serverRemittances, ...localOnly];
+        });
       })
       .catch(() => {
         // Keep the last saved view while reporting the server as unavailable elsewhere.
