@@ -383,6 +383,96 @@ function importExchangeRateState(db: ReturnType<typeof openSqliteDatabase>, valu
   }
   return { rates: rates.length, auditLogs: logs.length };
 }
+
+function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, value: unknown): { shifts: number; balances: number; events: number } {
+  const state = record(value, 'cash_box_shift_state.json');
+  if (state.schemaVersion !== 1 || !Array.isArray(state.history)) throw new Error('Invalid cashier-shift state.');
+  const history = records(state.history, 'cashier shift history');
+  const active = state.activeShift === null ? null : record(state.activeShift, 'active cashier shift');
+  const all = active ? [...history, active] : history;
+  const ids = new Set<string>();
+  const openKeys = new Set<string>();
+  const closeKeys = new Set<string>();
+  const currencies: SqliteCurrency[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+  const kinds = ['opening', 'expected', 'actual', 'discrepancy'] as const;
+  const shiftInsert = db.prepare('INSERT INTO cashier_shifts (id, box_id, box_name_ar, teller_id, teller_name, opened_at, closed_at, status, notes, opened_by_role, closed_by, closed_by_id, open_idempotency_key, close_idempotency_key, open_request_fingerprint, close_request_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const balanceInsert = db.prepare('INSERT INTO cashier_shift_balances (shift_id, balance_kind, currency, amount_milli) VALUES (?, ?, ?, ?)');
+  const eventInsert = db.prepare('INSERT INTO cashier_shift_events (id, shift_id, event_type, actor_id, actor_name, occurred_at, details) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  let balanceCount = 0;
+  let eventCount = 0;
+  const balancesFor = (input: unknown, field: string, signed = false) => {
+    const source = record(input, field);
+    const output = {} as Record<SqliteCurrency, number>;
+    for (const currency of currencies) {
+      const amount = source[currency];
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || (!signed && amount < 0)) {
+        throw new Error(`Invalid shift balance: ${field}.${currency}.`);
+      }
+      output[currency] = toScaledInteger(amount, 1000, `${field}.${currency}`);
+    }
+    return output;
+  };
+  for (const shift of all) {
+    const id = stringValue(shift.id, 'shift.id');
+    const status = stringValue(shift.status, 'shift.status');
+    if (ids.has(id) || (status !== 'open' && status !== 'closed') ||
+        (shift === active && status !== 'open') || (shift !== active && status !== 'closed')) {
+      throw new Error('Invalid or duplicate cashier-shift record.');
+    }
+    ids.add(id);
+    const openKey = stringValue(shift.openIdempotencyKey, 'shift.openIdempotencyKey');
+    const closeKey = optionalText(shift, 'closeIdempotencyKey');
+    if (!/^[a-f0-9-]{36}$/i.test(openKey) || openKeys.has(openKey) ||
+        (closeKey && (!/^[a-f0-9-]{36}$/i.test(closeKey) || closeKeys.has(closeKey)))) {
+      throw new Error('Invalid or duplicate cashier-shift idempotency key.');
+    }
+    openKeys.add(openKey);
+    if (closeKey) closeKeys.add(closeKey);
+    const openFingerprint = optionalText(shift, 'openRequestFingerprint');
+    const closeFingerprint = optionalText(shift, 'closeRequestFingerprint');
+    if ((openFingerprint && !/^[a-f0-9]{64}$/i.test(openFingerprint)) ||
+        (closeFingerprint && !/^[a-f0-9]{64}$/i.test(closeFingerprint))) {
+      throw new Error('Invalid cashier-shift request fingerprint.');
+    }
+    shiftInsert.run(
+      id, stringValue(shift.boxId, 'shift.boxId'), stringValue(shift.boxNameAr, 'shift.boxNameAr'),
+      stringValue(shift.tellerId, 'shift.tellerId'), stringValue(shift.tellerName, 'shift.tellerName'),
+      stringValue(shift.openedAt, 'shift.openedAt'), optionalText(shift, 'closedAt') ?? null,
+      status, optionalText(shift, 'notes') ?? null, stringValue(shift.openedByRole, 'shift.openedByRole'),
+      optionalText(shift, 'closedBy') ?? null, optionalText(shift, 'closedById') ?? null,
+      openKey, closeKey ?? null, openFingerprint ?? null, closeFingerprint ?? null
+    );
+    const groups = {
+      opening: balancesFor(shift.openingBalances, 'shift.openingBalances'),
+      expected: balancesFor(shift.expectedBalances, 'shift.expectedBalances'),
+      actual: balancesFor(shift.actualBalances, 'shift.actualBalances'),
+      discrepancy: balancesFor(shift.discrepancies, 'shift.discrepancies', true),
+    };
+    for (const kind of kinds) for (const currency of currencies) {
+      balanceInsert.run(id, kind, currency, groups[kind][currency]);
+      balanceCount += 1;
+    }
+    eventInsert.run(`${id}:opened`, id, 'opened', shift.tellerId, shift.tellerName,
+      shift.openedAt, JSON.stringify({ boxId: shift.boxId, openIdempotencyKey: openKey }));
+    eventCount += 1;
+    if (status === 'closed') {
+      const closedAt = stringValue(shift.closedAt, 'shift.closedAt');
+      const closedById = stringValue(shift.closedById, 'shift.closedById');
+      const closedBy = stringValue(shift.closedBy, 'shift.closedBy');
+      eventInsert.run(`${id}:closed`, id, 'closed', closedById, closedBy, closedAt,
+        JSON.stringify({ closeIdempotencyKey: closeKey, notes: optionalText(shift, 'notes') ?? '', discrepancies: shift.discrepancies }));
+      eventCount += 1;
+      const hasVariance = currencies.some((currency) =>
+        Math.abs(Number((shift.discrepancies as Record<string, unknown>)[currency])) >= 0.01);
+      if (hasVariance) {
+        eventInsert.run(`${id}:variance`, id, 'variance_noted', closedById, closedBy, closedAt,
+          JSON.stringify({ notes: optionalText(shift, 'notes') ?? '', discrepancies: shift.discrepancies }));
+        eventCount += 1;
+      }
+    }
+  }
+  return { shifts: all.length, balances: balanceCount, events: eventCount };
+}
 function compareRemittancePayouts(
   masters: JsonRecord[],
   payouts: JsonRecord[],
