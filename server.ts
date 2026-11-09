@@ -64,10 +64,10 @@ async function startServer() {
         if (host && originHost === host.toLowerCase()) {
           isAllowed = true;
         } else if (
-          originHost.startsWith('localhost') ||
-          originHost.startsWith('127.0.0.1') ||
-          originHost.endsWith('.run.app') ||
-          originHost.endsWith('.googleusercontent.com')
+          originHost === 'localhost' ||
+          originHost.startsWith('localhost:') ||
+          originHost === '127.0.0.1' ||
+          originHost.startsWith('127.0.0.1:')
         ) {
           isAllowed = true;
         }
@@ -890,8 +890,9 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Amro Alnamari Production Server] Running securely on http://0.0.0.0:${PORT}`);
+  // Single-device Windows deployment: never expose the financial API to the LAN.
+  httpServer.listen(PORT, '127.0.0.1', () => {
+    console.log(`[Amro Alnamari Local Server] Listening on http://127.0.0.1:${PORT}`);
   });
 }
 
