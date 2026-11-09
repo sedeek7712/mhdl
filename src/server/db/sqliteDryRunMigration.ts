@@ -473,6 +473,45 @@ function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, valu
   }
   return { shifts: all.length, balances: balanceCount, events: eventCount };
 }
+
+function importLocalUsers(db: ReturnType<typeof openSqliteDatabase>, value: unknown): number {
+  const users = records(value, 'system_users.local.json');
+  if (users.length === 0) throw new Error('Local user registry is empty.');
+  const roles = ['owner', 'general_manager', 'branch_manager', 'teller', 'auditor', 'accountant', 'compliance_officer'];
+  const usernames = new Set<string>();
+  const ids = new Set<string>();
+  let ownerCount = 0;
+  let activeOwnerCount = 0;
+  const insert = db.prepare('INSERT INTO app_users (id, username, name, role, branch_id, branch_name, pin_salt, pin_hash, is_active, must_change_pin, session_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const user of users) {
+    const username = stringValue(user.username, 'user.username').toLowerCase();
+    const id = stringValue(user.id, 'user.id');
+    const role = stringValue(user.role, 'user.role');
+    const salt = stringValue(user.pinSalt, 'user.pinSalt');
+    const hash = stringValue(user.pinHash, 'user.pinHash');
+    const session = stringValue(user.sessionVersion, 'user.sessionVersion');
+    if (!/^[a-z0-9._-]{3,32}$/.test(username) || !roles.includes(role) ||
+        !/^[a-f0-9]{32}$/i.test(salt) || !/^[a-f0-9]{64}$/i.test(hash) ||
+        !/^[a-f0-9]{32}$/i.test(session) ||
+        typeof user.isActive !== 'boolean' || typeof user.mustChangePin !== 'boolean' ||
+        usernames.has(username) || ids.has(id)) {
+      throw new Error('Local user registry contains an invalid or duplicate account.');
+    }
+    usernames.add(username); ids.add(id);
+    if (role === 'owner') {
+      ownerCount += 1;
+      if (user.isActive) activeOwnerCount += 1;
+    }
+    insert.run(id, username, stringValue(user.name, 'user.name'), role,
+      stringValue(user.branchId, 'user.branchId'), stringValue(user.branchName, 'user.branchName'),
+      salt, hash, user.isActive ? 1 : 0, user.mustChangePin ? 1 : 0, session,
+      stringValue(user.createdAt, 'user.createdAt'));
+  }
+  if (ownerCount !== 1 || activeOwnerCount !== 1) {
+    throw new Error('Local user registry must contain exactly one active owner.');
+  }
+  return users.length;
+}
 function compareRemittancePayouts(
   masters: JsonRecord[],
   payouts: JsonRecord[],
