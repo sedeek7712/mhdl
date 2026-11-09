@@ -359,3 +359,91 @@ function toPublicUser(user: SqliteUserRecord): SqlitePublicUser {
     createdAt: user.createdAt,
   };
 }
+
+
+export interface SqliteLoginAttempt {
+  attemptKey: string;
+  attempts: number;
+  lockUntilMs: number;
+  updatedAt: string;
+}
+
+function mapLoginAttempt(row: Record<string, unknown> | undefined): SqliteLoginAttempt | undefined {
+  if (!row) return undefined;
+  return {
+    attemptKey: String(row.attempt_key),
+    attempts: Number(row.attempts),
+    lockUntilMs: Number(row.lock_until_ms),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+export function getSqliteLoginAttempt(
+  db: DatabaseSync,
+  attemptKey: string
+): SqliteLoginAttempt | undefined {
+  if (!/^[a-f0-9]{64}$/i.test(attemptKey)) throw new Error('Invalid authentication attempt key.');
+  const row = db.prepare(
+    'SELECT attempt_key, attempts, lock_until_ms, updated_at ' +
+    'FROM auth_login_attempts WHERE attempt_key = ?'
+  ).get(attemptKey.toLowerCase()) as Record<string, unknown> | undefined;
+  return mapLoginAttempt(row);
+}
+
+/**
+ * Records a failed attempt atomically across concurrent requests/processes.
+ * A lock that has expired starts a fresh failure window.
+ */
+export function recordSqliteLoginFailure(
+  db: DatabaseSync,
+  attemptKey: string,
+  nowMs: number,
+  lockDurationMs: number,
+  maxAttempts: number,
+  updatedAt: string
+): SqliteLoginAttempt & { locked: boolean } {
+  if (!/^[a-f0-9]{64}$/i.test(attemptKey)) throw new Error('Invalid authentication attempt key.');
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error('Invalid authentication clock value.');
+  if (!Number.isSafeInteger(lockDurationMs) || lockDurationMs < 1000) throw new Error('Invalid authentication lock duration.');
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) throw new Error('Invalid authentication attempt limit.');
+  assertText(updatedAt, 'updatedAt');
+
+  return withImmediateTransaction(db, () => {
+    const row = db.prepare(
+      'SELECT attempt_key, attempts, lock_until_ms, updated_at ' +
+      'FROM auth_login_attempts WHERE attempt_key = ?'
+    ).get(attemptKey.toLowerCase()) as Record<string, unknown> | undefined;
+    const current = mapLoginAttempt(row);
+
+    if (current && current.lockUntilMs > nowMs) {
+      return { ...current, locked: true };
+    }
+
+    const previousAttempts = current && current.lockUntilMs === 0
+      ? current.attempts
+      : 0;
+    const attempts = previousAttempts + 1;
+    const locked = attempts >= maxAttempts;
+    const lockUntilMs = locked ? nowMs + lockDurationMs : 0;
+
+    db.prepare(
+      'INSERT INTO auth_login_attempts (attempt_key, attempts, lock_until_ms, updated_at) ' +
+      'VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(attempt_key) DO UPDATE SET ' +
+      'attempts = excluded.attempts, lock_until_ms = excluded.lock_until_ms, updated_at = excluded.updated_at'
+    ).run(attemptKey.toLowerCase(), attempts, lockUntilMs, updatedAt);
+
+    return {
+      attemptKey: attemptKey.toLowerCase(),
+      attempts,
+      lockUntilMs,
+      updatedAt,
+      locked,
+    };
+  });
+}
+
+export function clearSqliteLoginAttempt(db: DatabaseSync, attemptKey: string): void {
+  if (!/^[a-f0-9]{64}$/i.test(attemptKey)) throw new Error('Invalid authentication attempt key.');
+  db.prepare('DELETE FROM auth_login_attempts WHERE attempt_key = ?').run(attemptKey.toLowerCase());
+}

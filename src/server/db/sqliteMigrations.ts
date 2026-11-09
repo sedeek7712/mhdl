@@ -353,4 +353,15 @@ ALTER TABLE journal_entries ADD COLUMN customer_phone TEXT
   CHECK (customer_phone IS NULL OR length(customer_phone) <= 40);
 `,
   },
+  {
+    version: 4,
+    name: 'persistent_auth_login_throttling',
+    sql: "CREATE TABLE auth_login_attempts (\n" +
+      "  attempt_key TEXT PRIMARY KEY CHECK (length(attempt_key) = 64),\n" +
+      "  attempts INTEGER NOT NULL CHECK (attempts >= 0),\n" +
+      "  lock_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (lock_until_ms >= 0),\n" +
+      "  updated_at TEXT NOT NULL\n" +
+      ") STRICT;\n" +
+      "CREATE INDEX idx_auth_login_attempts_lock_until ON auth_login_attempts(lock_until_ms);\n",
+  },
 ];
