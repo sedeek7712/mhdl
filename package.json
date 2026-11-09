@@ -20,7 +20,8 @@
     "test:incoming-remittances": "node --import tsx --test tests/incomingRemittanceRegistration.test.ts",
     "test:outgoing-remittances": "node --import tsx --test tests/outgoingRemittance.test.ts",
     "test:exchange-accounting": "node --import tsx --test tests/exchangeAccounting.test.ts",
-    "test:exchange-rate-registry": "node --import tsx --test tests/exchangeRateRegistry.test.ts"
+    "test:exchange-rate-registry": "node --import tsx --test tests/exchangeRateRegistry.test.ts",
+    "test:server-exchange": "node --import tsx --test tests/serverExchange.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
