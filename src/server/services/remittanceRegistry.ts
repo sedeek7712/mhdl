@@ -239,6 +239,47 @@ class RemittanceRegistry {
       }
       this.masterRemittances.set(normalizedNumber, item);
     }
+
+    // Reconcile all paid records against both the payout registry and the actual journal.
+    // If any side of a previous multi-file commit is missing or inconsistent, do not start the service.
+    const journalEntries = serverAccountingEngine.getJournalEntries();
+    for (const [cleanNum, payout] of this.payouts) {
+      const master = this.masterRemittances.get(cleanNum);
+      const journal = journalEntries.find((entry) => entry.entryNumber === payout.journalEntryReference);
+      if (!master || master.status !== 'paid' ||
+          master.amount !== payout.amount || master.currency !== payout.currency ||
+          master.journalEntryReference !== payout.journalEntryReference ||
+          !journal || journal.referenceType !== 'transfer_payout' ||
+          journal.referenceId.trim().toUpperCase() !== cleanNum) {
+        throw new Error(`توقف آمن: عدم تطابق سجل صرف الحوالة (${cleanNum}) بين الحوالة الرئيسية وسجل الصرف ودفتر اليومية. يلزم فحص محاسبي قبل التشغيل.`);
+      }
+
+      const debit = journal.lines
+        .filter((line) => line.currency === payout.currency)
+        .reduce((sum, line) => sum + line.debit, 0);
+      const credit = journal.lines
+        .filter((line) => line.currency === payout.currency)
+        .reduce((sum, line) => sum + line.credit, 0);
+      if (Math.abs(debit - payout.amount) > 0.001 || Math.abs(credit - payout.amount) > 0.001) {
+        throw new Error(`توقف آمن: مبالغ قيد اليومية لا تطابق عملية صرف الحوالة (${cleanNum}). يلزم فحص محاسبي قبل التشغيل.`);
+      }
+    }
+
+    for (const [cleanNum, master] of this.masterRemittances) {
+      if (master.status === 'paid' && !this.payouts.has(cleanNum)) {
+        throw new Error(`توقف آمن: الحوالة (${cleanNum}) مدفوعة في السجل الرئيسي دون سجل صرف مطابق.`);
+      }
+    }
+
+    for (const journal of journalEntries) {
+      if (journal.referenceType === 'transfer_payout') {
+        const cleanNum = journal.referenceId.trim().toUpperCase();
+        const payout = this.payouts.get(cleanNum);
+        if (!payout || payout.journalEntryReference !== journal.entryNumber) {
+          throw new Error(`توقف آمن: قيد صرف (${journal.entryNumber}) لا يملك سجل صرف وحوالة رئيسية مطابقين.`);
+        }
+      }
+    }
   }
   private saveSettingsToDisk() {
     safeAtomicWriteJson(SETTINGS_FILE, this.settings);
@@ -502,6 +543,7 @@ class RemittanceRegistry {
     masterRemittance?: RemittanceMasterRecord;
     journalEntry?: ServerJournalEntry;
     error?: string;
+    errorCode?: 'COMMIT_PENDING_RECOVERY';
     isDuplicate?: boolean;
   } {
     if (!params.transferNumber || typeof params.transferNumber !== 'string') {
@@ -638,6 +680,22 @@ class RemittanceRegistry {
         params.managerOverride && (params.tellerRole === 'owner' || params.tellerRole === 'general_manager')
       );
 
+      // Mark the entire multi-file payout transaction before touching the ledger.
+      const transaction = serverAccountingEngine.beginFinancialTransaction({
+        operation: 'remittance_payout',
+        referenceId: cleanNum,
+        amount: masterRem.amount,
+        currency: masterRem.currency,
+        actorId: params.tellerId,
+      });
+      if (!transaction.success || !transaction.transactionId) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: transaction.error || 'تعذر بدء معاملة الصرف الآمنة.',
+        };
+      }
+
       // C3: تنفيذ القيد المحاسبي المزدوج وخصم الصندوق الفعلي على الخادم
       const accountingRes = serverAccountingEngine.executeRemittancePayout({
         transferNumber: cleanNum,
@@ -655,6 +713,24 @@ class RemittanceRegistry {
       });
 
       if (!accountingRes.success) {
+        if (accountingRes.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return {
+            success: false,
+            errorCode: 'COMMIT_PENDING_RECOVERY',
+            error: accountingRes.error || 'فشل حفظ الدفتر المالي؛ لا تعاود الصرف.',
+          };
+        }
+
+        const cancelled = serverAccountingEngine.cancelFinancialTransaction(transaction.transactionId);
+        if (!cancelled.success) {
+          serverAccountingEngine.markFinancialRecoveryRequired();
+          return {
+            success: false,
+            errorCode: 'COMMIT_PENDING_RECOVERY',
+            error: cancelled.error || 'تعذر إلغاء علامة المعاملة بعد رفض العملية؛ يلزم فحص يدوي.',
+          };
+        }
+
         return {
           success: false,
           error: accountingRes.error || 'فشلت معالجة القيد المحاسبي وصندوق الكاشير على الخادم.',
@@ -718,10 +794,34 @@ class RemittanceRegistry {
 
       this.auditLogs.unshift(auditEntry);
 
-      // حفظ التغييرات ذرياً
-      this.savePayoutsToDisk();
-      this.saveMasterRemittancesToDisk();
-      this.saveAuditLogsToDisk();
+      // Persist all payout-side records while the pending transaction marker remains on disk.
+      try {
+        this.savePayoutsToDisk();
+        this.saveMasterRemittancesToDisk();
+        this.saveAuditLogsToDisk();
+      } catch (saveError: any) {
+        serverAccountingEngine.markFinancialRecoveryRequired();
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: `فشل حفظ أحد سجلات الصرف بعد تحديث دفتر الأستاذ. لا تعاود الصرف؛ أوقف النظام وطابق الحسابات والقيود والحوالة وسجل الصرف. ${saveError.message}`,
+          record: payoutRecord,
+          masterRemittance: masterRem,
+          journalEntry: accountingRes.journalEntry,
+        };
+      }
+
+      const committed = serverAccountingEngine.completeFinancialTransaction(transaction.transactionId);
+      if (!committed.success) {
+        return {
+          success: false,
+          errorCode: 'COMMIT_PENDING_RECOVERY',
+          error: committed.error || 'تعذر اعتماد اكتمال المعاملة المالية؛ لا تعاود الصرف.',
+          record: payoutRecord,
+          masterRemittance: masterRem,
+          journalEntry: accountingRes.journalEntry,
+        };
+      }
 
       return {
         success: true,
