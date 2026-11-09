@@ -873,110 +873,128 @@ function AppContent() {
     return newRem;
   };
 
-  // Helper: Fund Drawer from Central Treasury with strict liquidity check and balanced double-entry
-  const handleFundDrawer = (currency: CurrencyCode, amount: number) => {
-    if (amount <= 0) {
+  // Fund drawer through the authoritative server ledger. Never update financial balances locally.
+  const handleFundDrawer = async (currency: CurrencyCode, amount: number) => {
+    if (!Number.isFinite(amount) || amount <= 0) {
       toast.warning('يرجى إدخال مبلغ صحيح لتغذية الصندوق.');
       return;
     }
 
-    const centralTreasury = accounts.find((a) => a.id === 'acc-1101');
-    const cashierDrawer = accounts.find((a) => a.id === 'acc-1102');
+    const fromAccountId = 'acc-1101';
+    const toAccountId = 'acc-1102';
+    const pendingStorageKey = 'alnamari_pending_fund_drawer_v1';
 
-    if (!centralTreasury || !cashierDrawer) {
-      toast.error('خطأ في تهيئة الحسابات', 'تعذر العثور على حساب الخزينة الرئيسية أو صندوق الكاشير.');
+    let idempotencyKey: string;
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          fromAccountId?: string;
+          toAccountId?: string;
+          amount?: number;
+          currency?: string;
+        };
+
+        if (!pending.idempotencyKey || pending.fromAccountId !== fromAccountId ||
+            pending.toAccountId !== toAccountId ||
+            pending.amount !== amount || pending.currency !== currency) {
+          toast.warning(
+            'توجد تغذية سابقة لم تُحسم',
+            'لا تنفذ مبلغاً جديداً. أعد طلب العملية السابقة بنفس المبلغ والعملة لاسترجاع نتيجتها، أو اطلب مطابقة الدفتر من المسؤول.'
+          );
+          return;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          fromAccountId,
+          toAccountId,
+          amount,
+          currency,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error('تعذر حفظ رقم حماية العملية', 'أوقِف طلب التغذية؛ لا يمكن ضمان منع التكرار دون حفظ معرف العملية محلياً.');
       return;
     }
 
-    const treasuryBalance = centralTreasury.balances[currency] || 0;
-    if (treasuryBalance < amount) {
+    const result = await apiClient.fundCashierDrawer({
+      fromAccountId,
+      toAccountId,
+      amount,
+      currency,
+      idempotencyKey,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'تغذية الصندوق غير محسومة',
+          result.error || 'أوقف النظام ولا تعاود التغذية. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد نفس طلب التغذية بالمبلغ والعملة نفسيهما لاسترجاع النتيجة باستخدام معرف العملية نفسه.'
+        );
+        return;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // The server rejected the request definitively; a stale local key will be detected on next attempt.
+      }
+      toast.error('رفض الخادم تغذية الصندوق', result.error || 'لم يتم تنفيذ العملية.');
+      return;
+    }
+
+    if (!Array.isArray(result.accounts) || !result.journalEntry ||
+        typeof result.journalEntry.entryNumber !== 'string' ||
+        !result.journalEntry.idempotencyKey ||
+        result.journalEntry.idempotencyKey !== idempotencyKey) {
       toast.error(
-        'رصيد الخزينة الرئيسية غير كافٍ',
-        `الرصيد المتاح في الخزينة المركزية (${formatMoney(treasuryBalance, currency)}) أقل من المبلغ المطلوب (${formatMoney(amount, currency)}).`
+        'نتيجة التغذية غير مكتملة',
+        'لم يتم تحديث الشاشة. لا تنشئ عملية جديدة؛ تحقق من دفتر الخادم باستخدام معرف العملية نفسه.'
       );
       return;
     }
 
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
-    const entryNum = `JV-FUND-${Date.now().toString().slice(-4)}`;
-    const voucherNum = `V-FUND-${Date.now().toString().slice(-4)}`;
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const alreadyPresent = previous.some(
+        (entry) => entry.id === result.journalEntry.id ||
+          entry.entryNumber === result.journalEntry.entryNumber
+      );
+      return alreadyPresent ? previous : [result.journalEntry as JournalEntry, ...previous];
+    });
 
-    // Correct Double-Entry Balance Adjustment:
-    // Deduct from Central Treasury (acc-1101)
-    // Credit to Cashier Drawer (acc-1102)
-    setAccounts((prev) =>
-      prev.map((acc) => {
-        if (acc.id === 'acc-1101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [currency]: (acc.balances[currency] || 0) - amount,
-            },
-          };
-        }
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [currency]: (acc.balances[currency] || 0) + amount,
-            },
-          };
-        }
-        return acc;
-      })
-    );
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // Keeping a stale key is safe: a retry replays the committed journal entry without another debit.
+    }
 
-    // Balanced Journal Entry
-    const fundJournalEntry: JournalEntry = {
-      id: `jv-fund-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `تغذية صندوق الصراف 1 من الخزينة المركزية بمبلغ ${formatMoney(amount, currency)}`,
-      lines: [
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'صندوق كاشير الصراف 1',
-          currency,
-          debit: amount,
-          credit: 0,
-          note: 'استلام تغذية نقدية لصندوق الكاشير',
-        },
-        {
-          accountId: 'acc-1101',
-          accountNameAr: 'الخزينة الرئيسية المركزية',
-          currency,
-          debit: 0,
-          credit: amount,
-          note: 'صرف تغذية سيولة لصندوق الكاشير',
-        },
-      ],
-      referenceType: 'internal_transfer',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
-
-    setJournalEntries((prev) => [...prev, fundJournalEntry]);
-
-    // System audit log
+    const entry = result.journalEntry;
+    const voucherNum = entry.voucherNumber || entry.referenceId;
     const auditRecord: SystemAuditLog = {
-      id: `sys-log-${Date.now()}`,
+      id: `sys-log-${entry.id}`,
       category: 'financial',
-      timestamp: `${dateStr} ${timeStr}`,
+      timestamp: `${entry.date} ${entry.time}`,
       action: 'تغذية صندوق الصراف',
-      details: `تمت تغذية صندوق الكاشير من الخزينة المركزية بمبلغ ${formatMoney(amount, currency)} بقيد ${entryNum}`,
+      details: `اعتمد الخادم تغذية صندوق الكاشير بمبلغ ${formatMoney(amount, currency)} بالقيد ${entry.entryNumber}`,
       performedBy: currentUser.name,
       userRole: currentUser.role,
     };
-    setSystemAuditLogs((prev) => [auditRecord, ...prev]);
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
 
-    // Create official voucher
     const voucher = voucherEngine.createInternalTransferVoucher({
       voucherNumber: voucherNum,
       fromAccountName: 'الخزينة الرئيسية المركزية',
@@ -990,8 +1008,8 @@ function AppContent() {
     setActiveVoucher(voucher);
 
     toast.success(
-      'تمت تغذية الصندوق بنجاح',
-      `تم تحويل ${formatMoney(amount, currency)} من الخزينة الرئيسية إلى صندوق الكاشير بقيد محاسبي متوازن.`
+      'تم اعتماد تغذية الصندوق من الخادم',
+      `تم اعتماد ${formatMoney(amount, currency)} بالقيد ${entry.entryNumber}. تم تحديث الأرصدة من دفتر الخادم.`
     );
   };
 
