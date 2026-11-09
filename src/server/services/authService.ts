@@ -189,7 +189,7 @@ class AuthService {
     safeAtomicWriteJson(USERS_FILE, list);
   }
 
-  public getAllPublicUsers(): Omit<StoredUserRecord, 'pinSalt' | 'pinHash' | 'mustChangePin'>[] {
+  public getAllPublicUsers(): Omit<StoredUserRecord, 'pinSalt' | 'pinHash' | 'mustChangePin' | 'sessionVersion'>[] {
     const unique = Array.from(new Set(this.users.values()));
     return unique.map(({ id, name, username, role, branchId, branchName, isActive, createdAt }) => ({
       id,
