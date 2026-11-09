@@ -841,6 +841,7 @@ async function startServer() {
         record: result.record,
         journalEntry: result.journalEntry,
         accounts: result.accounts,
+        settings: remittanceRegistry.getSettings(),
       });
     }
   );
