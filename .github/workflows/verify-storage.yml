@@ -1,0 +1,38 @@
+name: Verify storage safety and build
+
+on:
+  push:
+    branches:
+      - main
+      - "audit/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Storage safety, TypeScript, and production build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install locked dependencies
+        run: bun install --no-save
+
+      # Deliberately do not run the legacy enterprise_audit_verification.ts suite:
+      # it imports live services and mutates files under data/.
+      - name: Run isolated financial-storage tests
+        run: bun run test:storage
+
+      - name: TypeScript validation
+        run: bun run lint
+
+      - name: Production frontend build
+        run: bun run build
