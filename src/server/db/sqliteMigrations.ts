@@ -345,4 +345,3 @@ CREATE INDEX idx_voucher_attachments_voucher ON voucher_attachments(voucher_numb
 `,
   },
 ];
-];
