@@ -861,8 +861,15 @@ async function startServer() {
     requireAuth,
     requireRoles(['owner', 'general_manager', 'branch_manager']),
     (req: any, res: Response) => {
-      const { fromAccountId, toAccountId, amount, currency } = req.body;
+      const { fromAccountId, toAccountId, amount, currency, idempotencyKey } = req.body || {};
       const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof idempotencyKey !== 'string' || !/^[a-f0-9-]{36}$/i.test(idempotencyKey)) {
+        return res.status(400).json({
+          success: false,
+          error: 'مفتاح العملية غير صالح؛ لا يمكن تنفيذ تغذية صندوق دون مفتاح يمنع تكرار الخصم.',
+        });
+      }
 
       const result = serverAccountingEngine.fundCashierDrawer({
         fromAccountId: fromAccountId || 'acc-1101',
@@ -871,6 +878,7 @@ async function startServer() {
         currency: currency as CurrencyCode,
         operatorName: authenticatedUser.name,
         branchId: authenticatedUser.branchId,
+        idempotencyKey,
       });
 
       if (!result.success) {
