@@ -24,7 +24,7 @@ import { serverCashBoxShiftRegistry } from './src/server/services/serverCashBoxS
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
+export async function startServer(options: { port?: number; host?: string; useVite?: boolean } = {}) {
   const app = express();
   const PORT = 3000;
 
@@ -1417,7 +1417,9 @@ async function startServer() {
   const httpServer = http.createServer(app);
 
   // Mount Vite development server as middleware, or serve dist in production
-  if (process.env.NODE_ENV === 'production') {
+  if (options.useVite === false || process.env.NODE_ENV === 'test') {
+    // HTTP integration tests exercise the production Express routes without mounting Vite.
+  } else if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
@@ -1435,9 +1437,21 @@ async function startServer() {
   }
 
   // Single-device Windows deployment: never expose the financial API to the LAN.
-  httpServer.listen(PORT, '127.0.0.1', () => {
-    console.log(`[Amro Alnamari Local Server] Listening on http://127.0.0.1:${PORT}`);
+  const listenPort = options.port ?? Number(process.env.PORT || PORT);
+  const listenHost = options.host || '127.0.0.1';
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(listenPort, listenHost, () => {
+      httpServer.off('error', reject);
+      resolve();
+    });
   });
+  return httpServer;
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test') {
+  startServer().catch((error) => {
+    console.error('[Amro Alnamari Local Server] Startup failed safely:', error);
+    process.exitCode = 1;
+  });
+}
