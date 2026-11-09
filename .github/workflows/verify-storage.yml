@@ -46,6 +46,9 @@ jobs:
       - name: Run outgoing remittance tests
         run: bun run test:outgoing-remittances
 
+      - name: Run exchange accounting tests
+        run: bun run test:exchange-accounting
+
       - name: TypeScript validation
         run: bun run lint
 
