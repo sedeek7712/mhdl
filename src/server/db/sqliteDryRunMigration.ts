@@ -223,7 +223,8 @@ function mapRemittance(
   const direction = stringValue(row.direction, 'remittance.direction');
   if (direction !== 'incoming' && direction !== 'outgoing') throw new Error('Invalid remittance direction.');
   const status = stringValue(row.status, 'remittance.status');
-  if (!['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'].includes(status)) {
+  const allowedStatuses = ['draft', 'approved', 'available', 'paid', 'cancelled', 'refunded', 'pending'] as const;
+  if (!allowedStatuses.includes(status as typeof allowedStatuses[number])) {
     throw new Error('Invalid remittance status.');
   }
   const mode = optionalText(row, 'numberingMode') || stringValue(reservation.mode, 'reservation.mode');
@@ -233,7 +234,7 @@ function mapRemittance(
     id: stringValue(row.id, 'remittance.id'),
     transferNumber,
     direction,
-    status,
+    status: status as typeof allowedStatuses[number],
     senderName: stringValue(row.senderName, 'remittance.senderName'),
     senderPhone: optionalText(row, 'senderPhone'),
     recipientName: stringValue(row.recipientName, 'remittance.recipientName'),
