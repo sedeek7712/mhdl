@@ -130,7 +130,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm sm:text-base font-bold text-white">{isRequired ? 'تسجيل الدخول الآمن' : 'التحقق الأمني من الصلاحيات'}</h3>
-              <p className="text-[11px] text-slate-400 font-mono">التبديل إلى: {currentRoleInfo.title}</p>
+              <p className="text-[11px] text-slate-400 font-mono">{isRequired ? 'الحساب:' : 'التبديل إلى:'} {currentRoleInfo.title}</p>
             </div>
           </div>
           {!isRequired && (
