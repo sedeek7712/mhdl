@@ -180,6 +180,14 @@ test('journal idempotency replays the same request and rejects a changed request
     () => insertBalancedJournalEntry(db, { ...input, descriptionAr: 'بيانات مختلفة' }),
     /reused with a different request/
   );
+  assert.throws(
+    () => insertBalancedJournalEntry(db, { ...input, exchangeRateMicro: 1_000_000 }),
+    /reused with a different request/
+  );
+  assert.throws(
+    () => insertBalancedJournalEntry(db, { ...input, targetAmountMilli: 125_000 }),
+    /reused with a different request/
+  );
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM journal_entries').get()?.count, 1);
   const cash = db.prepare(
     'SELECT balance_milli FROM account_balances WHERE account_id=? AND currency=?'
