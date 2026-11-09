@@ -99,7 +99,7 @@ function remittance(overrides: Partial<SqliteRemittanceInput> = {}): SqliteRemit
   };
 }
 
-test('actual financial schema applies both migrations and creates financial and operational tables', (t) => {
+test('actual financial schema applies all migrations and creates financial and operational tables', (t) => {
   const db = createDatabase(t);
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -117,7 +117,9 @@ test('actual financial schema applies both migrations and creates financial and 
   ]) assert.equal(names.has(name), true, `Missing table ${name}`);
 
   const migrationCount = db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number };
-  assert.equal(Number(migrationCount.count), 2);
+  assert.equal(Number(migrationCount.count), 3);
+  const journalColumns = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
+  assert.equal(journalColumns.some((column) => column.name === 'customer_phone'), true);
 });
 
 test('balanced journal is persisted atomically and updates account balances in thousandths', (t) => {
@@ -137,6 +139,10 @@ test('balanced journal is persisted atomically and updates account balances in t
   assert.equal(debit.balance_milli, 250_000);
   assert.equal(credit.balance_milli, 250_000);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM journal_lines').get()?.count, 2);
+  assert.equal(
+    (db.prepare('SELECT customer_phone FROM journal_entries WHERE id=?').get('journal-1') as { customer_phone: string | null }).customer_phone,
+    null
+  );
 });
 
 test('unbalanced entry is rejected before any journal line or balance is committed', (t) => {
