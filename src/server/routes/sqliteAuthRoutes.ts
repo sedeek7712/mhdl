@@ -24,12 +24,18 @@ function requireSqliteAuth(service: SqliteAuthService) {
   };
 }
 
-function requireSqliteRoles(...allowedRoles: SqliteAuthRole[]) {
+function requireSqliteRoles(service: SqliteAuthService, ...allowedRoles: SqliteAuthRole[]) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.sqliteAuth) {
       return res.status(401).json({ success: false, error: 'جلسة الدخول مطلوبة.' });
     }
     if (!allowedRoles.includes(req.sqliteAuth.role)) {
+      service.recordSecurityEvent({
+        event: 'ROLE_ACCESS_DENIED',
+        usernameOrRole: req.sqliteAuth.username,
+        ip: clientIp(req),
+        details: 'Authorization denied for role [' + req.sqliteAuth.role + '] on ' + req.method + ' ' + req.path + '.',
+      });
       return res.status(403).json({ success: false, error: 'ليست لديك صلاحية تنفيذ هذا الإجراء.' });
     }
     next();
@@ -93,7 +99,7 @@ export function createSqliteAuthRouter(service: SqliteAuthService): express.Rout
     return res.status(result.success ? 200 : 400).json(result);
   });
 
-  router.post('/users', requireAuth, requireSqliteRoles('owner'), (req: Request, res: Response) => {
+  router.post('/users', requireAuth, requireSqliteRoles(service, 'owner'), (req: Request, res: Response) => {
     const result = service.createUser(req.body || {});
     return res.status(result.success ? 201 : 400).json(result);
   });
@@ -113,11 +119,11 @@ export function createSqliteAuthRouter(service: SqliteAuthService): express.Rout
     return res.status(result.success ? 200 : 400).json(result);
   });
 
-  router.get('/users', requireAuth, requireSqliteRoles('owner', 'general_manager'), (_req: Request, res: Response) => {
+  router.get('/users', requireAuth, requireSqliteRoles(service, 'owner', 'general_manager'), (_req: Request, res: Response) => {
     return res.status(200).json({ success: true, users: service.getAllPublicUsers() });
   });
 
-  router.get('/security-logs', requireAuth, requireSqliteRoles('owner', 'general_manager', 'auditor'), (_req: Request, res: Response) => {
+  router.get('/security-logs', requireAuth, requireSqliteRoles(service, 'owner', 'general_manager', 'auditor'), (_req: Request, res: Response) => {
     return res.status(200).json({ success: true, logs: service.getSecurityLogs() });
   });
 
