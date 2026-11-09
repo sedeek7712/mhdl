@@ -493,7 +493,6 @@ class RemittanceRegistry {
     clientAmount?: number;
     clientCurrency?: string;
     cashierDrawerBalance?: number;
-    voucherNumber?: string;
     journalEntryReference?: string;
     managerOverride?: boolean;
     managerOverrideReason?: string;
