@@ -126,7 +126,7 @@ test('changing an already applied migration is rejected', (t) => {
 });
 
 test('database contents survive close and reopen', (t) => {
-  const directory = makeTempDirectory(t);
+  const directory = makeTempDirectory();
   const databasePath = path.join(directory, 'persistent.sqlite');
 
   const first = openSqliteDatabase({ filePath: databasePath });
