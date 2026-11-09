@@ -25,7 +25,7 @@ test('internal transfer commits once, validates replay, and rejects unsafe reque
     {
       id: 'acc-1101',
       code: '1101',
-      nameAr: 'الخزينة الرئيسية',
+      name: 'الخزينة الرئيسية',
       type: 'asset',
       category: 'cash_box',
       balances: { ...currencies, SAR: 5000 },
@@ -33,7 +33,7 @@ test('internal transfer commits once, validates replay, and rejects unsafe reque
     {
       id: 'acc-1102',
       code: '1102',
-      nameAr: 'صندوق الكاشير',
+      name: 'صندوق الكاشير',
       type: 'asset',
       category: 'cash_box',
       balances: { ...currencies, SAR: 1000 },
