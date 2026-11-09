@@ -1,0 +1,43 @@
+name: Validate SQLite foundation
+
+on:
+  push:
+    branches:
+      - storage/sqlite-foundation-2026-11-09
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-foundation:
+    name: SQLite schema and financial repository tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js with built-in SQLite
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate runtime versions
+        run: |
+          node --version
+          bun --version
+
+      - name: Run financial storage and SQLite tests
+        run: bun run test:storage
+
+      - name: Validate TypeScript
+        run: bun run lint
+
+      - name: Build production frontend
+        run: bun run build
