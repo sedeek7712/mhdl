@@ -83,7 +83,7 @@ function AppContent() {
   const [systemAuditLogs, setSystemAuditLogs] = useState<SystemAuditLog[]>(() =>
     offlineStorage.loadSystemAuditLogs(INITIAL_SYSTEM_AUDIT_LOGS)
   );
-  const [activeShift, setActiveShift] = useState<CashBoxShift>(() => offlineStorage.loadActiveShift(INITIAL_ACTIVE_SHIFT));
+  const [activeShift, setActiveShift] = useState<CashBoxShift>(() => ({ ...INITIAL_ACTIVE_SHIFT, id: 'no-active-shift', status: 'closed', openedAt: 'لم تفتح وردية بعد' }));
 
   // Sync to local persistent storage automatically on change
   useEffect(() => {
@@ -148,11 +148,6 @@ function AppContent() {
     offlineStorage.saveSystemAuditLogs(systemAuditLogs);
   }, [systemAuditLogs, isAuthenticated]);
 
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    offlineStorage.saveActiveShift(activeShift);
-  }, [activeShift, isAuthenticated]);
-
   // Restore a previously authenticated owner session; never auto-login with a role or default PIN.
   useEffect(() => {
     let cancelled = false;
@@ -204,6 +199,26 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
+  }, [isAuthenticated]);
+
+  // Server-owned shift state. Never restore an open shift from localStorage.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    apiClient.getActiveCashierShift().then((result) => {
+      if (cancelled) return;
+      if (!result.success) {
+        toast.error('تعذر التحقق من الوردية', result.error || 'لا تنفذ عمليات مالية قبل استعادة اتصال الخادم.');
+        return;
+      }
+      setActiveShift(result.activeShift || {
+        ...INITIAL_ACTIVE_SHIFT,
+        id: 'no-active-shift',
+        status: 'closed',
+        openedAt: 'لم تفتح وردية بعد',
+      });
+    });
+    return () => { cancelled = true; };
   }, [isAuthenticated]);
 
   // Load server-owned settings only after the owner session has been verified.
@@ -316,7 +331,7 @@ function AppContent() {
     setRemittances(offlineStorage.loadRemittances(INITIAL_REMITTANCES));
     setRemittanceSettings(offlineStorage.loadRemittanceSettings(INITIAL_REMITTANCE_SETTINGS));
     setSystemAuditLogs(offlineStorage.loadSystemAuditLogs(INITIAL_SYSTEM_AUDIT_LOGS));
-    setActiveShift(offlineStorage.loadActiveShift(INITIAL_ACTIVE_SHIFT));
+    setActiveShift({ ...INITIAL_ACTIVE_SHIFT, id: 'no-active-shift', status: 'closed', openedAt: 'لم تفتح وردية بعد' });
   };
 
   // Official Sample Voucher Helper matching reference voucher
@@ -1630,25 +1645,86 @@ function AppContent() {
     return true;
   };
 
-  // 8. Close Shift (إقفال الوردية)
-  const handleCloseShift = (actualBalances: Record<CurrencyCode, number>, notes: string) => {
-    setActiveShift((prev) => ({
-      ...prev,
-      status: 'closed',
-      closedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      actualBalances,
-      notes,
-    }));
+  // 8. Close shift through the server; expected balances are read from the server ledger.
+  const handleCloseShift = async (
+    actualBalances: Record<CurrencyCode, number>,
+    notes: string
+  ): Promise<boolean> => {
+    if (activeShift.status !== 'open' || activeShift.id === 'no-active-shift') {
+      toast.warning('لا توجد وردية مفتوحة لإقفالها.');
+      return false;
+    }
+    const storageKey = 'alnamari_pending_shift_close_v1';
+    const request = { shiftId: activeShift.id, actualBalances, notes: notes.trim() };
+    let idempotencyKey: string;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw) {
+        const pending = JSON.parse(raw);
+        if (!pending.idempotencyKey || JSON.stringify(pending.request) !== JSON.stringify(request)) {
+          toast.warning('يوجد إقفال سابق لم يُحسم', 'أعد نفس بيانات الجرد السابقة لاسترجاع النتيجة، ولا تبدأ إقفالاً مختلفاً.');
+          return false;
+        }
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(storageKey, JSON.stringify({ idempotencyKey, request }));
+      }
+    } catch {
+      toast.error('تعذر حفظ معرف الإقفال', 'أوقف العملية؛ لا يمكن ضمان منع تكرار محضر الإقفال.');
+      return false;
+    }
+
+    const result = await apiClient.closeCashierShift({ idempotencyKey, ...request });
+    if (!result.success || !result.shift) {
+      if (!result.outcomeUncertain) {
+        try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+      }
+      toast.error(result.outcomeUncertain ? 'نتيجة الإقفال غير محسومة' : 'رفض الخادم إقفال الوردية',
+        result.error || 'لم يتم اعتماد محضر الإقفال.');
+      return false;
+    }
+    setActiveShift(result.shift as CashBoxShift);
+    try { window.localStorage.removeItem(storageKey); } catch { /* replay remains safe */ }
+    toast.success('تم إقفال الوردية من الخادم', 'تم حفظ الجرد والفروقات ومحضر الإقفال.');
+    return true;
   };
 
-  // 9. Open New Shift
-  const handleOpenNewShift = () => {
-    setActiveShift({
-      ...INITIAL_ACTIVE_SHIFT,
-      id: `shift-${Date.now().toString().slice(-4)}`,
-      openedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      status: 'open',
-    });
+  // 9. Open a new shift using the current server-side cashier balance as its opening balance.
+  const handleOpenNewShift = async (): Promise<boolean> => {
+    if (activeShift.status === 'open') {
+      toast.warning('توجد وردية مفتوحة بالفعل.');
+      return false;
+    }
+    const storageKey = 'alnamari_pending_shift_open_v1';
+    let idempotencyKey: string;
+    try {
+      const existing = window.localStorage.getItem(storageKey);
+      if (existing) {
+        const pending = JSON.parse(existing);
+        if (!pending.idempotencyKey) throw new Error('invalid pending key');
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(storageKey, JSON.stringify({ idempotencyKey }));
+      }
+    } catch {
+      toast.error('تعذر حفظ معرف فتح الوردية', 'أوقف العملية حتى يمكن ضمان عدم تكرار فتح الوردية.');
+      return false;
+    }
+    const result = await apiClient.openCashierShift({ idempotencyKey });
+    if (!result.success || !result.shift) {
+      if (!result.outcomeUncertain) {
+        try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+      }
+      toast.error(result.outcomeUncertain ? 'نتيجة فتح الوردية غير محسومة' : 'تعذر فتح الوردية',
+        result.error || 'لم يؤكد الخادم فتح الوردية.');
+      return false;
+    }
+    setActiveShift(result.shift as CashBoxShift);
+    try { window.localStorage.removeItem(storageKey); } catch { /* replay remains safe */ }
+    toast.success('تم فتح الوردية', 'اعتمد الخادم الرصيد الافتتاحي مباشرة من دفتر صندوق الكاشير.');
+    return true;
   };
 
   // Open voucher from remittance record
