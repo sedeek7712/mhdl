@@ -523,13 +523,26 @@ class RemittanceRegistry {
       const compositeKey = `${cleanNum}:${params.tellerId}:${params.idempotencyKey}`;
       if (this.idempotencyStore.has(compositeKey)) {
         const existing = this.idempotencyStore.get(compositeKey)!;
+        const existingMaster = this.masterRemittances.get(cleanNum);
+        const existingJournal = serverAccountingEngine.getJournalEntries().find(
+          (entry) => entry.entryNumber === existing.journalEntryReference
+        );
+
+        // Do not report a replay as successful when its master record or accounting evidence is missing.
+        if (!existingMaster || !existingJournal) {
+          return {
+            success: false,
+            isDuplicate: true,
+            record: existing,
+            error: 'توقف آمن: سجل الصرف السابق موجود لكن مستند الحوالة أو قيد اليومية المرتبط به غير موجود. لا تعاود الصرف؛ يلزم إجراء مطابقة محاسبية.',
+          };
+        }
+
         return {
           success: true,
           record: existing,
-          masterRemittance: this.masterRemittances.get(cleanNum),
-          journalEntry: serverAccountingEngine.getJournalEntries().find(
-            (entry) => entry.entryNumber === existing.journalEntryReference
-          ),
+          masterRemittance: existingMaster,
+          journalEntry: existingJournal,
         };
       }
     }
