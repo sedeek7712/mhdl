@@ -6,7 +6,7 @@ The JSON AuthService and the isolated SQLite runtime now use the same JWT-secret
 
 ## SQLite runtime factory
 
-The runtime factory opens the configured SQLite file (or the platform default), applies the immutable migrations, checks that exactly one active owner exists, runs SQLite integrity and foreign-key checks, and then creates the SqliteAuthService and isolated Express router. If any check fails, it closes the database and throws instead of accepting logins with a partial or unowned database.
+The runtime factory requires the configured SQLite path (or platform default) to point to an existing regular file; it does not create a new database when the path is missing or points to a symbolic link/directory. It applies the immutable migrations, checks that exactly one active owner exists, runs SQLite integrity and foreign-key checks, and then creates the SqliteAuthService and isolated Express router. If any check fails, it closes the database and throws instead of accepting logins with a partial or unowned database.
 
 ## Important boundary
 
