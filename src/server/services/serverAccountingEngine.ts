@@ -4,7 +4,6 @@
  * معالجة نتائج التدقيق: C3 (توحيد القيد والصندوق على الخادم) و H1 (إلغاء تحكم العميل في السيولة)
  */
 
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
@@ -49,74 +48,6 @@ export interface ServerJournalEntry {
   isBalanced: boolean;
 }
 
-const DEFAULT_ACCOUNTS: ServerAccount[] = [
-  {
-    id: 'acc-1101',
-    code: '1101',
-    nameAr: 'الخزينة المركزية (الصندوق الرئيسي)',
-    type: 'asset',
-    category: 'cash_box',
-    balances: {
-      YER_OLD: 25000000,
-      YER_NEW: 50000000,
-      SAR: 150000,
-      USD: 40000,
-    },
-  },
-  {
-    id: 'acc-1102',
-    code: '1102',
-    nameAr: 'صندوق كاشير الصراف 1 (عمرو النماري)',
-    type: 'asset',
-    category: 'cash_box',
-    balances: {
-      YER_OLD: 5000000,
-      YER_NEW: 10000000,
-      SAR: 50000,
-      USD: 10000,
-    },
-  },
-  {
-    id: 'acc-1201',
-    code: '1201',
-    nameAr: 'حساب بنك الكريمي الإسلامي',
-    type: 'asset',
-    category: 'bank',
-    balances: {
-      YER_OLD: 0,
-      YER_NEW: 0,
-      SAR: 0,
-      USD: 0,
-    },
-  },
-  {
-    id: 'acc-1301',
-    code: '1301',
-    nameAr: 'حساب شبكة النجم للحوالات',
-    type: 'asset',
-    category: 'network',
-    balances: {
-      YER_OLD: 0,
-      YER_NEW: 0,
-      SAR: 0,
-      USD: 0,
-    },
-  },
-  {
-    id: 'acc-1302',
-    code: '1302',
-    nameAr: 'حساب شبكة الامتياز للحوالات',
-    type: 'asset',
-    category: 'network',
-    balances: {
-      YER_OLD: 0,
-      YER_NEW: 0,
-      SAR: 0,
-      USD: 0,
-    },
-  },
-];
-
 class ServerAccountingEngine {
   private accounts: Map<string, ServerAccount> = new Map();
   private journalEntries: ServerJournalEntry[] = [];
@@ -126,13 +57,56 @@ class ServerAccountingEngine {
   }
 
   private loadState(): void {
-    const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, DEFAULT_ACCOUNTS, { failOnCorruption: false });
-    this.accounts.clear();
-    for (const acc of loadedAccounts) {
-      this.accounts.set(acc.id, acc);
+    // الدفاتر المالية ملفات إلزامية: لا ننشئ أرصدة افتراضية عند فقدانها أو تلفها.
+    const loadedAccounts = safeReadJson<ServerAccount[]>(ACCOUNTS_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+
+    if (!Array.isArray(loadedAccounts) || loadedAccounts.length === 0) {
+      throw new Error('توقف آمن: دفتر الحسابات فارغ أو لا يحتوي حسابات. لا يمكن تشغيل العمليات المالية قبل استعادة الدفتر الصحيح.');
     }
 
-    this.journalEntries = safeReadJson<ServerJournalEntry[]>(JOURNAL_FILE, [], { failOnCorruption: false });
+    const currencies: CurrencyCode[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+    const accountIds = new Set<string>();
+
+    for (const account of loadedAccounts) {
+      if (!account || typeof account.id !== 'string' || !account.id.trim() ||
+          !account.balances || typeof account.balances !== 'object') {
+        throw new Error('توقف آمن: سجل حساب غير صالح في دفتر الأستاذ. لم يتم تحميل أي أرصدة مالية.');
+      }
+      if (accountIds.has(account.id)) {
+        throw new Error(`توقف آمن: معرف الحساب مكرر في دفتر الأستاذ (${account.id}).`);
+      }
+      accountIds.add(account.id);
+
+      for (const currency of currencies) {
+        const balance = account.balances[currency];
+        if (typeof balance !== 'number' || !Number.isFinite(balance)) {
+          throw new Error(`توقف آمن: رصيد غير صالح للحساب (${account.id}) بالعملة (${currency}).`);
+        }
+      }
+    }
+
+    // لا يسمح النظام بالعمل دون حساب الصندوق الرئيسي وصندوق الكاشير المعتمد.
+    if (!accountIds.has('acc-1101') || !accountIds.has('acc-1102')) {
+      throw new Error('توقف آمن: حساب الخزينة الرئيسية أو صندوق الكاشير غير موجود في دفتر الأستاذ.');
+    }
+
+    const loadedJournalEntries = safeReadJson<ServerJournalEntry[]>(JOURNAL_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(loadedJournalEntries) ||
+        loadedJournalEntries.some((entry) => !entry || typeof entry.id !== 'string' || !Array.isArray(entry.lines))) {
+      throw new Error('توقف آمن: ملف قيود اليومية لا يحتوي بنية سجلات صالحة.');
+    }
+
+    this.accounts.clear();
+    for (const account of loadedAccounts) {
+      this.accounts.set(account.id, account);
+    }
+    this.journalEntries = loadedJournalEntries;
   }
 
   public getAccounts(): ServerAccount[] {
