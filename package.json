@@ -12,7 +12,8 @@
     "lint": "tsc --noEmit",
     "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts",
     "setup:owner": "node --import tsx scripts/bootstrapOwner.ts",
-    "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts"
+    "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts",
+    "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
