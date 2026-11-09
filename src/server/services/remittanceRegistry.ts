@@ -324,6 +324,8 @@ export class RemittanceRegistry {
           journal.referenceId.trim().toUpperCase() !== cleanNum ||
           journal.voucherNumber !== master.voucherNumber ||
           journal.idempotencyKey !== master.idempotencyKey ||
+          journal.createdById !== master.tellerId ||
+          journal.branchId !== master.branchId ||
           !cashLine || !payableLine ||
           (master.feeAmount > 0 && !commissionLine)) {
         throw new Error(`توقف آمن: سجل الحوالة الصادرة (${cleanNum}) لا يطابق حجز الرقم والقيد المحاسبي (الصندوق/الالتزام/العمولة). يلزم فحص يدوي قبل التشغيل.`);
