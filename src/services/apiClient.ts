@@ -155,6 +155,56 @@ class ApiClient {
   }
 
   /**
+   * جلب أسعار الصرف المعتمدة وسجل تدقيقها من الخادم
+   */
+  public async getExchangeRates(): Promise<{
+    success: boolean;
+    rates?: any[];
+    auditLogs?: any[];
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch('/api/accounting/exchange-rates');
+      const data = await response.json();
+      return response.ok ? data : { success: false, error: data.error || 'تعذر جلب أسعار الصرف المعتمدة.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر الاتصال بخادم أسعار الصرف.' };
+    }
+  }
+
+  /**
+   * تحديث سعر الصرف من المالك/المدير العام مع سجل تدقيق خادمي
+   */
+  public async updateExchangeRate(payload: {
+    rateId: string;
+    buyRate: number;
+    sellRate: number;
+    note: string;
+  }): Promise<{
+    success: boolean;
+    rate?: any;
+    rates?: any[];
+    auditLogs?: any[];
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetch(`/api/accounting/exchange-rates/${encodeURIComponent(payload.rateId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          buyRate: payload.buyRate,
+          sellRate: payload.sellRate,
+          note: payload.note,
+        }),
+      });
+      const data = await response.json();
+      return response.ok ? data : { success: false, error: data.error || 'رفض الخادم تحديث سعر الصرف.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'تعذر الاتصال بخادم أسعار الصرف.' };
+    }
+  }
+
+  /**
    * جلب الأرصدة وحسابات دفتر الأستاذ الرسمية من الخادم
    */
   public async getAccounts(): Promise<{ success: boolean; accounts?: any[]; error?: string }> {
