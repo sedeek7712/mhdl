@@ -757,6 +757,90 @@ async function startServer() {
     });
   });
 
+  // Server-authoritative incoming remittance registration (master, number reservation and audit in one guarded commit).
+  app.post(
+    '/api/remittances/incoming',
+    requireAuth,
+    requireRoles(['branch_manager', 'general_manager', 'owner']),
+    (req: any, res: Response) => {
+      const {
+        transferNumber,
+        senderName,
+        senderPhone,
+        recipientName,
+        recipientPhone,
+        networkName,
+        amount,
+        currency,
+        notes,
+      } = req.body || {};
+      const authenticatedUser = req.user as AuthenticatedUser;
+
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'مبلغ الحوالة يجب أن يكون رقماً موجباً.',
+        });
+      }
+      if (typeof transferNumber !== 'string' ||
+          typeof senderName !== 'string' ||
+          typeof recipientName !== 'string' ||
+          typeof networkName !== 'string' ||
+          typeof currency !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'رقم الحوالة واسم المرسل واسم المستفيد والشبكة والعملة حقول إلزامية.',
+        });
+      }
+
+      const result = remittanceRegistry.registerMasterRemittance({
+        id: '',
+        transferNumber,
+        direction: 'incoming',
+        status: 'available',
+        senderName,
+        senderPhone: typeof senderPhone === 'string' ? senderPhone : '',
+        recipientName,
+        recipientPhone: typeof recipientPhone === 'string' ? recipientPhone : '',
+        networkName,
+        amount,
+        currency,
+        feeAmount: 0,
+        totalPaid: amount,
+        branchName: authenticatedUser.branchName,
+        tellerName: authenticatedUser.name,
+        tellerRole: authenticatedUser.role,
+        createdAt: '',
+        notes: typeof notes === 'string' ? notes : '',
+      });
+
+      if (!result.success) {
+        if (result.errorCode === 'COMMIT_PENDING_RECOVERY') {
+          return res.status(500).json({
+            success: false,
+            errorCode: result.errorCode,
+            outcomeUncertain: true,
+            doNotRetry: true,
+            error: result.error || 'تسجيل الحوالة غير محسوم. أوقف النظام ولا تعاود إدخالها قبل مطابقة السجلات.',
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          error: result.error || 'رفض الخادم تسجيل الحوالة الواردة.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        replayed: Boolean(result.replayed),
+        message: result.replayed
+          ? 'الحوالة مسجلة سابقاً بالبيانات نفسها؛ تم إرجاع السجل الموجود.'
+          : 'تم تسجيل الحوالة الواردة وحجز رقمها وتوثيقها على الخادم.',
+        record: result.record,
+      });
+    }
+  );
+
   // C2: حصر تسجيل الحوالات الواردة الخارجية بالمدير والمالك لمنع اختلاق حوالات وهمية من الكاشير
   app.post(
     '/api/remittances/register-master',
