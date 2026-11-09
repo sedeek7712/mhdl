@@ -9,6 +9,8 @@ interface ExchangeDeskViewProps {
   exchangeRates: ExchangeRate[];
   currentUser: UserProfile;
   onExecuteExchange: (data: {
+    rateId: string;
+    rateMode: 'buy' | 'sell';
     sourceCurrency: CurrencyCode;
     sourceAmount: number;
     targetCurrency: CurrencyCode;
@@ -18,7 +20,7 @@ interface ExchangeDeskViewProps {
     customerName: string;
     customerPhone: string;
     notes: string;
-  }) => void;
+  }) => Promise<boolean> | boolean;
   onOpenRatesModal: () => void;
 }
 
@@ -86,7 +88,7 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
     setCustomRate(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!Number.isFinite(sourceAmount) || sourceAmount <= 0 ||
         Math.abs(sourceAmount * 100 - Math.round(sourceAmount * 100)) > 1e-8) {
@@ -107,6 +109,14 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
       toast.error('العمولة غير صالحة', 'العمولة بعملة المبلغ المستهدف، ويجب أن تكون موجبة أو صفراً، وأقل من إجمالي المبلغ، وبحد أقصى منزلتين عشريتين.');
       return;
     }
+    if (customRate !== null) {
+      toast.error('السعر اليدوي غير معتمد', 'أوقفنا السعر اليدوي مؤقتاً. حدّث السعر المعتمد من شاشة أسعار الصرف ثم أعد العملية.');
+      return;
+    }
+    if (!activeRateObj || activeRateObj.buyRate <= 0 || activeRateObj.sellRate <= 0) {
+      toast.error('لا يوجد سعر معتمد', 'يجب على المالك اعتماد سعر شراء وبيع صالحين لهذا الزوج قبل تنفيذ الصرافة.');
+      return;
+    }
     if (!hasSufficientLiquidity) {
       toast.error(
         'رصيد الصندوق غير كافٍ',
@@ -115,7 +125,9 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
       return;
     }
 
-    onExecuteExchange({
+    const completed = await onExecuteExchange({
+      rateId: activeRateObj.id,
+      rateMode: opMode,
       sourceCurrency,
       sourceAmount,
       targetCurrency,
@@ -127,10 +139,12 @@ export const ExchangeDeskView: React.FC<ExchangeDeskViewProps> = ({
       notes,
     });
 
-    toast.success(
-      'تم اعتماد وقيد عملية الصرافة بنجاح',
-      `تم صرف ${formatMoney(targetAmount, targetCurrency)} واستلام ${formatMoney(sourceAmount, sourceCurrency)}`
-    );
+    if (completed) {
+      toast.success(
+        'تم اعتماد وقيد عملية الصرافة من الخادم',
+        `تم صرف ${formatMoney(targetAmount, targetCurrency)} واستلام ${formatMoney(sourceAmount, sourceCurrency)}`
+      );
+    }
   };
 
   return (
