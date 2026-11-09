@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - 'audit/**'
     paths:
       - 'package.json'
       - 'src/server/db/**'
@@ -18,9 +19,15 @@ permissions:
 
 jobs:
   sqlite-foundation:
-    name: SQLite schema and financial repository tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: SQLite schema and financial repository tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v4
