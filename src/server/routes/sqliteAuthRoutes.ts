@@ -104,7 +104,7 @@ export function createSqliteAuthRouter(service: SqliteAuthService): express.Rout
     return res.status(result.success ? 201 : 400).json(result);
   });
 
-  router.patch('/users/:userId/status', requireAuth, requireSqliteRoles('owner'), (req: Request, res: Response) => {
+  router.patch('/users/:userId/status', requireAuth, requireSqliteRoles(service, 'owner'), (req: Request, res: Response) => {
     const { isActive } = req.body || {};
     if (typeof isActive !== 'boolean') {
       return res.status(400).json({ success: false, error: 'حالة الحساب يجب أن تكون true أو false.' });
@@ -113,7 +113,7 @@ export function createSqliteAuthRouter(service: SqliteAuthService): express.Rout
     return res.status(result.success ? 200 : 400).json(result);
   });
 
-  router.post('/users/:userId/reset-pin', requireAuth, requireSqliteRoles('owner'), (req: Request, res: Response) => {
+  router.post('/users/:userId/reset-pin', requireAuth, requireSqliteRoles(service, 'owner'), (req: Request, res: Response) => {
     const { newPin } = req.body || {};
     const result = service.resetUserPin(req.params.userId, newPin);
     return res.status(result.success ? 200 : 400).json(result);
