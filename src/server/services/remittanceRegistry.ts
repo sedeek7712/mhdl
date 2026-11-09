@@ -143,26 +143,80 @@ class RemittanceRegistry {
    * H4: قراءة آمنة تمنع بلع الأخطاء وتدمير البيانات عند وجود تلف
    */
   private loadFromDisk() {
-    this.settings = safeReadJson<RemittanceSettingsRecord>(SETTINGS_FILE, this.settings, { failOnCorruption: false });
+    // جميع هذه الملفات تحمل حالة مالية أو مرجعية تؤثر في منع التكرار؛ لا يجوز استبدالها بقيم فارغة عند الفقد أو التلف.
+    const loadedSettings = safeReadJson<RemittanceSettingsRecord>(SETTINGS_FILE, this.settings, {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!loadedSettings || typeof loadedSettings !== 'object' ||
+        !['automatic', 'manual'].includes(loadedSettings.numberingMode) ||
+        typeof loadedSettings.prefix !== 'string' || !loadedSettings.prefix.trim() ||
+        !Number.isSafeInteger(loadedSettings.nextSequence) || loadedSettings.nextSequence < 1) {
+      throw new Error('توقف آمن: إعدادات ترقيم الحوالات غير صالحة؛ لن يتم تشغيل التسجيل أو الترقيم حتى استعادة الإعدادات الصحيحة.');
+    }
 
     const numbersList = safeReadJson<{ number: string; registeredAt: string; registeredBy: string; mode: string }[]>(
       NUMBERS_REGISTRY_FILE,
       [],
-      { failOnCorruption: false }
+      { failOnCorruption: true, failOnMissing: true }
     );
-    this.registeredNumbers.clear();
-    for (const item of numbersList) {
-      if (item && item.number) {
-        this.registeredNumbers.set(item.number.trim().toUpperCase(), item);
-      }
+    if (!Array.isArray(numbersList) ||
+        numbersList.some((item) => !item || typeof item.number !== 'string' || !item.number.trim())) {
+      throw new Error('توقف آمن: سجل أرقام الحوالات غير صالح؛ منعاً لإعادة استخدام رقم سبق حجزه.');
     }
 
-    const payoutsList = safeReadJson<RemittancePayoutRecord[]>(PAYOUTS_REGISTRY_FILE, [], { failOnCorruption: false });
+    const payoutsList = safeReadJson<RemittancePayoutRecord[]>(PAYOUTS_REGISTRY_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(payoutsList) ||
+        payoutsList.some((item) => !item || typeof item.transferNumber !== 'string' ||
+          !item.transferNumber.trim() || typeof item.tellerId !== 'string' ||
+          !Number.isFinite(item.amount) || item.amount <= 0 ||
+          typeof item.currency !== 'string' || typeof item.voucherNumber !== 'string' ||
+          typeof item.journalEntryReference !== 'string')) {
+      throw new Error('توقف آمن: سجل صرف الحوالات يحتوي سجلات غير صالحة؛ لن يتم تحميل حالة صرف غير موثوقة.');
+    }
+
+    const auditLogs = safeReadJson<RemittanceAuditRecord[]>(AUDIT_LOGS_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(auditLogs) ||
+        auditLogs.some((item) => !item || typeof item.id !== 'string' ||
+          typeof item.action !== 'string' || typeof item.timestamp !== 'string')) {
+      throw new Error('توقف آمن: سجل تدقيق الحوالات غير صالح؛ لا يمكن ضمان سلامة سجل العمليات.');
+    }
+
+    const masterList = safeReadJson<RemittanceMasterRecord[]>(MASTER_REMITTANCES_FILE, [], {
+      failOnCorruption: true,
+      failOnMissing: true,
+    });
+    if (!Array.isArray(masterList) ||
+        masterList.some((item) => !item || typeof item.id !== 'string' ||
+          typeof item.transferNumber !== 'string' || !item.transferNumber.trim() ||
+          !Number.isFinite(item.amount) || item.amount <= 0)) {
+      throw new Error('توقف آمن: سجل الحوالات الرئيسي يحتوي بيانات غير صالحة؛ تم منع تشغيل الصرف على سجل ناقص.');
+    }
+
+    this.settings = loadedSettings;
+    this.registeredNumbers.clear();
+    for (const item of numbersList) {
+      const normalizedNumber = item.number.trim().toUpperCase();
+      if (this.registeredNumbers.has(normalizedNumber)) {
+        throw new Error(`توقف آمن: رقم حوالة مكرر في سجل الأرقام (${normalizedNumber}).`);
+      }
+      this.registeredNumbers.set(normalizedNumber, item);
+    }
+
     this.payouts.clear();
     this.idempotencyStore.clear();
     this.idempotencyToTransferMap.clear();
     for (const item of payoutsList) {
       const cleanNum = item.transferNumber.trim().toUpperCase();
+      if (this.payouts.has(cleanNum)) {
+        throw new Error(`توقف آمن: توجد أكثر من عملية صرف مسجلة للحوالة (${cleanNum}).`);
+      }
       this.payouts.set(cleanNum, item);
       if (item.idempotencyKey) {
         const compositeKey = `${cleanNum}:${item.tellerId}:${item.idempotencyKey}`;
@@ -171,17 +225,16 @@ class RemittanceRegistry {
       }
     }
 
-    this.auditLogs = safeReadJson<RemittanceAuditRecord[]>(AUDIT_LOGS_FILE, [], { failOnCorruption: false });
-
-    const masterList = safeReadJson<RemittanceMasterRecord[]>(MASTER_REMITTANCES_FILE, [], { failOnCorruption: false });
+    this.auditLogs = auditLogs;
     this.masterRemittances.clear();
     for (const item of masterList) {
-      if (item && item.transferNumber) {
-        this.masterRemittances.set(item.transferNumber.trim().toUpperCase(), item);
+      const normalizedNumber = item.transferNumber.trim().toUpperCase();
+      if (this.masterRemittances.has(normalizedNumber)) {
+        throw new Error(`توقف آمن: رقم حوالة مكرر في السجل الرئيسي (${normalizedNumber}).`);
       }
+      this.masterRemittances.set(normalizedNumber, item);
     }
   }
-
   private saveSettingsToDisk() {
     safeAtomicWriteJson(SETTINGS_FILE, this.settings);
   }
