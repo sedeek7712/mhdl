@@ -138,14 +138,9 @@ class ApiClient {
     voucherNumber?: string;
     managerOverride?: boolean;
     managerOverrideReason?: string;
-    idempotencyKey?: string;
   }): Promise<{ success: boolean; isDuplicate?: boolean; record?: any; journalEntry?: any; accounts?: any[]; error?: string; message?: string }> {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (payload.idempotencyKey) {
-        headers['X-Idempotency-Key'] = payload.idempotencyKey;
-      }
-
       const res = await this.fetch('/api/remittances/payout', {
         method: 'POST',
         headers,
