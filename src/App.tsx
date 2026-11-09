@@ -1600,7 +1600,7 @@ function AppContent() {
   };
 
   // 7. Update Exchange Rates with Audit Trail
-  const handleUpdateExchangeRate = async (rateId: string, newBuyRate: number, newSellRate: number, note?: string) => {
+  const handleUpdateExchangeRate = async (rateId: string, newBuyRate: number, newSellRate: number, note?: string): Promise<boolean> => {
     const result = await apiClient.updateExchangeRate({
       rateId,
       buyRate: newBuyRate,
@@ -1610,12 +1610,13 @@ function AppContent() {
 
     if (!result.success || !Array.isArray(result.rates) || !Array.isArray(result.auditLogs)) {
       toast.error('تعذر اعتماد سعر الصرف', result.error || 'لم يتم حفظ السعر في الخادم.');
-      return;
+      return false;
     }
 
     setExchangeRates(result.rates as ExchangeRate[]);
     setAuditLogs(result.auditLogs as ExchangeRateAuditLog[]);
     toast.success('تم اعتماد سعر الصرف', 'تم حفظ السعر وسجل التعديل في الخادم.');
+    return true;
   };
 
   // 8. Close Shift (إقفال الوردية)
