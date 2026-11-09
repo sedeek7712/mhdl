@@ -1171,96 +1171,173 @@ function AppContent() {
   };
 
   // 6. Record Operating Expense (البند 7.3: إثبات سند صرف مصروف تشغيلي)
-  const handleRecordExpense = (data: {
+  const handleRecordExpense = async (data: {
     expenseType: string;
     amount: number;
     currency: CurrencyCode;
     notes: string;
-  }) => {
-    const entryNum = `JV-EXP-${Date.now().toString().slice(-4)}`;
-    const voucherNum = `V-EXP-${Date.now().toString().slice(-4)}`;
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].substring(0, 5);
+  }): Promise<boolean> => {
+    if (!Number.isFinite(data.amount) || data.amount <= 0 ||
+        !data.expenseType.trim() || !data.notes.trim()) {
+      toast.warning('بيانات المصروف غير مكتملة أو غير صالحة.');
+      return false;
+    }
 
-    // Update balances: Cashier box decreases, Expense account increases
-    setAccounts((prevAccounts) =>
-      prevAccounts.map((acc) => {
-        if (acc.id === 'acc-1102') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) - data.amount,
-            },
-          };
+    const pendingStorageKey = 'alnamari_pending_expense_v1';
+    let idempotencyKey: string;
+
+    try {
+      const rawPending = window.localStorage.getItem(pendingStorageKey);
+      if (rawPending) {
+        const pending = JSON.parse(rawPending) as {
+          idempotencyKey?: string;
+          expenseType?: string;
+          amount?: number;
+          currency?: string;
+          notes?: string;
+        };
+
+        if (!pending.idempotencyKey ||
+            pending.expenseType !== data.expenseType.trim() ||
+            pending.amount !== data.amount ||
+            pending.currency !== data.currency ||
+            pending.notes !== data.notes.trim()) {
+          toast.warning(
+            'يوجد سند مصروف سابق لم تُحسم نتيجته',
+            'لا تسجل مصروفاً مختلفاً الآن. أعد نفس المصروف السابق بالبيانات ذاتها لاسترجاع نتيجته، أو اطلب مطابقة الدفتر.'
+          );
+          return false;
         }
-        if (acc.id === 'acc-5101') {
-          return {
-            ...acc,
-            balances: {
-              ...acc.balances,
-              [data.currency]: (acc.balances[data.currency] || 0) + data.amount,
-            },
-          };
-        }
-        return acc;
-      })
+        idempotencyKey = pending.idempotencyKey;
+      } else {
+        idempotencyKey = window.crypto.randomUUID();
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify({
+          idempotencyKey,
+          expenseType: data.expenseType.trim(),
+          amount: data.amount,
+          currency: data.currency,
+          notes: data.notes.trim(),
+          createdAt: new Date().toISOString(),
+        }));
+      }
+    } catch {
+      toast.error(
+        'تعذر حفظ معرف سند المصروف',
+        'أوقف العملية؛ لا يمكن ضمان منع تكرار سند الصرف دون حفظ معرف ثابت قبل إرسال الطلب.'
+      );
+      return false;
+    }
+
+    const result = await apiClient.executeOperatingExpense({
+      expenseType: data.expenseType.trim(),
+      amount: data.amount,
+      currency: data.currency,
+      notes: data.notes.trim(),
+      idempotencyKey,
+    });
+
+    if (!result.success) {
+      if (result.errorCode === 'COMMIT_PENDING_RECOVERY' || result.doNotRetry) {
+        toast.error(
+          'سند المصروف غير محسوم محاسبياً',
+          result.error || 'أوقف النظام ولا تعاود تسجيل المصروف. يلزم فحص علامة الاسترداد ومطابقة الدفاتر.'
+        );
+        return false;
+      }
+
+      if (result.outcomeUncertain) {
+        toast.warning(
+          'لم يصل تأكيد الخادم',
+          'لم نغيّر الأرصدة في الواجهة. أعد نفس سند المصروف بالبيانات نفسها لاسترجاع النتيجة باستخدام معرفه السابق.'
+        );
+        return false;
+      }
+
+      try {
+        window.localStorage.removeItem(pendingStorageKey);
+      } catch {
+        // Definitive server rejection; no local financial changes were made.
+      }
+      toast.error('رفض الخادم سند المصروف', result.error || 'لم يتم تنفيذ المصروف.');
+      return false;
+    }
+
+    const journalEntry = result.journalEntry;
+    const expenseLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-5101' &&
+      line.currency === data.currency &&
+      Math.abs(line.debit - data.amount) <= 0.0000001 &&
+      line.credit === 0
+    );
+    const cashierLine = journalEntry?.lines?.find((line: any) =>
+      line.accountId === 'acc-1102' &&
+      line.currency === data.currency &&
+      Math.abs(line.credit - data.amount) <= 0.0000001 &&
+      line.debit === 0
     );
 
-    // Balanced Journal Entry
-    const newEntry: JournalEntry = {
-      id: `jv-exp-${Date.now()}`,
-      entryNumber: entryNum,
-      date: dateStr,
-      time: timeStr,
-      descriptionAr: `سند صرف مصروف: ${data.expenseType} - ${data.notes}`,
-      lines: [
-        {
-          accountId: 'acc-5101',
-          accountNameAr: 'حـ/ مصاريف التشغيل والإيجارات',
-          currency: data.currency,
-          debit: data.amount,
-          credit: 0,
-          note: data.notes,
-        },
-        {
-          accountId: 'acc-1102',
-          accountNameAr: 'حـ/ صندوق كاشير الصراف 1',
-          currency: data.currency,
-          debit: 0,
-          credit: data.amount,
-          note: 'صرف نقدي من الصندوق',
-        },
-      ],
-      referenceType: 'expense',
-      referenceId: voucherNum,
-      branchId: currentUser.branchId,
-      createdBy: currentUser.name,
-      isBalanced: true,
-    };
+    if (!Array.isArray(result.accounts) || !journalEntry ||
+        journalEntry.referenceType !== 'expense' ||
+        journalEntry.idempotencyKey !== idempotencyKey ||
+        typeof journalEntry.entryNumber !== 'string' ||
+        typeof journalEntry.voucherNumber !== 'string' ||
+        !expenseLine || !cashierLine) {
+      toast.error(
+        'استجابة سند المصروف غير مكتملة',
+        'لم يتم تحديث الشاشة أو إزالة معرف العملية. لا تنشئ سنداً جديداً حتى تتم مطابقة دفتر الخادم.'
+      );
+      return false;
+    }
 
-    setJournalEntries((prev) => [...prev, newEntry]);
+    setAccounts(result.accounts as Account[]);
+    setJournalEntries((previous) => {
+      const exists = previous.some((entry) =>
+        entry.id === journalEntry.id || entry.entryNumber === journalEntry.entryNumber
+      );
+      return exists ? previous : [journalEntry as JournalEntry, ...previous];
+    });
+
+    try {
+      window.localStorage.removeItem(pendingStorageKey);
+    } catch {
+      // The journal stores the idempotency key, so a repeated request is still safe.
+    }
+
+    const auditRecord: SystemAuditLog = {
+      id: `sys-log-${journalEntry.id}`,
+      category: 'financial',
+      timestamp: `${journalEntry.date} ${journalEntry.time}`,
+      action: 'اعتماد سند صرف مصروف تشغيلي',
+      details: `اعتمد الخادم مصروف ${data.expenseType.trim()} بمبلغ ${formatMoney(data.amount, data.currency)} بالقيد ${journalEntry.entryNumber}`,
+      performedBy: currentUser.name,
+      userRole: currentUser.role,
+    };
+    setSystemAuditLogs((previous) => [auditRecord, ...previous]);
 
     const expenseVoucher: OfficialVoucher = {
-      id: `vouch-${Date.now()}`,
-      voucherNumber: voucherNum,
+      id: journalEntry.id,
+      voucherNumber: journalEntry.voucherNumber,
       type: 'payment',
-      date: dateStr,
-      time: timeStr,
+      date: journalEntry.date,
+      time: journalEntry.time,
       branchName: currentUser.branchName,
       tellerName: currentUser.name,
-      partyName: data.expenseType,
+      partyName: data.expenseType.trim(),
       partyPhone: '',
       amount: data.amount,
       currency: data.currency,
       amountInWordsAr: tafqeetArabic(data.amount, data.currency),
-      referenceNumber: entryNum,
-      qrCodeData: voucherNum,
-      notes: data.notes,
+      referenceNumber: journalEntry.entryNumber,
+      qrCodeData: journalEntry.voucherNumber,
+      notes: data.notes.trim(),
     };
-
     setActiveVoucher(expenseVoucher);
+
+    toast.success(
+      'تم اعتماد سند المصروف من الخادم',
+      `تم اعتماد ${formatMoney(data.amount, data.currency)} بالقيد ${journalEntry.entryNumber}. الأرصدة من دفتر الخادم.`
+    );
+    return true;
   };
 
   // 7. Update Exchange Rates with Audit Trail
