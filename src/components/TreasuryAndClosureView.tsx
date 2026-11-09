@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Account, CashBoxShift, CurrencyCode, SUPPORTED_CURRENCIES, UserProfile } from '../types/exchange';
 import { formatMoney } from '../services/accountingEngine';
 import { AlertCircle, CheckCircle2, Clock, FileSpreadsheet, Lock, RefreshCw, ShieldCheck, Vault } from 'lucide-react';
@@ -7,8 +7,8 @@ interface TreasuryAndClosureViewProps {
   accounts: Account[];
   activeShift: CashBoxShift;
   currentUser: UserProfile;
-  onCloseShift: (actualBalances: Record<CurrencyCode, number>, notes: string) => void;
-  onOpenNewShift: () => void;
+  onCloseShift: (actualBalances: Record<CurrencyCode, number>, notes: string) => Promise<boolean>;
+  onOpenNewShift: () => Promise<boolean>;
 }
 
 export const TreasuryAndClosureView: React.FC<TreasuryAndClosureViewProps> = ({
@@ -27,6 +27,11 @@ export const TreasuryAndClosureView: React.FC<TreasuryAndClosureViewProps> = ({
   const [closureNotes, setClosureNotes] = useState('');
   const [closureSuccessMessage, setClosureSuccessMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    setActualInput({ ...activeShift.actualBalances });
+    setClosureSuccessMessage(null);
+  }, [activeShift.id, activeShift.status]);
+
   const cashierBox = accounts.find((a) => a.id === activeShift.boxId) || accounts[1];
 
   // Compute live expected balances from cashier box account
@@ -41,9 +46,10 @@ export const TreasuryAndClosureView: React.FC<TreasuryAndClosureViewProps> = ({
     setActualInput((prev) => ({ ...prev, [cur]: val }));
   };
 
-  const handleExecuteClosure = () => {
-    onCloseShift(actualInput, closureNotes);
-    setClosureSuccessMessage('تم إقفال الوردية بنجاح واعتماد مطابقة الجرد المالي!');
+  const handleExecuteClosure = async () => {
+    const saved = await onCloseShift(actualInput, closureNotes);
+    if (!saved) return;
+    setClosureSuccessMessage('تم حفظ محضر الجرد وإقفال الوردية بنجاح على الخادم.');
     setTimeout(() => setClosureSuccessMessage(null), 5000);
   };
 
@@ -230,13 +236,17 @@ export const TreasuryAndClosureView: React.FC<TreasuryAndClosureViewProps> = ({
               المشرف المعتمد: <strong className="text-white">{currentUser.name}</strong> ({currentUser.roleTitleAr})
             </span>
 
-            <button
-              onClick={handleExecuteClosure}
-              className="min-h-[44px] px-6 py-2.5 bg-rose-700 hover:bg-rose-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-rose-950/40 transition-all cursor-pointer"
-            >
-              <Lock className="w-4 h-4" />
-              <span>إقفال الوردية وترحيل التقرير</span>
-            </button>
+            {activeShift.status === 'open' ? (
+              <button
+                onClick={handleExecuteClosure}
+                className="min-h-[44px] px-6 py-2.5 bg-rose-700 hover:bg-rose-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-rose-950/40 transition-all cursor-pointer"
+              >
+                <Lock className="w-4 h-4" />
+                <span>إقفال الوردية وترحيل التقرير</span>
+              </button>
+            ) : (
+              <span className="text-xs text-amber-300">لا توجد وردية مفتوحة؛ افتح وردية جديدة قبل تنفيذ العمليات المالية.</span>
+            )}
           </div>
         </div>
       </div>
