@@ -127,6 +127,10 @@ export async function startServer(options: { port?: number; host?: string; useVi
   app.use((req, res, next) => {
     if (req.method === 'POST' && shiftRequiredWritePaths.has(req.path) &&
         !serverCashBoxShiftRegistry.getActiveShift()) {
+      const authorization = req.headers.authorization;
+      const token = authorization?.startsWith('Bearer ') ? authorization.substring(7) : '';
+      // Let the route's requireAuth middleware return 401 for missing/invalid sessions.
+      if (!token || !authService.verifyToken(token)) return next();
       return res.status(409).json({
         success: false,
         errorCode: 'CASHIER_SHIFT_REQUIRED',
