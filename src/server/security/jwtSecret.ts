@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { applyPrivateFilePermissions } from './privateFilePermissions.js';
 
 export function resolveJwtSecretFilePath(
   moduleDirectory: string,
@@ -18,10 +20,7 @@ function readStoredSecret(secretFilePath: string): string {
     throw new Error('JWT secret file must be a regular file and cannot be a symbolic link.');
   }
 
-  if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
-    fs.chmodSync(secretFilePath, 0o600);
-  }
-
+  applyPrivateFilePermissions(secretFilePath);
   const stored = fs.readFileSync(secretFilePath, 'utf8').trim();
   if (!/^[a-f0-9]{64}$/i.test(stored)) {
     throw new Error('JWT secret file is malformed. Refusing to replace or regenerate it automatically.');
@@ -65,7 +64,11 @@ export function loadOrCreateJwtSecret(
     let descriptor: number | undefined;
     try {
       descriptor = fs.openSync(resolvedPath, 'wx', 0o600);
-      fs.writeSync(descriptor, generated, undefined, 'utf8');
+      fs.closeSync(descriptor);
+      descriptor = undefined;
+      applyPrivateFilePermissions(resolvedPath);
+      descriptor = fs.openSync(resolvedPath, 'r+');
+      fs.writeSync(descriptor, generated, 0, 'utf8');
       fs.fsyncSync(descriptor);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -75,10 +78,6 @@ export function loadOrCreateJwtSecret(
       throw error;
     } finally {
       if (descriptor !== undefined) fs.closeSync(descriptor);
-    }
-
-    if (process.platform !== 'win32') {
-      fs.chmodSync(resolvedPath, 0o600);
     }
 
     const persisted = readStoredSecret(resolvedPath);
