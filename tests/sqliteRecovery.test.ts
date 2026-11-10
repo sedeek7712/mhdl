@@ -138,6 +138,30 @@ test('cutover refuses to proceed without explicit stopped-server confirmation', 
   assert.equal(fs.existsSync(stagedFile), true);
 });
 
+test('cutover rejects a staged restore checksum mismatch before touching either database', async (t) => {
+  const directory = makeDirectory(t);
+  const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
+  const archiveDirectory = path.join(directory, 'must-not-be-created');
+  const originalLiveBytes = fs.readFileSync(liveFile);
+  const originalStageBytes = fs.readFileSync(stagedFile);
+
+  await assert.rejects(
+    cutoverSqliteDatabase({
+      databaseFile: liveFile,
+      stagedFile,
+      expectedStagedSha256: '0'.repeat(64),
+      archiveDirectory,
+      serverStopped: true,
+    }),
+    /does not match the supplied restore report/
+  );
+
+  assert.equal(stagedSha256.length, 64);
+  assert.deepEqual(fs.readFileSync(liveFile), originalLiveBytes);
+  assert.deepEqual(fs.readFileSync(stagedFile), originalStageBytes);
+  assert.equal(fs.existsSync(archiveDirectory), false);
+});
+
 test('rollback refuses to run while the application is not confirmed stopped', async (t) => {
   const directory = makeDirectory(t);
   const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
