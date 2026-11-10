@@ -29,14 +29,20 @@ This document tracks the five blockers identified during the security review. It
 
 **Remaining controls:** rehearse the helper under the actual deployment account and NTFS folder policy. The hosted Windows runner passed; this does not prove the target machine's account and folder ACL configuration.
 
-## B3 — Operational restore and cutover
+## B3 — Offline operational restore, cutover, and rollback
 
-**Partially addressed; still open.**
+**Offline cutover/rollback tooling implemented and CI-verified; production-machine rehearsal remains open.**
 
-- Restore verifies checksum, GCM authentication, SQLite integrity, and foreign keys, then writes a new database file without overwriting the source.
-- The CLI requires an explicit `--server-stopped` assertion for restore.
+- Added `src/server/db/sqliteRecovery.ts` with guarded cutover and rollback operations.
+- Cutover requires the staged restore SHA-256 reported by the restore command, checks the file again before moving anything, verifies SQLite integrity/FKs, and refuses cross-filesystem paths.
+- The current database and any WAL/SHM/rollback-journal sidecars are copied into a private archive with SHA-256 verification before cutover. A recovery manifest is written before live-path changes.
+- The current WAL is checkpointed only after its original bytes are archived. Staged database sidecars are checkpointed and archived separately so files from two databases cannot be mixed.
+- The staged database is promoted only after the sidecar handling and old database displacement. The promoted database is checked again.
+- Rollback validates the manifest paths and checksums, preserves failed/promoted files under `failed-cutovers/`, restores the original database and sidecar set, and verifies the restored database checksum.
+- Added `npm run sqlite:recovery -- rehearse`, an end-to-end synthetic-data rehearsal that creates an encrypted backup, restores to a staged path, cuts over, verifies the promoted data, rolls back, verifies the original synthetic data, and removes its temporary workspace.
+- Added `docs/SQLITE_RECOVERY_RUNBOOK_2026-11-10.md` with PowerShell commands for backup, staged restore, cutover, and rollback.
 
-**Not implemented:** automatic server shutdown, WAL/SHM preservation and controlled replacement, application database-path switch, process restart, post-restart HTTP smoke tests, or a full Windows recovery rehearsal. The flag is not a process detector. Do not call this a complete operational recovery procedure.
+**Remaining operational boundary:** `--server-stopped` is an operator assertion, not process detection or shutdown. The CLI does not restart Express/Electron or run application-level HTTP smoke tests after promotion. The actual target Windows machine, deployment account, NTFS policy, and any packaged Electron EXE still require a supervised rehearsal. The existing Express application remains JSON-backed by default; this work did not switch its active database or migrate real data.
 
 ## B4 — SQLite authentication rollback to JSON
 
@@ -60,11 +66,12 @@ Before claiming Electron support, define whether Electron is the required deskto
 
 ## CI evidence
 
-Code under test: `e91b04cd974b6d91bb611d9693a3c33d89cd0e2c`.
+Latest B3 code/test state: branch head associated with GitHub Actions run `42736899947` (#261) and general workflow run `42736899956` (#647).
 
-- `Verify storage safety and build`, run `42735318198` (#608): passed. Storage safety, internal transfers, chart reconciliation, operating expenses, remittances, exchange accounting/rates, server exchange, cashier shifts, authenticated HTTP, TypeScript, and production build all passed.
-- `Validate SQLite foundation`, run `42735318210` (#227): Ubuntu Node 22.16.0 passed 89/89 tests, TypeScript, and production build; Windows Node 24.22.2 passed the test, TypeScript, and production-build steps.
-- These are GitHub-hosted CI results. They do not replace a rehearsal on the actual customer Windows machine or a packaged Electron executable.
+- `Verify storage safety and build`, run `42736899956` (#647): passed. Storage safety, internal transfers, chart reconciliation, operating expenses, remittances, exchange accounting/rates, server exchange, cashier shifts, authenticated HTTP, TypeScript, and production build all passed.
+- `Validate SQLite foundation`, run `42736899947` (#261): Ubuntu Node 22.16.0 passed **97/97 tests**, TypeScript, and production build; Windows Node 24.22.2 passed **97/97 tests**, TypeScript, and production build.
+- The 97-test suite includes the recovery CLI rehearsal against synthetic data, staged hash mismatch protection, cutover, exact rollback, and manifest-path tamper protection.
+- These are GitHub-hosted CI results. They do not replace a supervised rehearsal on the actual deployment Windows machine/account or a packaged Electron executable.
 
 ## Release gate
 
