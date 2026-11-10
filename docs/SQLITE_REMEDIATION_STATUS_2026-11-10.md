@@ -78,11 +78,12 @@ Before claiming Electron support, define whether Electron is the required deskto
 
 ## CI evidence
 
-Latest B3 code/test state: branch head associated with GitHub Actions run `42736899947` (#261) and general workflow run `42736899956` (#647).
+Latest B3.1 code/test state: commit `2c0031b1b14ff904cdc679179375d14b574ee011`, verified by GitHub Actions run `42738223205` (#281) and general workflow run `42738223523` (#681).
 
 - `Verify storage safety and build`, run `42736899956` (#647): passed. Storage safety, internal transfers, chart reconciliation, operating expenses, remittances, exchange accounting/rates, server exchange, cashier shifts, authenticated HTTP, TypeScript, and production build all passed.
-- `Validate SQLite foundation`, run `42736899947` (#261): Ubuntu Node 22.16.0 passed **97/97 tests**, TypeScript, and production build; Windows Node 24.22.2 passed **97/97 tests**, TypeScript, and production build.
-- The 97-test suite includes the recovery CLI rehearsal against synthetic data, staged hash mismatch protection, cutover, exact rollback, and manifest-path tamper protection.
+- `Validate SQLite foundation`, run `42738223205` (#281): Ubuntu Node 22.16.0 passed **99/99 tests**, TypeScript, and production build; Windows Node 24.22.2 passed **99/99 tests**, TypeScript, and production build.
+- `Verify storage safety and build`, run `42738223523` (#681): all financial/storage, transfers, chart, expenses, remittances, accounting/rates, shifts, HTTP integration, TypeScript, and production build steps passed.
+- The 99-test suite includes the recovery CLI rehearsal against synthetic data, staged hash mismatch protection, cutover, exact rollback, manifest-path tamper protection, and the new read-only Windows preflight tests.
 - These are GitHub-hosted CI results. They do not replace a supervised rehearsal on the actual deployment Windows machine/account or a packaged Electron executable.
 
 ## Release gate
@@ -93,6 +94,6 @@ Latest B3 code/test state: branch head associated with GitHub Actions run `42736
 - Do not activate SQLite against real data.
 - Do not use a real customer database for migration or restore rehearsal.
 - B1/B2 CI checks passed on Ubuntu and Windows hosted runners.
-- B3 offline cutover/rollback code, the PowerShell runbook, synthetic end-to-end recovery rehearsal, and read-only Windows preflight are implemented; current CI verification for the latest preflight commit is pending.
+- B3 offline cutover/rollback code, the PowerShell runbook, synthetic end-to-end recovery rehearsal, and read-only Windows preflight are implemented; the latest preflight commit passed 99/99 tests on both Ubuntu and Windows, TypeScript, and production build in hosted CI.
 - Do not merge or enable a live SQLite database until a supervised rehearsal succeeds on the actual deployment Windows machine/account and the application-specific restart/HTTP verification procedure has been reviewed.
 - Keep Electron support as a separate release gate; do not describe the product as an Electron desktop application until its runtime and packaged EXE are implemented and tested.
