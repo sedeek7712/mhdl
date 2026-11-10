@@ -17,6 +17,7 @@ interface CliOptions {
   mode: Mode | '';
   databaseFile: string;
   stagedFile: string;
+  expectedStagedSha256: string;
   archiveDirectory: string;
   manifestFile: string;
   serverStopped: boolean;
@@ -27,6 +28,7 @@ function parseArgs(args: string[]): CliOptions {
   let mode: Mode | '' = '';
   let databaseFile = '';
   let stagedFile = '';
+  let expectedStagedSha256 = '';
   let archiveDirectory = '';
   let manifestFile = '';
   let serverStopped = false;
@@ -43,6 +45,8 @@ function parseArgs(args: string[]): CliOptions {
       databaseFile = args[++index];
     } else if (argument === '--staged-file' && args[index + 1]) {
       stagedFile = args[++index];
+    } else if (argument === '--expected-staged-sha256' && args[index + 1]) {
+      expectedStagedSha256 = args[++index];
     } else if (argument === '--archive-directory' && args[index + 1]) {
       archiveDirectory = args[++index];
     } else if (argument === '--manifest-file' && args[index + 1]) {
@@ -55,13 +59,13 @@ function parseArgs(args: string[]): CliOptions {
   }
 
   if (!help && !mode) throw new Error('A recovery mode is required.');
-  if (!help && mode === 'cutover' && (!databaseFile || !stagedFile || !archiveDirectory || !serverStopped)) {
+  if (!help && mode === 'cutover' && (!databaseFile || !stagedFile || !expectedStagedSha256 || !archiveDirectory || !serverStopped)) {
     throw new Error('cutover requires --database-file, --staged-file, --archive-directory, and --server-stopped.');
   }
   if (!help && mode === 'rollback' && (!manifestFile || !serverStopped)) {
     throw new Error('rollback requires --manifest-file and --server-stopped.');
   }
-  if (!help && mode !== 'cutover' && (databaseFile || stagedFile || archiveDirectory)) {
+  if (!help && mode !== 'cutover' && (databaseFile || stagedFile || expectedStagedSha256 || archiveDirectory)) {
     throw new Error('cutover-only arguments cannot be used in this mode.');
   }
   if (!help && mode !== 'rollback' && manifestFile) {
@@ -74,6 +78,7 @@ function parseArgs(args: string[]): CliOptions {
     mode,
     databaseFile,
     stagedFile,
+    expectedStagedSha256,
     archiveDirectory,
     manifestFile,
     serverStopped,
@@ -83,7 +88,7 @@ function parseArgs(args: string[]): CliOptions {
 
 const usage =
   'Guarded SQLite cutover (only after restoring and verifying a staged copy):\n' +
-  '  npm run sqlite:recovery -- cutover --database-file "<current.sqlite>" --staged-file "<staged.sqlite>" --archive-directory "<new-archive-folder>" --server-stopped\n\n' +
+  '  npm run sqlite:recovery -- cutover --database-file "<current.sqlite>" --staged-file "<staged.sqlite>" --expected-staged-sha256 "<restore-report-sha256>" --archive-directory "<new-archive-folder>" --server-stopped\n\n' +
   'Rollback to the exact pre-cutover database and sidecar set:\n' +
   '  npm run sqlite:recovery -- rollback --manifest-file "<archive-folder/recovery-manifest.json>" --server-stopped\n\n' +
   'Run a complete isolated rehearsal with synthetic data only:\n' +
@@ -190,6 +195,7 @@ try {
     const result = await cutoverSqliteDatabase({
       databaseFile: options.databaseFile,
       stagedFile: options.stagedFile,
+      expectedStagedSha256: options.expectedStagedSha256,
       archiveDirectory: options.archiveDirectory,
       serverStopped: options.serverStopped,
     });
