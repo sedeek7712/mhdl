@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts tests/sqliteDatabase.test.ts tests/sqliteFinancialRepository.test.ts tests/sqliteDryRunMigration.test.ts tests/sqliteAuthRepository.test.ts tests/sqliteAuthMigration.test.ts tests/sqliteAuthService.test.ts tests/sqliteAuthHttp.test.ts tests/jwtSecret.test.ts tests/sqliteAuthRuntime.test.ts tests/authBackendSelection.test.ts tests/sqliteAuthServerIntegration.test.ts tests/dispatchRegistry.test.ts tests/authoritativeVoucher.test.ts",
+    "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts tests/sqliteDatabase.test.ts tests/sqliteFinancialRepository.test.ts tests/sqliteDryRunMigration.test.ts tests/sqliteAuthRepository.test.ts tests/sqliteAuthMigration.test.ts tests/sqliteAuthService.test.ts tests/sqliteAuthHttp.test.ts tests/jwtSecret.test.ts tests/sqliteAuthRuntime.test.ts tests/authBackendSelection.test.ts tests/sqliteAuthServerIntegration.test.ts tests/sqliteBackupRestore.test.ts tests/dispatchRegistry.test.ts tests/authoritativeVoucher.test.ts",
     "setup:owner": "node --import tsx scripts/bootstrapOwner.ts",
     "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts",
     "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts",
