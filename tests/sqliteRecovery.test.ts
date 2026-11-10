@@ -9,6 +9,7 @@ import { createSqliteBackup, restoreSqliteBackup } from '../src/server/db/sqlite
 import {
   cutoverSqliteDatabase,
   rollbackSqliteDatabase,
+  sha256File,
 } from '../src/server/db/sqliteRecovery.js';
 
 const TEST_BACKUP_KEY = 'ef'.repeat(32);
@@ -51,6 +52,7 @@ async function makeStagedRestore(directory: string): Promise<{
   stagedFile: string;
   backupFile: string;
   sourceFile: string;
+  stagedSha256: string;
 }> {
   const sourceFile = path.join(directory, 'trusted-source.sqlite');
   const liveFile = path.join(directory, 'current.sqlite');
@@ -65,24 +67,25 @@ async function makeStagedRestore(directory: string): Promise<{
     destinationFile: backupFile,
     encryptionKeyHex: TEST_BACKUP_KEY,
   });
-  await restoreSqliteBackup({
+  const restored = await restoreSqliteBackup({
     backupFile,
     destinationFile: stagedFile,
     expectedSha256: backup.sha256,
     encryptionKeyHex: TEST_BACKUP_KEY,
   });
-  return { liveFile, stagedFile, backupFile, sourceFile };
+  return { liveFile, stagedFile, backupFile, sourceFile, stagedSha256: restored.restoredSha256 };
 }
 
 test('guarded cutover archives the previous database and rollback restores its exact bytes', async (t) => {
   const directory = makeDirectory(t);
-  const { liveFile, stagedFile } = await makeStagedRestore(directory);
+  const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
   const archiveDirectory = path.join(directory, 'recovery-archive');
   const originalLiveBytes = fs.readFileSync(liveFile);
 
   const cutover = await cutoverSqliteDatabase({
     databaseFile: liveFile,
     stagedFile,
+    expectedStagedSha256: stagedSha256,
     archiveDirectory,
     serverStopped: true,
   });
@@ -122,6 +125,7 @@ test('cutover refuses to proceed without explicit stopped-server confirmation', 
     cutoverSqliteDatabase({
       databaseFile: liveFile,
       stagedFile,
+      expectedStagedSha256: stagedSha256,
       archiveDirectory,
       serverStopped: false,
     }),
@@ -140,6 +144,7 @@ test('rollback refuses to run while the application is not confirmed stopped', a
   const cutover = await cutoverSqliteDatabase({
     databaseFile: liveFile,
     stagedFile,
+    expectedStagedSha256: stagedSha256,
     archiveDirectory: path.join(directory, 'recovery-archive'),
     serverStopped: true,
   });
@@ -167,6 +172,7 @@ test('cutover rejects an invalid staged database without moving the current data
     cutoverSqliteDatabase({
       databaseFile: liveFile,
       stagedFile,
+      expectedStagedSha256: await sha256File(stagedFile),
       archiveDirectory,
       serverStopped: true,
     })
