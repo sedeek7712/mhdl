@@ -281,10 +281,6 @@ async function archiveCurrentDatabase(
 
   verifySqliteDatabase(databaseFile);
   verifySqliteDatabase(stagedFile);
-  // The backup API can leave WAL/SHM files beside a verified staged copy.
-  // Checkpoint them before promotion; any remaining sidecars are archived below.
-  checkpointSqliteWal(stagedFile);
-  verifySqliteDatabase(stagedFile);
 
   fs.mkdirSync(archiveDirectory, { recursive: false, mode: 0o700 });
   try {
@@ -380,10 +376,15 @@ export async function cutoverSqliteDatabase(
       !/^[a-f0-9]{64}$/i.test(options.expectedStagedSha256)) {
     throw new Error('Cutover requires the 64-character SHA-256 reported by the verified staged restore.');
   }
-  const stagedSha256 = await sha256File(stagedFile);
-  if (stagedSha256 !== options.expectedStagedSha256.toLowerCase()) {
+  const suppliedStagedSha256 = await sha256File(stagedFile);
+  if (suppliedStagedSha256 !== options.expectedStagedSha256.toLowerCase()) {
     throw new Error('Staged SQLite restore SHA-256 does not match the supplied restore report. Cutover was refused.');
   }
+  verifySqliteDatabase(stagedFile);
+  // Checkpoint the stage before recording the manifest hash and moving any live files.
+  checkpointSqliteWal(stagedFile);
+  verifySqliteDatabase(stagedFile);
+  const stagedSha256 = await sha256File(stagedFile);
   assertDirectory(path.dirname(path.resolve(options.archiveDirectory)), 'Archive parent directory');
   const archiveDirectory = path.resolve(options.archiveDirectory);
   if (databaseFile === stagedFile || databaseFile === archiveDirectory || stagedFile === archiveDirectory) {
