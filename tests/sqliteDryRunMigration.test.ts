@@ -9,7 +9,7 @@ import test from 'node:test';
 import { runSqliteDryRun } from '../src/server/db/sqliteDryRunMigration.js';
 
 test('checked-in mock JSON dataset imports into disposable SQLite and leaves every source file unchanged', () => {
-  const sourceDirectory = path.resolve(process.cwd(), 'data');
+  const sourceDirectory = path.resolve(process.cwd(), 'tests/fixtures/mock-data');
   const report = runSqliteDryRun(sourceDirectory);
 
   assert.equal(report.status, 'PASS', JSON.stringify(report.issues));
@@ -46,12 +46,12 @@ test('checked-in mock JSON dataset imports into disposable SQLite and leaves eve
 });
 
 test('dry-run rejects a missing or non-directory source path', () => {
-  assert.throws(() => runSqliteDryRun(path.join(process.cwd(), 'data', 'does-not-exist')));
+  assert.throws(() => runSqliteDryRun(path.join(process.cwd(), 'tests/fixtures/mock-data', 'does-not-exist')));
 });
 
 
 test('dry-run blocks before creating a database when an unresolved financial transaction marker exists', () => {
-  const sourceDirectory = path.resolve(process.cwd(), 'data');
+  const sourceDirectory = path.resolve(process.cwd(), 'tests/fixtures/mock-data');
   const isolatedSource = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-pending-marker-test-'));
 
   try {
@@ -78,7 +78,7 @@ function writeFixtureJson(directory: string, name: string, value: unknown): void
 
 function createOperationalParityFixture(): { directory: string; imagePath: string } {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'alnamari-operational-parity-test-'));
-  fs.cpSync(path.resolve(process.cwd(), 'data'), directory, { recursive: true });
+  fs.cpSync(path.resolve(process.cwd(), 'tests/fixtures/mock-data'), directory, { recursive: true });
 
   const makeUser = (id: string, username: string, role: string) => ({
     id,

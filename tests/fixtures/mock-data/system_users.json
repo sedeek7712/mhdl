@@ -1,0 +1,86 @@
+[
+  {
+    "id": "usr-001",
+    "name": "عمرو النماري",
+    "username": "amro",
+    "role": "owner",
+    "branchId": "br-main",
+    "branchName": "المركز الرئيسي - تعز",
+    "pinSalt": "eb959bff731fa6f7a6a4d9dfd89c49b7",
+    "pinHash": "f0afbc64a5869b3f7fc1cd5cdc5d3c404602ff3966a9fad5b5ab6ee78bf1a727",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  },
+  {
+    "id": "usr-002",
+    "name": "عبد الله الصبري",
+    "username": "abdullah",
+    "role": "general_manager",
+    "branchId": "br-main",
+    "branchName": "المركز الرئيسي - تعز",
+    "pinSalt": "e9f2cb053d88b554538f6dc2bdedc6f3",
+    "pinHash": "37307408f0bfb637d1fd3531e7d38549c6ff9e1dfb00d8cf02110503d216cd75",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  },
+  {
+    "id": "usr-006",
+    "name": "منصور الحمادي",
+    "username": "mansoor",
+    "role": "branch_manager",
+    "branchId": "br-khadeer",
+    "branchName": "فرع خدير",
+    "pinSalt": "5e03bbd2adf6a122b78e2ff2520a9166",
+    "pinHash": "8012bb27e2fce1d0e0f6701f524c3e9ad95fbc741c141ba85e99d0dc03447cab",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  },
+  {
+    "id": "usr-003",
+    "name": "صديق علي الفتاحي",
+    "username": "sedeek",
+    "role": "teller",
+    "branchId": "br-khadeer",
+    "branchName": "فرع خدير - الكاشير المعتمد",
+    "pinSalt": "1ec36b1a862140c60ce4676c28792f88",
+    "pinHash": "15a2253354c681fa9f61da78616111012e22fc8892d6cfbdc80d446dd444bb09",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  },
+  {
+    "id": "usr-004",
+    "name": "محمد عبد الرقيب الشميري",
+    "username": "mohammed",
+    "role": "auditor",
+    "branchId": "br-main",
+    "branchName": "المركز الرئيسي - تعز",
+    "pinSalt": "51617f42ec391cbe446899007fc454c5",
+    "pinHash": "f1cd14819101340e30165bb4ff2692aff8ba1a60c584432342b30890be614be6",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  },
+  {
+    "id": "usr-005",
+    "name": "أحمد سعيد الأصبحي",
+    "username": "ahmed",
+    "role": "accountant",
+    "branchId": "br-main",
+    "branchName": "المركز الرئيسي - تعز",
+    "pinSalt": "32794da21c739fc21de11b46b5e3bfe0",
+    "pinHash": "842a2eac2488e5ec93138685e54d7318a5c2e46e54404708a750f011e1136c83",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  },
+  {
+    "id": "usr-007",
+    "name": "فؤاد المخلافي",
+    "username": "fouad",
+    "role": "compliance_officer",
+    "branchId": "br-main",
+    "branchName": "المركز الرئيسي - تعز",
+    "pinSalt": "102e909464ac8a8a8145137d9e5ffc4a",
+    "pinHash": "4032abd109dbc239a8a001b0b4d67a98734e3c230a1ce2130900057c11281004",
+    "isActive": true,
+    "createdAt": "2026-11-01 08:00"
+  }
+]
