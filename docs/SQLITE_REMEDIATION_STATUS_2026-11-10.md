@@ -44,6 +44,18 @@ This document tracks the five blockers identified during the security review. It
 
 **Remaining operational boundary:** `--server-stopped` is an operator assertion, not process detection or shutdown. The CLI does not restart Express/Electron or run application-level HTTP smoke tests after promotion. The actual target Windows machine, deployment account, NTFS policy, and any packaged Electron EXE still require a supervised rehearsal. The existing Express application remains JSON-backed by default; this work did not switch its active database or migrate real data.
 
+
+### B3.1 — Read-only Windows preflight (implemented; target-machine run pending)
+
+- Added `scripts/sqliteWindowsPreflight.ts` and `npm run sqlite:preflight`.
+- The command verifies regular non-symlink DB files, a new archive destination, same-filesystem placement, the approved staged SHA-256, and read-only SQLite integrity/foreign-key checks.
+- On Windows it performs a limited Node server/Electron process scan and reads NTFS ACL output with `icacls.exe`; ACL output is a mandatory human review, not an automated security certification.
+- The command is read-only: it does not stop processes, change ACLs, create directories, checkpoint WAL, or modify database files.
+- Added tests for integrity/checksum reporting and for proving that preflight does not alter either synthetic database or create the archive directory.
+- Added `docs/SQLITE_WINDOWS_PREFLIGHT_2026-11-10.md` and inserted the preflight gate into the recovery runbook.
+
+**Remaining boundary:** hosted CI cannot inspect the user's actual Windows machine, process list, service account, NTFS ACLs, or folder policy. A result of `REVIEW_REQUIRED` must be resolved by the operator before a supervised synthetic rehearsal. Even a clear automated result does not authorize production cutover.
+
 ## B4 — SQLite authentication rollback to JSON
 
 **Account-data export implemented; full application rollback remains a manual operation.**
@@ -81,6 +93,6 @@ Latest B3 code/test state: branch head associated with GitHub Actions run `42736
 - Do not activate SQLite against real data.
 - Do not use a real customer database for migration or restore rehearsal.
 - B1/B2 CI checks passed on Ubuntu and Windows hosted runners.
-- B3 offline cutover/rollback code, the PowerShell runbook, and the synthetic end-to-end recovery rehearsal are implemented and passed hosted CI.
+- B3 offline cutover/rollback code, the PowerShell runbook, synthetic end-to-end recovery rehearsal, and read-only Windows preflight are implemented; current CI verification for the latest preflight commit is pending.
 - Do not merge or enable a live SQLite database until a supervised rehearsal succeeds on the actual deployment Windows machine/account and the application-specific restart/HTTP verification procedure has been reviewed.
 - Keep Electron support as a separate release gate; do not describe the product as an Electron desktop application until its runtime and packaged EXE are implemented and tested.
