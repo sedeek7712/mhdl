@@ -99,7 +99,7 @@ function remittance(overrides: Partial<SqliteRemittanceInput> = {}): SqliteRemit
   };
 }
 
-test('actual financial schema applies and creates all first-phase tables', (t) => {
+test('actual financial schema applies all migrations and creates financial and operational tables', (t) => {
   const db = createDatabase(t);
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -112,10 +112,32 @@ test('actual financial schema applies and creates all first-phase tables', (t) =
     'remittances', 'remittance_payouts', 'remittance_audit_logs',
     'exchange_rates', 'exchange_rate_audit', 'cashier_shifts',
     'cashier_shift_balances', 'cashier_shift_events',
+    'app_users', 'security_events', 'whatsapp_dispatches',
+    'whatsapp_webhook_events', 'voucher_attachments', 'auth_login_attempts',
   ]) assert.equal(names.has(name), true, `Missing table ${name}`);
 
   const migrationCount = db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number };
-  assert.equal(migrationCount.count, 1);
+  assert.equal(Number(migrationCount.count), 4);
+  const journalColumns = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
+  assert.equal(journalColumns.some((column) => column.name === 'customer_phone'), true);
+});
+
+test('v3 adds journal customer phone without rewriting the v1 or v2 migration history', (t) => {
+  const db = openSqliteDatabase({ filePath: ':memory:' });
+  t.after(() => db.close());
+
+  runSqliteMigrations(db, SQLITE_MIGRATIONS.slice(0, 2));
+  const before = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
+  assert.equal(before.some((column) => column.name === 'customer_phone'), false);
+
+  runSqliteMigrations(db, SQLITE_MIGRATIONS);
+  const after = db.prepare('PRAGMA table_info(journal_entries)').all() as Array<{ name: string }>;
+  assert.equal(after.some((column) => column.name === 'customer_phone'), true);
+
+  const history = db.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as Array<{ version: number; name: string }>;
+  assert.deepEqual(history.map((row) => row.version), [1, 2, 3, 4]);
+  assert.equal(history[0].name, 'financial_core_ledger_remittances_rates_and_shifts');
+  assert.equal(history[1].name, 'operational_parity_users_whatsapp_and_shift_replay');
 });
 
 test('balanced journal is persisted atomically and updates account balances in thousandths', (t) => {
@@ -135,6 +157,27 @@ test('balanced journal is persisted atomically and updates account balances in t
   assert.equal(debit.balance_milli, 250_000);
   assert.equal(credit.balance_milli, 250_000);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM journal_lines').get()?.count, 2);
+  assert.equal(
+    (db.prepare('SELECT customer_phone FROM journal_entries WHERE id=?').get('journal-1') as { customer_phone: string | null }).customer_phone,
+    null
+  );
+});
+
+test('journal customer phone is preserved and protected by the idempotency fingerprint', (t) => {
+  const db = createDatabase(t);
+  seedAccounts(db);
+  const input = balancedEntry({ customerPhone: '+967700000001' });
+
+  assert.deepEqual(insertBalancedJournalEntry(db, input), { id: 'journal-1', replayed: false });
+  const row = db.prepare(
+    'SELECT customer_phone FROM journal_entries WHERE id=?'
+  ).get('journal-1') as { customer_phone: string | null };
+  assert.equal(row.customer_phone, '+967700000001');
+  assert.deepEqual(insertBalancedJournalEntry(db, input), { id: 'journal-1', replayed: true });
+  assert.throws(
+    () => insertBalancedJournalEntry(db, { ...input, customerPhone: '+967700000002' }),
+    /reused with a different request/
+  );
 });
 
 test('unbalanced entry is rejected before any journal line or balance is committed', (t) => {

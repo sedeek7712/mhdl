@@ -88,7 +88,7 @@ test('chart reconciliation rejects duplicate IDs in the current ledger', () => {
 
 
 test('current repository ledger matches the chart metadata and identifies only the six missing accounts', () => {
-  const ledgerPath = path.resolve(process.cwd(), 'data/accounts_ledger.json');
+  const ledgerPath = path.resolve(process.cwd(), 'tests/fixtures/mock-data/accounts_ledger.json');
   const currentLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
   const chartDefinitions = INITIAL_ACCOUNTS.map((account) => ({
     id: account.id,

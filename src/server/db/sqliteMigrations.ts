@@ -240,4 +240,128 @@ CREATE TABLE cashier_shift_events (
   details TEXT
 ) STRICT;`,
   },
+  {
+    version: 2,
+    name: 'operational_parity_users_whatsapp_and_shift_replay',
+    sql: `-- v2 extends the immutable v1 schema without rewriting migration history.
+ALTER TABLE cashier_shifts ADD COLUMN open_request_fingerprint TEXT;
+ALTER TABLE cashier_shifts ADD COLUMN close_request_fingerprint TEXT;
+
+CREATE TABLE app_users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (length(trim(username)) BETWEEN 3 AND 32),
+  name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+  role TEXT NOT NULL CHECK (role IN (
+    'owner', 'general_manager', 'branch_manager', 'teller',
+    'auditor', 'accountant', 'compliance_officer'
+  )),
+  branch_id TEXT NOT NULL,
+  branch_name TEXT NOT NULL,
+  pin_salt TEXT NOT NULL CHECK (length(pin_salt) = 32),
+  pin_hash TEXT NOT NULL CHECK (length(pin_hash) = 64),
+  is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
+  must_change_pin INTEGER NOT NULL CHECK (must_change_pin IN (0, 1)),
+  session_version TEXT NOT NULL CHECK (length(session_version) = 32),
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE UNIQUE INDEX idx_app_users_single_owner
+  ON app_users(role) WHERE role = 'owner';
+
+CREATE TABLE security_events (
+  id TEXT PRIMARY KEY,
+  occurred_at TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK (event_type IN (
+    'LOGIN_SUCCESS', 'LOGIN_FAILED', 'ROLE_ACCESS_DENIED',
+    'RATE_LIMIT_EXCEEDED', 'BRUTE_FORCE_BLOCKED'
+  )),
+  username_or_role TEXT NOT NULL,
+  ip_address TEXT NOT NULL,
+  details TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX idx_security_events_occurred_at ON security_events(occurred_at);
+
+CREATE TABLE whatsapp_dispatches (
+  id TEXT PRIMARY KEY,
+  transaction_id TEXT NOT NULL,
+  voucher_number TEXT NOT NULL,
+  voucher_type TEXT NOT NULL,
+  recipient_phone TEXT NOT NULL,
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  file_size_bytes INTEGER NOT NULL CHECK (file_size_bytes > 0),
+  meta_media_id TEXT,
+  whatsapp_message_id TEXT UNIQUE,
+  status TEXT NOT NULL CHECK (status IN (
+    'PENDING', 'GENERATING', 'GENERATED', 'UPLOADING', 'UPLOADED',
+    'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'RETRY_PENDING'
+  )),
+  caption TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  uploaded_at TEXT,
+  sent_at TEXT,
+  delivered_at TEXT,
+  read_at TEXT,
+  failed_at TEXT,
+  attempts_count INTEGER NOT NULL CHECK (attempts_count >= 0),
+  last_error TEXT,
+  employee_id TEXT,
+  employee_name TEXT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json))
+) STRICT;
+
+CREATE INDEX idx_whatsapp_dispatch_voucher ON whatsapp_dispatches(voucher_number);
+CREATE INDEX idx_whatsapp_dispatch_transaction ON whatsapp_dispatches(transaction_id);
+CREATE INDEX idx_whatsapp_dispatch_status ON whatsapp_dispatches(status, created_at);
+
+CREATE TABLE whatsapp_webhook_events (
+  id TEXT PRIMARY KEY,
+  dispatch_id TEXT NOT NULL REFERENCES whatsapp_dispatches(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  message_id TEXT NOT NULL,
+  event_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('sent', 'delivered', 'read', 'failed')),
+  occurred_at TEXT NOT NULL,
+  recipient_id TEXT,
+  raw_event_json TEXT NOT NULL CHECK (json_valid(raw_event_json))
+) STRICT;
+
+CREATE INDEX idx_whatsapp_webhook_message ON whatsapp_webhook_events(message_id, occurred_at);
+
+CREATE TABLE voucher_attachments (
+  id TEXT PRIMARY KEY,
+  dispatch_id TEXT NOT NULL UNIQUE REFERENCES whatsapp_dispatches(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  voucher_number TEXT NOT NULL,
+  transaction_id TEXT NOT NULL,
+  storage_key TEXT NOT NULL UNIQUE,
+  relative_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  file_size_bytes INTEGER NOT NULL CHECK (file_size_bytes > 0),
+  mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg')),
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX idx_voucher_attachments_voucher ON voucher_attachments(voucher_number);
+`,
+  },
+
+  {
+    version: 3,
+    name: 'journal_customer_phone_provenance',
+    sql: `-- v3 preserves the customer phone bound to a server-generated exchange journal.
+ALTER TABLE journal_entries ADD COLUMN customer_phone TEXT
+  CHECK (customer_phone IS NULL OR length(customer_phone) <= 40);
+`,
+  },
+  {
+    version: 4,
+    name: 'persistent_auth_login_throttling',
+    sql: "CREATE TABLE auth_login_attempts (\n" +
+      "  attempt_key TEXT PRIMARY KEY CHECK (length(attempt_key) = 64),\n" +
+      "  attempts INTEGER NOT NULL CHECK (attempts >= 0),\n" +
+      "  lock_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (lock_until_ms >= 0),\n" +
+      "  updated_at TEXT NOT NULL\n" +
+      ") STRICT;\n" +
+      "CREATE INDEX idx_auth_login_attempts_lock_until ON auth_login_attempts(lock_until_ms);\n",
+  },
 ];

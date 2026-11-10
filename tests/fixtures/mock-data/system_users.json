@@ -6,8 +6,8 @@
     "role": "owner",
     "branchId": "br-main",
     "branchName": "المركز الرئيسي - تعز",
-    "pinSalt": "7af0cdfb3a0cb9c80f853daa2d37048b",
-    "pinHash": "6fac830e1452a5abfaef4400ac550a81eef4bb7e4448905d5185ea87bd5dbdf0",
+    "pinSalt": "eb959bff731fa6f7a6a4d9dfd89c49b7",
+    "pinHash": "f0afbc64a5869b3f7fc1cd5cdc5d3c404602ff3966a9fad5b5ab6ee78bf1a727",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   },
@@ -18,8 +18,8 @@
     "role": "general_manager",
     "branchId": "br-main",
     "branchName": "المركز الرئيسي - تعز",
-    "pinSalt": "c26bd51253be8d8f08f0952e303e93a2",
-    "pinHash": "d717934e7d68404bab2e7ffa18bba33ff2748bac4ee018d16d36c931b1d7b1a3",
+    "pinSalt": "e9f2cb053d88b554538f6dc2bdedc6f3",
+    "pinHash": "37307408f0bfb637d1fd3531e7d38549c6ff9e1dfb00d8cf02110503d216cd75",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   },
@@ -30,8 +30,8 @@
     "role": "branch_manager",
     "branchId": "br-khadeer",
     "branchName": "فرع خدير",
-    "pinSalt": "75cba949f4e77cb5ec16b5e8f502ef1a",
-    "pinHash": "424e53491a6d0f73e36ed42cb6c360bb1dc98c84b112768748d593060fe4dd78",
+    "pinSalt": "5e03bbd2adf6a122b78e2ff2520a9166",
+    "pinHash": "8012bb27e2fce1d0e0f6701f524c3e9ad95fbc741c141ba85e99d0dc03447cab",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   },
@@ -42,8 +42,8 @@
     "role": "teller",
     "branchId": "br-khadeer",
     "branchName": "فرع خدير - الكاشير المعتمد",
-    "pinSalt": "a747415bb11cf3aa0afb0d8178dd049d",
-    "pinHash": "474834710bf7d71b00dfee70ebd8b9d5c26e47798b3797ddc04d823264e48ed0",
+    "pinSalt": "1ec36b1a862140c60ce4676c28792f88",
+    "pinHash": "15a2253354c681fa9f61da78616111012e22fc8892d6cfbdc80d446dd444bb09",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   },
@@ -54,8 +54,8 @@
     "role": "auditor",
     "branchId": "br-main",
     "branchName": "المركز الرئيسي - تعز",
-    "pinSalt": "ad0d8ff1d89732337b26c85d9617d54c",
-    "pinHash": "97979ad695a7c843926d5af514fc7779a632059a9f1d6a7fb1bacefb9fa7546f",
+    "pinSalt": "51617f42ec391cbe446899007fc454c5",
+    "pinHash": "f1cd14819101340e30165bb4ff2692aff8ba1a60c584432342b30890be614be6",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   },
@@ -66,8 +66,8 @@
     "role": "accountant",
     "branchId": "br-main",
     "branchName": "المركز الرئيسي - تعز",
-    "pinSalt": "1311915a64e1fae857c5a3c5bdacfcbc",
-    "pinHash": "451e93905f9a2f81ed4cf1abcbbeb154904e1713a1a15677a9b1c37e524f2480",
+    "pinSalt": "32794da21c739fc21de11b46b5e3bfe0",
+    "pinHash": "842a2eac2488e5ec93138685e54d7318a5c2e46e54404708a750f011e1136c83",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   },
@@ -78,8 +78,8 @@
     "role": "compliance_officer",
     "branchId": "br-main",
     "branchName": "المركز الرئيسي - تعز",
-    "pinSalt": "be608ce9ddb04ca2a4703f3a5fdc190a",
-    "pinHash": "d4794aef28cc6d49ac9e4fb6909b8e851067791d0721b9edd841564a269e5020",
+    "pinSalt": "102e909464ac8a8a8145137d9e5ffc4a",
+    "pinHash": "4032abd109dbc239a8a001b0b4d67a98734e3c230a1ce2130900057c11281004",
     "isActive": true,
     "createdAt": "2026-11-01 08:00"
   }

@@ -16,6 +16,7 @@ import {
 type JsonRecord = Record<string, unknown>;
 
 interface SourceFileSnapshot {
+  kind: 'json' | 'binary';
   name: string;
   bytes: number;
   sha256: string;
@@ -42,6 +43,9 @@ export interface SqliteDryRunReport {
     openingBalanceReconciliation: 'MATCHED' | 'NOT_AVAILABLE';
     journalEntriesBalanced: boolean;
     remittancePayoutsReconciled: boolean;
+    operationalDataImported: boolean;
+    voucherArchivesVerified: boolean;
+    completeSystemParity: boolean;
     sourceFilesUnchanged: boolean;
     temporaryDatabaseRemoved: boolean;
   };
@@ -59,6 +63,12 @@ const REQUIRED_FILES = [
   'remittance_audit_logs.json',
   'remittance_payouts_registry.json',
   'remittances_master.json',
+] as const;
+
+const REQUIRED_OPERATIONAL_FILES = [
+  'system_users.local.json',
+  'exchange_rate_state.json',
+  'cash_box_shift_state.json',
 ] as const;
 
 const OPTIONAL_FILES = [
@@ -111,6 +121,10 @@ function sha256(raw: string): string {
   return crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
 }
 
+function sha256Buffer(raw: Buffer): string {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
 function safeFileCount(payload: unknown): number {
   return Array.isArray(payload) ? payload.length : 1;
 }
@@ -144,11 +158,23 @@ function addSnapshot(
   disposition: SourceFileSnapshot['disposition']
 ): void {
   snapshots.push({
+    kind: 'json',
     name,
     bytes: loaded?.bytes ?? 0,
     sha256: loaded?.sha256 ?? '',
     records: loaded ? safeFileCount(loaded.payload) : 0,
     disposition: loaded ? disposition : 'optional_missing',
+  });
+}
+
+function addBinarySnapshot(snapshots: SourceFileSnapshot[], name: string, raw: Buffer): void {
+  snapshots.push({
+    kind: 'binary',
+    name,
+    bytes: raw.length,
+    sha256: sha256Buffer(raw),
+    records: 1,
+    disposition: 'imported',
   });
 }
 
@@ -332,6 +358,298 @@ function insertRemittanceAuditLogs(
   }
 }
 
+
+function importExchangeRateState(db: ReturnType<typeof openSqliteDatabase>, value: unknown): { rates: number; auditLogs: number } {
+  const state = record(value, 'exchange_rate_state.json');
+  if (state.schemaVersion !== 1) throw new Error('Unsupported exchange-rate state schema version.');
+  const rates = records(state.rates, 'exchange rates');
+  const logs = records(state.auditLogs, 'exchange-rate audit logs');
+  if (rates.length === 0) throw new Error('Exchange-rate state must contain at least one active currency pair.');
+  const seenIds = new Set<string>();
+  const seenPairs = new Set<string>();
+  const rateByPair = new Map<string, string>();
+  let activeRateCount = 0;
+  const insertRate = db.prepare('INSERT INTO exchange_rates (id, from_currency, to_currency, buy_rate_micro, sell_rate_micro, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  for (const item of rates) {
+    const id = stringValue(item.id, 'rate.id');
+    const from = currencyValue(item.fromCurrency, 'rate.fromCurrency');
+    const to = currencyValue(item.toCurrency, 'rate.toCurrency');
+    if (from === to) throw new Error('An exchange-rate pair cannot use the same currency.');
+    const pair = `${from} / ${to}`;
+    if (seenIds.has(id) || seenPairs.has(pair)) throw new Error('Duplicate exchange-rate ID or currency pair.');
+    seenIds.add(id); seenPairs.add(pair);
+    const buyRate = numberValue(item.buyRate, 'rate.buyRate');
+    const sellRate = numberValue(item.sellRate, 'rate.sellRate');
+    for (const rate of [buyRate, sellRate]) {
+      if (rate < 0 || rate > 1_000_000_000 ||
+          Math.abs(rate * 1_000_000 - Math.round(rate * 1_000_000)) > 1e-7) {
+        throw new Error('Exchange rates must be non-negative, bounded, and precise to six decimal places.');
+      }
+    }
+    if ((buyRate === 0) !== (sellRate === 0)) {
+      throw new Error('A currency pair cannot have only one of its buy/sell rates configured.');
+    }
+    if (buyRate > 0 && sellRate > 0) activeRateCount += 1;
+    insertRate.run(id, from, to,
+      toScaledInteger(buyRate, 1_000_000, 'rate.buyRate'),
+      toScaledInteger(sellRate, 1_000_000, 'rate.sellRate'),
+      stringValue(item.updatedAt, 'rate.updatedAt', true),
+      stringValue(item.updatedBy, 'rate.updatedBy'));
+    rateByPair.set(pair, id);
+  }
+  if (activeRateCount === 0) {
+    throw new Error('At least one currency pair must have approved positive buy and sell rates.');
+  }
+  const insertLog = db.prepare('INSERT INTO exchange_rate_audit (id, rate_id, old_buy_rate_micro, new_buy_rate_micro, old_sell_rate_micro, new_sell_rate_micro, changed_at, changed_by, changed_by_id, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const logIds = new Set<string>();
+  for (const log of logs) {
+    const id = stringValue(log.id, 'rateAudit.id');
+    if (logIds.has(id)) throw new Error('Duplicate exchange-rate audit identifier.');
+    logIds.add(id);
+    const rateId = rateByPair.get(stringValue(log.currencyPair, 'rateAudit.currencyPair'));
+    if (!rateId) throw new Error('Exchange-rate audit entry references an unknown currency pair.');
+    insertLog.run(id, rateId,
+      toScaledInteger(numberValue(log.oldBuyRate, 'rateAudit.oldBuyRate'), 1_000_000),
+      toScaledInteger(numberValue(log.newBuyRate, 'rateAudit.newBuyRate'), 1_000_000),
+      toScaledInteger(numberValue(log.oldSellRate, 'rateAudit.oldSellRate'), 1_000_000),
+      toScaledInteger(numberValue(log.newSellRate, 'rateAudit.newSellRate'), 1_000_000),
+      stringValue(log.changedAt, 'rateAudit.changedAt'),
+      stringValue(log.changedBy, 'rateAudit.changedBy'),
+      stringValue(log.changedById, 'rateAudit.changedById'),
+      stringValue(log.note, 'rateAudit.note'));
+  }
+  return { rates: rates.length, auditLogs: logs.length };
+}
+
+function importCashierShiftState(db: ReturnType<typeof openSqliteDatabase>, value: unknown): { shifts: number; balances: number; events: number } {
+  const state = record(value, 'cash_box_shift_state.json');
+  if (state.schemaVersion !== 1 || !Array.isArray(state.history)) throw new Error('Invalid cashier-shift state.');
+  const history = records(state.history, 'cashier shift history');
+  const active = state.activeShift === null ? null : record(state.activeShift, 'active cashier shift');
+  const all = active ? [...history, active] : history;
+  const ids = new Set<string>();
+  const openKeys = new Set<string>();
+  const closeKeys = new Set<string>();
+  const currencies: SqliteCurrency[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
+  const kinds = ['opening', 'expected', 'actual', 'discrepancy'] as const;
+  const shiftInsert = db.prepare('INSERT INTO cashier_shifts (id, box_id, box_name_ar, teller_id, teller_name, opened_at, closed_at, status, notes, opened_by_role, closed_by, closed_by_id, open_idempotency_key, close_idempotency_key, open_request_fingerprint, close_request_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const balanceInsert = db.prepare('INSERT INTO cashier_shift_balances (shift_id, balance_kind, currency, amount_milli) VALUES (?, ?, ?, ?)');
+  const eventInsert = db.prepare('INSERT INTO cashier_shift_events (id, shift_id, event_type, actor_id, actor_name, occurred_at, details) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  let balanceCount = 0;
+  let eventCount = 0;
+  const balancesFor = (input: unknown, field: string, signed = false) => {
+    const source = record(input, field);
+    const output = {} as Record<SqliteCurrency, number>;
+    for (const currency of currencies) {
+      const amount = source[currency];
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || (!signed && amount < 0) ||
+          Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
+        throw new Error(`Invalid shift balance: ${field}.${currency}.`);
+      }
+      output[currency] = toScaledInteger(amount, 1000, `${field}.${currency}`);
+    }
+    return output;
+  };
+  for (const shift of all) {
+    const id = stringValue(shift.id, 'shift.id');
+    const status = stringValue(shift.status, 'shift.status');
+    if (ids.has(id) || (status !== 'open' && status !== 'closed') ||
+        (shift === active && status !== 'open') || (shift !== active && status !== 'closed')) {
+      throw new Error('Invalid or duplicate cashier-shift record.');
+    }
+    ids.add(id);
+    const openKey = stringValue(shift.openIdempotencyKey, 'shift.openIdempotencyKey');
+    const closeKey = optionalText(shift, 'closeIdempotencyKey');
+    if (!/^[a-f0-9-]{36}$/i.test(openKey) || openKeys.has(openKey) || closeKeys.has(openKey) ||
+        (closeKey && (!/^[a-f0-9-]{36}$/i.test(closeKey) || closeKeys.has(closeKey) || openKeys.has(closeKey)))) {
+      throw new Error('Invalid or duplicate cashier-shift idempotency key.');
+    }
+    const openFingerprint = optionalText(shift, 'openRequestFingerprint');
+    const closeFingerprint = optionalText(shift, 'closeRequestFingerprint');
+    if (!openFingerprint || !/^[a-f0-9]{64}$/i.test(openFingerprint) ||
+        (status === 'closed' && (!closeKey || !closeFingerprint || !/^[a-f0-9]{64}$/i.test(closeFingerprint))) ||
+        (status === 'open' && (closeKey !== undefined || closeFingerprint !== undefined))) {
+      throw new Error('Cashier-shift replay fingerprints are missing or inconsistent.');
+    }
+    openKeys.add(openKey);
+    if (closeKey) closeKeys.add(closeKey);
+    shiftInsert.run(
+      id, stringValue(shift.boxId, 'shift.boxId'), stringValue(shift.boxNameAr, 'shift.boxNameAr'),
+      stringValue(shift.tellerId, 'shift.tellerId'), stringValue(shift.tellerName, 'shift.tellerName'),
+      stringValue(shift.openedAt, 'shift.openedAt'), optionalText(shift, 'closedAt') ?? null,
+      status, optionalText(shift, 'notes') ?? null, stringValue(shift.openedByRole, 'shift.openedByRole'),
+      optionalText(shift, 'closedBy') ?? null, optionalText(shift, 'closedById') ?? null,
+      openKey, closeKey ?? null, openFingerprint ?? null, closeFingerprint ?? null
+    );
+    const groups = {
+      opening: balancesFor(shift.openingBalances, 'shift.openingBalances'),
+      expected: balancesFor(shift.expectedBalances, 'shift.expectedBalances'),
+      actual: balancesFor(shift.actualBalances, 'shift.actualBalances'),
+      discrepancy: balancesFor(shift.discrepancies, 'shift.discrepancies', true),
+    };
+    if (status === 'closed') {
+      let hasVariance = false;
+      for (const currency of currencies) {
+        const expectedMilli = groups.expected[currency];
+        const actualMilli = groups.actual[currency];
+        const recordedDiscrepancyMilli = groups.discrepancy[currency];
+        const calculatedDiscrepancyMilli = Math.round((actualMilli - expectedMilli) / 10) * 10;
+        if (calculatedDiscrepancyMilli !== recordedDiscrepancyMilli) {
+          throw new Error('Closed cashier shift discrepancy does not reconcile with expected and actual balances.');
+        }
+        if (recordedDiscrepancyMilli !== 0) hasVariance = true;
+      }
+      const notes = optionalText(shift, 'notes') ?? '';
+      if (hasVariance && notes.length < 10) {
+        throw new Error('Closed cashier shift with a variance is missing its required explanatory note.');
+      }
+    }
+    for (const kind of kinds) for (const currency of currencies) {
+      balanceInsert.run(id, kind, currency, groups[kind][currency]);
+      balanceCount += 1;
+    }
+    eventInsert.run(`${id}:opened`, id, 'opened',
+      stringValue(shift.tellerId, 'shift.tellerId'),
+      stringValue(shift.tellerName, 'shift.tellerName'),
+      stringValue(shift.openedAt, 'shift.openedAt'),
+      JSON.stringify({ boxId: shift.boxId, openIdempotencyKey: openKey }));
+    eventCount += 1;
+    if (status === 'closed') {
+      const closedAt = stringValue(shift.closedAt, 'shift.closedAt');
+      const closedById = stringValue(shift.closedById, 'shift.closedById');
+      const closedBy = stringValue(shift.closedBy, 'shift.closedBy');
+      eventInsert.run(`${id}:closed`, id, 'closed', closedById, closedBy, closedAt,
+        JSON.stringify({ closeIdempotencyKey: closeKey, notes: optionalText(shift, 'notes') ?? '', discrepancies: shift.discrepancies }));
+      eventCount += 1;
+      const hasVariance = currencies.some((currency) => groups.discrepancy[currency] !== 0);
+      if (hasVariance) {
+        eventInsert.run(`${id}:variance`, id, 'variance_noted', closedById, closedBy, closedAt,
+          JSON.stringify({ notes: optionalText(shift, 'notes') ?? '', discrepancies: shift.discrepancies }));
+        eventCount += 1;
+      }
+    }
+  }
+  return { shifts: all.length, balances: balanceCount, events: eventCount };
+}
+
+function importLocalUsers(db: ReturnType<typeof openSqliteDatabase>, value: unknown): number {
+  const users = records(value, 'system_users.local.json');
+  if (users.length === 0) throw new Error('Local user registry is empty.');
+  const roles = ['owner', 'general_manager', 'branch_manager', 'teller', 'auditor', 'accountant', 'compliance_officer'];
+  const usernames = new Set<string>();
+  const ids = new Set<string>();
+  let ownerCount = 0;
+  let activeOwnerCount = 0;
+  const insert = db.prepare('INSERT INTO app_users (id, username, name, role, branch_id, branch_name, pin_salt, pin_hash, is_active, must_change_pin, session_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const user of users) {
+    const username = stringValue(user.username, 'user.username').toLowerCase();
+    const id = stringValue(user.id, 'user.id');
+    const role = stringValue(user.role, 'user.role');
+    const salt = stringValue(user.pinSalt, 'user.pinSalt');
+    const hash = stringValue(user.pinHash, 'user.pinHash');
+    const session = stringValue(user.sessionVersion, 'user.sessionVersion');
+    if (!/^[a-z0-9._-]{3,32}$/.test(username) || !roles.includes(role) ||
+        !/^[a-f0-9]{32}$/i.test(salt) || !/^[a-f0-9]{64}$/i.test(hash) ||
+        !/^[a-f0-9]{32}$/i.test(session) ||
+        typeof user.isActive !== 'boolean' || typeof user.mustChangePin !== 'boolean' ||
+        usernames.has(username) || ids.has(id)) {
+      throw new Error('Local user registry contains an invalid or duplicate account.');
+    }
+    usernames.add(username); ids.add(id);
+    if (role === 'owner') {
+      ownerCount += 1;
+      if (user.isActive) activeOwnerCount += 1;
+    }
+    insert.run(id, username, stringValue(user.name, 'user.name'), role,
+      stringValue(user.branchId, 'user.branchId'), stringValue(user.branchName, 'user.branchName'),
+      salt, hash, user.isActive ? 1 : 0, user.mustChangePin ? 1 : 0, session,
+      stringValue(user.createdAt, 'user.createdAt'));
+  }
+  if (ownerCount !== 1 || activeOwnerCount !== 1) {
+    throw new Error('Local user registry must contain exactly one active owner.');
+  }
+  return users.length;
+}
+
+function importWhatsAppDispatches(
+  db: ReturnType<typeof openSqliteDatabase>, value: unknown, sourceDirectory: string
+): { dispatches: number; webhookEvents: number; attachments: number; archiveSnapshots: SourceFileSnapshot[] } {
+  const dispatches = records(value, 'whatsapp_dispatch_registry.json');
+  const allowedStatuses = ['PENDING', 'GENERATING', 'GENERATED', 'UPLOADING', 'UPLOADED', 'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'RETRY_PENDING'];
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  const insertDispatch = db.prepare('INSERT INTO whatsapp_dispatches (id, transaction_id, voucher_number, voucher_type, recipient_phone, sha256, file_size_bytes, meta_media_id, whatsapp_message_id, status, caption, created_at, uploaded_at, sent_at, delivered_at, read_at, failed_at, attempts_count, last_error, employee_id, employee_name, idempotency_key, snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insertEvent = db.prepare('INSERT INTO whatsapp_webhook_events (id, dispatch_id, message_id, event_key, status, occurred_at, recipient_id, raw_event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  const insertAttachment = db.prepare('INSERT INTO voucher_attachments (id, dispatch_id, voucher_number, transaction_id, storage_key, relative_path, sha256, file_size_bytes, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  let eventCount = 0;
+  let attachmentCount = 0;
+  const archiveSnapshots: SourceFileSnapshot[] = [];
+  const archiveRoot = path.resolve(sourceDirectory, 'archived_vouchers');
+  for (const dispatch of dispatches) {
+    const id = stringValue(dispatch.id, 'dispatch.id');
+    const key = stringValue(dispatch.idempotencyKey, 'dispatch.idempotencyKey');
+    const status = stringValue(dispatch.status, 'dispatch.status');
+    const hash = stringValue(dispatch.sha256, 'dispatch.sha256').toLowerCase();
+    if (ids.has(id) || keys.has(key) || !allowedStatuses.includes(status) || !/^[a-f0-9]{64}$/.test(hash)) {
+      throw new Error('WhatsApp dispatch contains a duplicate identifier or invalid status/hash.');
+    }
+    ids.add(id); keys.add(key);
+    const size = numberValue(dispatch.fileSizeBytes, 'dispatch.fileSizeBytes', 1);
+    if (!Number.isSafeInteger(size)) throw new Error('WhatsApp image size is not an integer.');
+    const messageId = optionalText(dispatch, 'whatsappMessageId');
+    const snapshot = record(dispatch.snapshot, 'dispatch.snapshot');
+    const events = dispatch.rawWebhookEvents === undefined ? [] : records(dispatch.rawWebhookEvents, 'dispatch.rawWebhookEvents');
+    if (events.length && !messageId) throw new Error('Webhook history is not linked to a WhatsApp message ID.');
+    insertDispatch.run(
+      id, stringValue(dispatch.transactionId, 'dispatch.transactionId'),
+      stringValue(dispatch.voucherNumber, 'dispatch.voucherNumber'),
+      stringValue(dispatch.voucherType, 'dispatch.voucherType'),
+      stringValue(dispatch.recipientPhone, 'dispatch.recipientPhone'), hash, size,
+      optionalText(dispatch, 'metaMediaId') ?? null, messageId ?? null, status,
+      stringValue(dispatch.caption, 'dispatch.caption', true),
+      stringValue(dispatch.createdAt, 'dispatch.createdAt'),
+      optionalText(dispatch, 'uploadedAt') ?? null, optionalText(dispatch, 'sentAt') ?? null,
+      optionalText(dispatch, 'deliveredAt') ?? null, optionalText(dispatch, 'readAt') ?? null,
+      optionalText(dispatch, 'failedAt') ?? null,
+      numberValue(dispatch.attemptsCount, 'dispatch.attemptsCount'),
+      optionalText(dispatch, 'lastError') ?? null, optionalText(dispatch, 'employeeId') ?? null,
+      optionalText(dispatch, 'employeeName') ?? null, key, JSON.stringify(snapshot)
+    );
+    for (const event of events) {
+      const eventStatus = stringValue(event.status, 'webhook.status');
+      if (!['sent', 'delivered', 'read', 'failed'].includes(eventStatus)) throw new Error('Unsupported WhatsApp webhook status.');
+      const timestamp = String(event.timestamp ?? '');
+      if (!timestamp.trim()) throw new Error('WhatsApp webhook event timestamp is missing.');
+      const eventKey = optionalText(event, 'id') ?? sha256(JSON.stringify(event));
+      const eventId = sha256(`${id}\u0000${eventKey}\u0000${eventStatus}\u0000${timestamp}`);
+      insertEvent.run(eventId, id, stringValue(messageId, 'dispatch.whatsappMessageId'),
+        eventKey, eventStatus, timestamp,
+        optionalText(event, 'recipient_id') ?? null, JSON.stringify(event));
+      eventCount += 1;
+    }
+    const storageKey = stringValue(dispatch.storageKey, 'dispatch.storageKey');
+    if (path.basename(storageKey) !== storageKey || storageKey.includes('/') || storageKey.includes('\\')) {
+      throw new Error('Voucher archive key is not a safe filename.');
+    }
+    const imagePath = path.resolve(archiveRoot, storageKey);
+    if (!imagePath.startsWith(`${archiveRoot}${path.sep}`) || !fs.existsSync(imagePath) || !fs.lstatSync(imagePath).isFile()) {
+      throw new Error('Voucher archive image is missing or is not a regular file.');
+    }
+    const image = fs.readFileSync(imagePath);
+    if (image.length !== size || sha256Buffer(image) !== hash) throw new Error('Voucher archive image size/hash does not match its record.');
+    const png = image.length >= 8 && image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const jpeg = image.length >= 3 && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff;
+    if (!png && !jpeg) throw new Error('Voucher archive image is not a PNG or JPEG file.');
+    insertAttachment.run(`attachment:${id}`, id,
+      stringValue(dispatch.voucherNumber, 'dispatch.voucherNumber'),
+      stringValue(dispatch.transactionId, 'dispatch.transactionId'),
+      storageKey, `archived_vouchers/${storageKey}`, hash, size,
+      png ? 'image/png' : 'image/jpeg', stringValue(dispatch.createdAt, 'dispatch.createdAt'));
+    addBinarySnapshot(archiveSnapshots, `archived_vouchers/${storageKey}`, image);
+    attachmentCount += 1;
+  }
+  return { dispatches: dispatches.length, webhookEvents: eventCount, attachments: attachmentCount, archiveSnapshots };
+}
 function compareRemittancePayouts(
   masters: JsonRecord[],
   payouts: JsonRecord[],
@@ -422,9 +740,15 @@ function assertSourceUnchanged(snapshots: SourceFileSnapshot[], sourceDirectory:
       if (fs.existsSync(filePath)) return false;
       continue;
     }
-    const current = fs.readFileSync(filePath, 'utf8');
-    if (Buffer.byteLength(current, 'utf8') !== snapshot.bytes || sha256(current) !== snapshot.sha256) {
-      return false;
+    if (snapshot.kind === 'binary') {
+      if (!fs.existsSync(filePath) || !fs.lstatSync(filePath).isFile()) return false;
+      const current = fs.readFileSync(filePath);
+      if (current.length !== snapshot.bytes || sha256Buffer(current) !== snapshot.sha256) return false;
+    } else {
+      const current = fs.readFileSync(filePath, 'utf8');
+      if (Buffer.byteLength(current, 'utf8') !== snapshot.bytes || sha256(current) !== snapshot.sha256) {
+        return false;
+      }
     }
   }
   return true;
@@ -454,6 +778,9 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       openingBalanceReconciliation: 'NOT_AVAILABLE',
       journalEntriesBalanced: false,
       remittancePayoutsReconciled: false,
+      operationalDataImported: false,
+      voucherArchivesVerified: false,
+      completeSystemParity: false,
       sourceFilesUnchanged: false,
       temporaryDatabaseRemoved: false,
     },
@@ -493,7 +820,7 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       if (item) {
         loaded.set(name, item);
         payloads.set(name, item.payload);
-        const deferred = name.startsWith('system_users') || name === 'whatsapp_dispatch_registry.json' || name === 'exchange_rate_state.json' || name === 'cash_box_shift_state.json';
+        const deferred = name === 'system_users.json';
         const validatedOnly = name === 'financial_baseline_approved.local.json';
         addSnapshot(report.sourceFiles, name, item, deferred ? 'deferred' : validatedOnly ? 'validated_only' : 'imported');
       } else {
@@ -585,6 +912,7 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
         grossTargetAmountMilli: item.grossTargetAmount === undefined ? undefined : toScaledInteger(numberValue(item.grossTargetAmount, 'journal.grossTargetAmount'), 1000),
         targetAmountMilli: item.targetAmount === undefined ? undefined : toScaledInteger(numberValue(item.targetAmount, 'journal.targetAmount'), 1000),
         voucherNumber: optionalText(item, 'voucherNumber'),
+        customerPhone: optionalText(item, 'customerPhone'),
         lines,
         applyBalanceMovements: false,
       });
@@ -615,35 +943,65 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
     const users = loaded.get('system_users.json');
     if (users) {
       const userRecords = records(users.payload, 'system_users.json');
-      const ids = userRecords.map((user) => stringValue(user.id, 'user.id'));
-      if (new Set(ids).size !== ids.length) throw new Error('Duplicate user IDs in source user registry.');
-      if (userRecords.some((user) => !optionalText(user, 'pinHash') || !optionalText(user, 'pinSalt'))) {
-        throw new Error('A source user record is missing its PIN hash or salt.');
+      const ids = new Set<string>();
+      const usernames = new Set<string>();
+      const validRoles = ['owner', 'general_manager', 'branch_manager', 'teller', 'auditor', 'accountant', 'compliance_officer'];
+      for (const user of userRecords) {
+        const id = stringValue(user.id, 'legacyUser.id');
+        const username = stringValue(user.username, 'legacyUser.username').toLowerCase();
+        if (ids.has(id) || usernames.has(username) ||
+            !validRoles.includes(stringValue(user.role, 'legacyUser.role')) ||
+            !optionalText(user, 'pinHash') || !optionalText(user, 'pinSalt')) {
+          throw new Error('Legacy user registry contains invalid or duplicate account records.');
+        }
+        ids.add(id);
+        usernames.add(username);
       }
       report.imported.usersValidated = userRecords.length;
-      report.warnings.push('User authentication records were validated but not imported because the user/authentication tables are not in SQLite migration v1.');
+      report.warnings.push('Legacy system_users.json accounts were validated for audit only; the current local-authentication registry is system_users.local.json.');
     }
 
     const localUsers = loaded.get('system_users.local.json');
     if (localUsers) {
-      const userRecords = records(localUsers.payload, 'system_users.local.json');
-      report.imported.localUsersValidated = userRecords.length;
-      report.warnings.push('Local owner authentication records were validated but not imported; credential records remain outside SQLite migration v1.');
+      const count = importLocalUsers(db, localUsers.payload);
+      report.imported.localUsersValidated = count;
+      report.imported.localUsersImported = count;
+    }
+
+    const exchangeRates = loaded.get('exchange_rate_state.json');
+    if (exchangeRates) {
+      const result = importExchangeRateState(db, exchangeRates.payload);
+      report.imported.exchangeRates = result.rates;
+      report.imported.exchangeRateAuditLogs = result.auditLogs;
+    }
+
+    const shiftState = loaded.get('cash_box_shift_state.json');
+    if (shiftState) {
+      const result = importCashierShiftState(db, shiftState.payload);
+      report.imported.cashierShifts = result.shifts;
+      report.imported.cashierShiftBalances = result.balances;
+      report.imported.cashierShiftEvents = result.events;
     }
 
     const whatsApp = loaded.get('whatsapp_dispatch_registry.json');
     if (whatsApp) {
-      const recordsList = records(whatsApp.payload, 'whatsapp_dispatch_registry.json');
-      report.imported.whatsappDispatchesValidated = recordsList.length;
-      if (recordsList.length > 0) {
-        report.warnings.push('WhatsApp dispatch rows were validated but not imported because dispatch/event tables are not in SQLite migration v1.');
-      }
+      const result = importWhatsAppDispatches(db, whatsApp.payload, absoluteSource);
+      report.imported.whatsappDispatchesValidated = result.dispatches;
+      report.imported.whatsappDispatches = result.dispatches;
+      report.imported.whatsappWebhookEvents = result.webhookEvents;
+      report.imported.voucherAttachments = result.attachments;
+      report.sourceFiles.push(...result.archiveSnapshots);
     }
 
-    for (const deferred of ['exchange_rate_state.json', 'cash_box_shift_state.json']) {
-      if (loaded.has(deferred)) {
-        report.warnings.push(`${deferred} was detected but is not imported by this first dry-run version; rate/shift parity will be added before a complete-system migration.`);
-      }
+    report.validation.operationalDataImported =
+      REQUIRED_OPERATIONAL_FILES.every((name) => loaded.has(name));
+    report.validation.voucherArchivesVerified = Boolean(whatsApp);
+    if (!report.validation.operationalDataImported) {
+      const missing = REQUIRED_OPERATIONAL_FILES.filter((name) => !loaded.has(name));
+      report.warnings.push(`Operational data is incomplete; missing required datasets: ${missing.join(', ')}.`);
+    }
+    if (!report.validation.voucherArchivesVerified) {
+      report.warnings.push('WhatsApp dispatch registry is missing; voucher archive parity was not verified.');
     }
 
     let snapshotMatches = true;
@@ -677,6 +1035,15 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
       remittances: 'remittances',
       remittancePayouts: 'remittance_payouts',
       remittanceAuditLogs: 'remittance_audit_logs',
+      localUsersImported: 'app_users',
+      exchangeRates: 'exchange_rates',
+      exchangeRateAuditLogs: 'exchange_rate_audit',
+      cashierShifts: 'cashier_shifts',
+      cashierShiftBalances: 'cashier_shift_balances',
+      cashierShiftEvents: 'cashier_shift_events',
+      whatsappDispatches: 'whatsapp_dispatches',
+      whatsappWebhookEvents: 'whatsapp_webhook_events',
+      voucherAttachments: 'voucher_attachments',
     };
     for (const [key, table] of Object.entries(expectedCounts)) {
       const result = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
@@ -724,6 +1091,26 @@ export function runSqliteDryRun(sourceDirectory: string): SqliteDryRunReport {
   }
   if (!report.validation.sourceFilesUnchanged && report.status === 'PASS') {
     report.status = 'FAIL';
+    report.issues.push({
+      file: 'source-data',
+      code: 'SOURCE_DATA_CHANGED_DURING_DRY_RUN',
+      message: 'One or more source files changed while the dry run was executing.',
+    });
+  }
+
+  report.validation.completeSystemParity =
+    report.status === 'PASS' &&
+    report.issues.length === 0 &&
+    report.validation.operationalDataImported &&
+    report.validation.voucherArchivesVerified &&
+    report.validation.openingBalanceReconciliation === 'MATCHED' &&
+    report.validation.sourceFilesUnchanged &&
+    report.validation.sqliteIntegrity === 'ok' &&
+    report.validation.foreignKeyViolations === 0 &&
+    report.validation.temporaryDatabaseRemoved;
+
+  if (!report.validation.completeSystemParity && report.status === 'PASS') {
+    report.warnings.push('Core SQLite dry run passed, but full system parity is incomplete. Do not cut over until all operational datasets, voucher archives, and the approved opening-balance reconciliation are verified.');
   }
 
   return report;
