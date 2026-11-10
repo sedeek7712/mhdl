@@ -81,4 +81,6 @@ Latest B3 code/test state: branch head associated with GitHub Actions run `42736
 - Do not activate SQLite against real data.
 - Do not use a real customer database for migration or restore rehearsal.
 - B1/B2 CI checks passed on Ubuntu and Windows hosted runners.
-- Do not merge until B3 has a separately reviewed operational runbook and recovery rehearsal. Resolve B5 before describing the product as an Electron desktop application.
+- B3 offline cutover/rollback code, the PowerShell runbook, and the synthetic end-to-end recovery rehearsal are implemented and passed hosted CI.
+- Do not merge or enable a live SQLite database until a supervised rehearsal succeeds on the actual deployment Windows machine/account and the application-specific restart/HTTP verification procedure has been reviewed.
+- Keep Electron support as a separate release gate; do not describe the product as an Electron desktop application until its runtime and packaged EXE are implemented and tested.
