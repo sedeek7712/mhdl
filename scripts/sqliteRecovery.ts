@@ -149,6 +149,7 @@ async function runRehearsal(encryptionKeyHex: string): Promise<Record<string, un
     const cutover = await cutoverSqliteDatabase({
       databaseFile,
       stagedFile,
+      expectedStagedSha256: restore.restoredSha256,
       archiveDirectory,
       serverStopped: true,
     });
