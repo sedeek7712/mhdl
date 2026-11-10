@@ -117,7 +117,7 @@ test('guarded cutover archives the previous database and rollback restores its e
 
 test('cutover refuses to proceed without explicit stopped-server confirmation', async (t) => {
   const directory = makeDirectory(t);
-  const { liveFile, stagedFile } = await makeStagedRestore(directory);
+  const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
   const archiveDirectory = path.join(directory, 'must-not-be-created');
   const originalLiveBytes = fs.readFileSync(liveFile);
 
@@ -140,7 +140,7 @@ test('cutover refuses to proceed without explicit stopped-server confirmation', 
 
 test('rollback refuses to run while the application is not confirmed stopped', async (t) => {
   const directory = makeDirectory(t);
-  const { liveFile, stagedFile } = await makeStagedRestore(directory);
+  const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
   const cutover = await cutoverSqliteDatabase({
     databaseFile: liveFile,
     stagedFile,
@@ -186,7 +186,7 @@ test('cutover rejects an invalid staged database without moving the current data
 
 test('cutover refuses to reuse an existing recovery archive', async (t) => {
   const directory = makeDirectory(t);
-  const { liveFile, stagedFile } = await makeStagedRestore(directory);
+  const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
   const archiveDirectory = path.join(directory, 'existing-archive');
   fs.mkdirSync(archiveDirectory);
   const marker = path.join(archiveDirectory, 'keep.txt');
@@ -197,6 +197,7 @@ test('cutover refuses to reuse an existing recovery archive', async (t) => {
     cutoverSqliteDatabase({
       databaseFile: liveFile,
       stagedFile,
+      expectedStagedSha256: stagedSha256,
       archiveDirectory,
       serverStopped: true,
     }),
@@ -210,10 +211,11 @@ test('cutover refuses to reuse an existing recovery archive', async (t) => {
 
 test('rollback validates manifest paths before touching database files', async (t) => {
   const directory = makeDirectory(t);
-  const { liveFile, stagedFile } = await makeStagedRestore(directory);
+  const { liveFile, stagedFile, stagedSha256 } = await makeStagedRestore(directory);
   const cutover = await cutoverSqliteDatabase({
     databaseFile: liveFile,
     stagedFile,
+    expectedStagedSha256: stagedSha256,
     archiveDirectory: path.join(directory, 'recovery-archive'),
     serverStopped: true,
   });
