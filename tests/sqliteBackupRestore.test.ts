@@ -46,7 +46,7 @@ function readRecords(filePath: string): Array<Record<string, unknown>> {
   try {
     return db.prepare(
       'SELECT id, branch_id, amount_milli, currency FROM financial_records ORDER BY id'
-    ).all() as Array<Record<string, unknown>>;
+    ).all().map((row) => ({ ...row })) as Array<Record<string, unknown>>;
   } finally {
     db.close();
   }
