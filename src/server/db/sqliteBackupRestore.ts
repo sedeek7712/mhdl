@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as sqlite from 'node:sqlite';
+import { pipeline } from 'node:stream/promises';
+import { applyPrivateFilePermissions } from '../security/privateFilePermissions.js';
 
 type SqliteBackupFunction = (
   sourceDb: sqlite.DatabaseSync,
@@ -9,9 +11,17 @@ type SqliteBackupFunction = (
   options?: { rate?: number }
 ) => Promise<number>;
 
+const ENCRYPTED_BACKUP_MAGIC = Buffer.from('ALNDB001', 'ascii');
+const ENCRYPTED_BACKUP_IV_BYTES = 12;
+const ENCRYPTED_BACKUP_TAG_BYTES = 16;
+const ENCRYPTED_BACKUP_HEADER_BYTES =
+  ENCRYPTED_BACKUP_MAGIC.length + ENCRYPTED_BACKUP_IV_BYTES + ENCRYPTED_BACKUP_TAG_BYTES;
+
 export interface SqliteBackupOptions {
   sourceFile: string;
   destinationFile: string;
+  /** Exactly 64 hexadecimal characters (32 bytes); keep it outside the database and backups. */
+  encryptionKeyHex: string;
   busyTimeoutMs?: number;
 }
 
@@ -19,6 +29,8 @@ export interface SqliteRestoreOptions {
   backupFile: string;
   destinationFile: string;
   expectedSha256: string;
+  /** The same 32-byte key used to create the encrypted backup. */
+  encryptionKeyHex: string;
   busyTimeoutMs?: number;
 }
 
@@ -27,6 +39,7 @@ export interface SqliteBackupResult {
   sha256: string;
   sizeBytes: number;
   pages: number;
+  encryption: 'AES-256-GCM';
 }
 
 export interface SqliteRestoreResult {
@@ -35,6 +48,7 @@ export interface SqliteRestoreResult {
   restoredSha256: string;
   sizeBytes: number;
   pages: number;
+  encryption: 'AES-256-GCM';
 }
 
 export interface SqliteIntegrityReport {
@@ -49,6 +63,13 @@ function requireBackupApi(): SqliteBackupFunction {
     throw new Error('SQLite online backup requires Node.js 22.16.0 or newer with node:sqlite backup support.');
   }
   return backupDatabase;
+}
+
+function parseEncryptionKey(keyHex: string): Buffer {
+  if (typeof keyHex !== 'string' || !/^[a-f0-9]{64}$/i.test(keyHex)) {
+    throw new Error('SQLite backup encryption requires a 64-character hexadecimal AES-256 key.');
+  }
+  return Buffer.from(keyHex, 'hex');
 }
 
 function resolveRegularFile(filePath: string, field: string): string {
@@ -113,16 +134,14 @@ function reserveTemporaryFile(destinationFile: string): string {
     try {
       const descriptor = fs.openSync(temporary, 'wx', 0o600);
       fs.closeSync(descriptor);
+      // Lock down the empty file before SQLite or crypto writes sensitive bytes.
+      applyPrivateFilePermissions(temporary);
       return temporary;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
   }
-  throw new Error('Unable to reserve a unique temporary SQLite backup file.');
-}
-
-function applyPrivatePermissions(filePath: string): void {
-  if (process.platform !== 'win32') fs.chmodSync(filePath, 0o600);
+  throw new Error('Unable to reserve a unique private SQLite temporary file.');
 }
 
 function flushFile(filePath: string): void {
@@ -149,6 +168,77 @@ async function hashFile(filePath: string): Promise<string> {
   const stream = fs.createReadStream(filePath);
   for await (const chunk of stream) hash.update(chunk);
   return hash.digest('hex');
+}
+
+/** Writes an authenticated AES-256-GCM envelope; plaintext never becomes the published backup. */
+async function encryptSqliteFile(sourceFile: string, encryptedFile: string, key: Buffer): Promise<void> {
+  const iv = crypto.randomBytes(ENCRYPTED_BACKUP_IV_BYTES);
+  const header = Buffer.concat([
+    ENCRYPTED_BACKUP_MAGIC,
+    iv,
+    Buffer.alloc(ENCRYPTED_BACKUP_TAG_BYTES),
+  ]);
+  const headerFd = fs.openSync(encryptedFile, 'r+');
+  try {
+    fs.writeSync(headerFd, header, 0, header.length, 0);
+    fs.fsyncSync(headerFd);
+  } finally {
+    fs.closeSync(headerFd);
+  }
+
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  await pipeline(
+    fs.createReadStream(sourceFile),
+    cipher,
+    fs.createWriteStream(encryptedFile, { flags: 'a' })
+  );
+
+  const tag = cipher.getAuthTag();
+  const descriptor = fs.openSync(encryptedFile, 'r+');
+  try {
+    fs.writeSync(
+      descriptor,
+      tag,
+      0,
+      tag.length,
+      ENCRYPTED_BACKUP_MAGIC.length + ENCRYPTED_BACKUP_IV_BYTES
+    );
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  applyPrivateFilePermissions(encryptedFile);
+}
+
+/** Decrypts only authenticated ALNDB001 envelopes into a pre-created private temp file. */
+async function decryptSqliteFile(encryptedFile: string, destinationFile: string, key: Buffer): Promise<void> {
+  const descriptor = fs.openSync(encryptedFile, 'r');
+  const header = Buffer.alloc(ENCRYPTED_BACKUP_HEADER_BYTES);
+  let bytesRead = 0;
+  try {
+    bytesRead = fs.readSync(descriptor, header, 0, header.length, 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  if (bytesRead !== ENCRYPTED_BACKUP_HEADER_BYTES ||
+      !header.subarray(0, ENCRYPTED_BACKUP_MAGIC.length).equals(ENCRYPTED_BACKUP_MAGIC)) {
+    throw new Error('Unsupported SQLite backup format. A current AES-256-GCM encrypted backup is required.');
+  }
+
+  const ivStart = ENCRYPTED_BACKUP_MAGIC.length;
+  const tagStart = ivStart + ENCRYPTED_BACKUP_IV_BYTES;
+  const iv = header.subarray(ivStart, tagStart);
+  const tag = header.subarray(tagStart, ENCRYPTED_BACKUP_HEADER_BYTES);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+
+  await pipeline(
+    fs.createReadStream(encryptedFile, { start: ENCRYPTED_BACKUP_HEADER_BYTES }),
+    decipher,
+    fs.createWriteStream(destinationFile, { flags: 'w' })
+  );
+  applyPrivateFilePermissions(destinationFile);
+  flushFile(destinationFile);
 }
 
 function verifySqliteFile(filePath: string, busyTimeoutMs: number): SqliteIntegrityReport {
@@ -182,16 +272,15 @@ function publishWithoutOverwrite(temporaryFile: string, destinationFile: string)
 }
 
 /**
- * Creates a consistent SQLite snapshot using Node's online backup API.
- * The destination must not exist; the source remains untouched.
- *
- * The resulting file is plaintext. This primitive is intended for controlled
- * test/development workflows until an encrypted backup envelope is integrated.
+ * Creates a consistent SQLite snapshot and publishes only its AES-256-GCM
+ * encrypted envelope. The 32-byte encryption key is supplied by the caller
+ * and must be stored separately from the backup.
  */
 export async function createSqliteBackup(
   options: SqliteBackupOptions
 ): Promise<SqliteBackupResult> {
   const backup = requireBackupApi();
+  const encryptionKey = parseEncryptionKey(options.encryptionKeyHex);
   const sourceFile = resolveRegularFile(options.sourceFile, 'SQLite source file');
   const destinationFile = resolveNewFile(options.destinationFile, 'SQLite backup destination');
   assertDifferentFiles(sourceFile, destinationFile);
@@ -201,6 +290,7 @@ export async function createSqliteBackup(
   }
 
   const temporaryFile = reserveTemporaryFile(destinationFile);
+  const encryptedTemporaryFile = reserveTemporaryFile(destinationFile);
   let sourceDb: sqlite.DatabaseSync | undefined;
   try {
     sourceDb = new sqlite.DatabaseSync(sourceFile);
@@ -214,16 +304,17 @@ export async function createSqliteBackup(
     sourceDb = undefined;
 
     verifySqliteFile(temporaryFile, busyTimeoutMs);
-    applyPrivatePermissions(temporaryFile);
+    applyPrivateFilePermissions(temporaryFile);
     flushFile(temporaryFile);
-    const sha256 = await hashFile(temporaryFile);
-    const sizeBytes = fs.statSync(temporaryFile).size;
-    if (!Number.isSafeInteger(pages) || pages < 0 || sizeBytes <= 0) {
-      throw new Error('SQLite backup returned invalid page or file-size metadata.');
+    await encryptSqliteFile(temporaryFile, encryptedTemporaryFile, encryptionKey);
+    const sha256 = await hashFile(encryptedTemporaryFile);
+    const sizeBytes = fs.statSync(encryptedTemporaryFile).size;
+    if (!Number.isSafeInteger(pages) || pages < 0 || sizeBytes <= ENCRYPTED_BACKUP_HEADER_BYTES) {
+      throw new Error('SQLite backup returned invalid page or encrypted file-size metadata.');
     }
 
-    publishWithoutOverwrite(temporaryFile, destinationFile);
-    return { file: destinationFile, sha256, sizeBytes, pages };
+    publishWithoutOverwrite(encryptedTemporaryFile, destinationFile);
+    return { file: destinationFile, sha256, sizeBytes, pages, encryption: 'AES-256-GCM' };
   } catch (error) {
     try {
       sourceDb?.close();
@@ -233,11 +324,12 @@ export async function createSqliteBackup(
     throw error;
   } finally {
     removeTemporaryFiles(temporaryFile);
+    removeTemporaryFiles(encryptedTemporaryFile);
   }
 }
 
 /**
- * Restores a verified backup into a new database file.
+ * Restores a checksum- and GCM-authenticated encrypted backup into a new file.
  * It never overwrites an existing target and validates the restored database
  * before publishing it at the destination path.
  */
@@ -245,6 +337,7 @@ export async function restoreSqliteBackup(
   options: SqliteRestoreOptions
 ): Promise<SqliteRestoreResult> {
   const backup = requireBackupApi();
+  const encryptionKey = parseEncryptionKey(options.encryptionKeyHex);
   const backupFile = resolveRegularFile(options.backupFile, 'SQLite backup file');
   const destinationFile = resolveNewFile(options.destinationFile, 'SQLite restore destination');
   assertDifferentFiles(backupFile, destinationFile);
@@ -260,12 +353,14 @@ export async function restoreSqliteBackup(
   if (backupSha256 !== options.expectedSha256.toLowerCase()) {
     throw new Error('SQLite backup SHA-256 mismatch. Restore was refused.');
   }
-  verifySqliteFile(backupFile, busyTimeoutMs);
 
+  const decryptedBackupFile = reserveTemporaryFile(destinationFile);
   const temporaryFile = reserveTemporaryFile(destinationFile);
   let backupDb: sqlite.DatabaseSync | undefined;
   try {
-    backupDb = new sqlite.DatabaseSync(backupFile);
+    await decryptSqliteFile(backupFile, decryptedBackupFile, encryptionKey);
+    verifySqliteFile(decryptedBackupFile, busyTimeoutMs);
+    backupDb = new sqlite.DatabaseSync(decryptedBackupFile);
     backupDb.exec('PRAGMA busy_timeout = ' + busyTimeoutMs);
     backupDb.exec('PRAGMA foreign_keys = ON');
     backupDb.exec('PRAGMA query_only = ON');
@@ -275,7 +370,7 @@ export async function restoreSqliteBackup(
     backupDb = undefined;
 
     verifySqliteFile(temporaryFile, busyTimeoutMs);
-    applyPrivatePermissions(temporaryFile);
+    applyPrivateFilePermissions(temporaryFile);
     flushFile(temporaryFile);
     const restoredSha256 = await hashFile(temporaryFile);
     const sizeBytes = fs.statSync(temporaryFile).size;
@@ -290,6 +385,7 @@ export async function restoreSqliteBackup(
       restoredSha256,
       sizeBytes,
       pages,
+      encryption: 'AES-256-GCM',
     };
   } catch (error) {
     try {
@@ -299,6 +395,7 @@ export async function restoreSqliteBackup(
     }
     throw error;
   } finally {
+    removeTemporaryFiles(decryptedBackupFile);
     removeTemporaryFiles(temporaryFile);
   }
 }
