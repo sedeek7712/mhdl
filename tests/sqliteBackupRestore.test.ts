@@ -52,37 +52,48 @@ function readRecords(filePath: string): Array<Record<string, unknown>> {
   }
 }
 
-test('creates a consistent SQLite backup, verifies its checksum, and leaves the source usable', async (t) => {
+test('creates a consistent SQLite backup from an open WAL database and leaves the source usable', async (t) => {
   const directory = makeDirectory(t);
   const sourceFile = path.join(directory, 'exchange.sqlite');
   const backupFile = path.join(directory, 'backups', 'exchange-001.sqlite');
   fs.mkdirSync(path.dirname(backupFile));
   seedDatabase(sourceFile);
 
-  const result = await createSqliteBackup({ sourceFile, destinationFile: backupFile });
-  assert.equal(result.file, backupFile);
-  assert.equal(result.sha256, crypto.createHash('sha256').update(fs.readFileSync(backupFile)).digest('hex'));
-  assert.equal(result.sizeBytes, fs.statSync(backupFile).size);
-  assert.ok(result.pages > 0);
-  assert.deepEqual(readRecords(backupFile), [{
-    id: 'record-001',
-    branch_id: 'branch-main',
-    amount_milli: 125000,
-    currency: 'YER_OLD',
-  }]);
-
   const sourceDb = openSqliteDatabase({ filePath: sourceFile });
   try {
     sourceDb.prepare(
       'INSERT INTO financial_records (id, branch_id, amount_milli, currency) VALUES (?, ?, ?, ?)'
     ).run('record-002', 'branch-main', 250000, 'YER_NEW');
+
+    const result = await createSqliteBackup({ sourceFile, destinationFile: backupFile });
+    assert.equal(result.file, backupFile);
+    assert.equal(result.sha256, crypto.createHash('sha256').update(fs.readFileSync(backupFile)).digest('hex'));
+    assert.equal(result.sizeBytes, fs.statSync(backupFile).size);
+    assert.ok(result.pages > 0);
+    assert.deepEqual(readRecords(backupFile), [
+      {
+        id: 'record-001',
+        branch_id: 'branch-main',
+        amount_milli: 125000,
+        currency: 'YER_OLD',
+      },
+      {
+        id: 'record-002',
+        branch_id: 'branch-main',
+        amount_milli: 250000,
+        currency: 'YER_NEW',
+      },
+    ]);
+
+    sourceDb.prepare(
+      'INSERT INTO financial_records (id, branch_id, amount_milli, currency) VALUES (?, ?, ?, ?)'
+    ).run('record-003', 'branch-main', 300000, 'SAR');
+    assert.equal(readRecords(sourceFile).length, 3);
+    assert.equal(readRecords(backupFile).length, 2, 'backup must remain an independent snapshot');
   } finally {
     sourceDb.close();
   }
-  assert.equal(readRecords(sourceFile).length, 2);
-  assert.equal(readRecords(backupFile).length, 1, 'backup must remain an independent snapshot');
 });
-
 test('restores a checksum-verified backup into a new file and preserves relational data', async (t) => {
   const directory = makeDirectory(t);
   const sourceFile = path.join(directory, 'source.sqlite');
