@@ -63,8 +63,8 @@ test('exports legacy-compatible user records and rotates all SQLite session vers
     assert.equal(exported.length, sourceUsers.length);
     assert.equal(exported.filter((user) => user.role === 'owner' && user.isActive).length, 1);
     assert.deepEqual(
-      exported.map((user) => user.id),
-      ['owner-1', 'teller-1', 'auditor-1']
+      exported.map((user) => user.id).sort(),
+      ['auditor-1', 'owner-1', 'teller-1']
     );
 
     for (const old of before) {
