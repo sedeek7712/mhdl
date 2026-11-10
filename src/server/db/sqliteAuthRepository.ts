@@ -128,22 +128,6 @@ function validateSqliteUser(user: SqliteUserRecord): void {
   assertCredentialMaterial(user.pinSalt, user.pinHash, user.sessionVersion);
 }
 
-function withImmediateTransaction<T>(db: DatabaseSync, operation: () => T): T {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const result = operation();
-    db.exec('COMMIT');
-    return result;
-  } catch (error) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // Preserve the original error.
-    }
-    throw error;
-  }
-}
-
 function insertUserRow(db: DatabaseSync, user: SqliteUserRecord): SqliteUserRecord {
   const username = user.username.trim().toLowerCase();
   db.prepare(`
