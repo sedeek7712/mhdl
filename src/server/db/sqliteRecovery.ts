@@ -393,16 +393,32 @@ export async function cutoverSqliteDatabase(
     // A busy result aborts; automatic rollback restores the exact archived file set.
     checkpointSqliteWal(databaseFile);
 
-    // Move sidecars first, then the primary file. All files stay on the same volume.
-    for (const entry of manifest.files.filter((item) => item.existed && item.kind !== 'database')) {
-      fs.renameSync(entry.livePath, entry.displacedFile as string);
+    // Move every current sidecar out of the live path. WAL checkpointing may
+    // remove or truncate a sidecar; the pre-checkpoint copy is already archived.
+    for (const entry of manifest.files.filter((item) => item.kind !== 'database')) {
+      let stat: fs.Stats | undefined;
+      try {
+        stat = fs.lstatSync(entry.livePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (!stat) continue;
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        throw new Error('SQLite ' + entry.kind + ' sidecar changed to a non-regular file during cutover.');
+      }
+      const displacedFile = entry.displacedFile ||
+        path.join(manifest.archiveDirectory, 'failed-cutovers', entry.kind + '.post-checkpoint-' + crypto.randomUUID());
+      fs.renameSync(entry.livePath, displacedFile);
+      applyPrivateFilePermissions(displacedFile);
       syncDirectory(path.dirname(entry.livePath));
     }
+
     const primary = manifest.files.find((item) => item.kind === 'database');
     if (!primary?.existed || !primary.displacedFile) {
       throw new Error('Recovery archive does not contain the original SQLite database file.');
     }
     fs.renameSync(primary.livePath, primary.displacedFile);
+    applyPrivateFilePermissions(primary.displacedFile);
     syncDirectory(path.dirname(primary.livePath));
 
     fs.renameSync(stagedFile, databaseFile);
@@ -493,6 +509,7 @@ export async function rollbackSqliteDatabase(options: {
       entry.kind + '.current-' + crypto.randomUUID()
     );
     fs.renameSync(entry.livePath, failedFile);
+    applyPrivateFilePermissions(failedFile);
     syncDirectory(path.dirname(entry.livePath));
   }
 
