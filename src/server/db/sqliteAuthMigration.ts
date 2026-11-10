@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { applyPrivateFilePermissions } from '../security/privateFilePermissions.js';
 import { openSqliteDatabase, runSqliteMigrations } from './sqliteDatabase.js';
 import { SQLITE_MIGRATIONS } from './sqliteMigrations.js';
 import {
@@ -107,8 +108,26 @@ function createBackup(sourceFile: string, sourceBytes: Buffer, sourceHash: strin
   const backupFile = sourceFile + '.before-sqlite-auth-import-' +
     new Date().toISOString().replace(/[:.]/g, '-') + '.bak';
 
-  fs.writeFileSync(backupFile, sourceBytes, { flag: 'wx', mode: 0o600 });
-  fs.chmodSync(backupFile, 0o600);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(backupFile, 'wx', 0o600);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    applyPrivateFilePermissions(backupFile);
+    descriptor = fs.openSync(backupFile, 'r+');
+    fs.writeFileSync(descriptor, sourceBytes);
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    try {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
+      fs.unlinkSync(backupFile);
+    } catch {
+      // Preserve the original backup creation failure.
+    }
+    throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
 
   const backupHash = sha256(fs.readFileSync(backupFile));
   if (backupHash !== sourceHash) {
