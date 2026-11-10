@@ -257,68 +257,77 @@ async function archiveCurrentDatabase(
   assertNoSidecars(stagedFile, 'Staged restore');
 
   fs.mkdirSync(archiveDirectory, { recursive: false, mode: 0o700 });
-  const originalsDirectory = path.join(archiveDirectory, 'originals');
-  const displacedDirectory = path.join(archiveDirectory, 'displaced');
-  const failedDirectory = path.join(archiveDirectory, 'failed-cutovers');
-  fs.mkdirSync(originalsDirectory, { mode: 0o700 });
-  fs.mkdirSync(displacedDirectory, { mode: 0o700 });
-  fs.mkdirSync(failedDirectory, { mode: 0o700 });
+  try {
+    const originalsDirectory = path.join(archiveDirectory, 'originals');
+    const displacedDirectory = path.join(archiveDirectory, 'displaced');
+    const failedDirectory = path.join(archiveDirectory, 'failed-cutovers');
+    fs.mkdirSync(originalsDirectory, { mode: 0o700 });
+    fs.mkdirSync(displacedDirectory, { mode: 0o700 });
+    fs.mkdirSync(failedDirectory, { mode: 0o700 });
 
-  const files: RecoveryFileRecord[] = [];
-  const allPaths: Array<{ kind: RecoveryFileKind; livePath: string }> = [
-    { kind: 'database', livePath: databaseFile },
-    ...SIDECARS.map((item) => ({ kind: item.kind, livePath: databaseFile + item.suffix })),
-  ];
+    const files: RecoveryFileRecord[] = [];
+    const allPaths: Array<{ kind: RecoveryFileKind; livePath: string }> = [
+      { kind: 'database', livePath: databaseFile },
+      ...SIDECARS.map((item) => ({ kind: item.kind, livePath: databaseFile + item.suffix })),
+    ];
 
-  for (const entry of allPaths) {
-    let stat: fs.Stats | undefined;
+    for (const entry of allPaths) {
+      let stat: fs.Stats | undefined;
+      try {
+        stat = fs.lstatSync(entry.livePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (stat && (stat.isSymbolicLink() || !stat.isFile())) {
+        throw new Error('Current SQLite ' + entry.kind + ' path is not a regular file.');
+      }
+      if (!stat) {
+        files.push({ ...entry, existed: false });
+        continue;
+      }
+
+      const backupFile = path.join(originalsDirectory, entry.kind + '.backup');
+      const displacedFile = path.join(displacedDirectory, entry.kind + '.displaced');
+      fs.copyFileSync(entry.livePath, backupFile, fs.constants.COPYFILE_EXCL);
+      applyPrivateFilePermissions(backupFile);
+      syncFile(backupFile);
+      const [sourceHash, backupHash] = await Promise.all([
+        sha256File(entry.livePath),
+        sha256File(backupFile),
+      ]);
+      if (sourceHash !== backupHash) {
+        throw new Error('Archived SQLite ' + entry.kind + ' checksum does not match the source file.');
+      }
+      files.push({
+        ...entry,
+        existed: true,
+        sha256: sourceHash,
+        sizeBytes: stat.size,
+        backupFile,
+        displacedFile,
+      });
+    }
+
+    const manifest: SqliteRecoveryManifest = {
+      format: 'ALNAMARI_SQLITE_RECOVERY_V1',
+      operationId: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      state: 'prepared',
+      databaseFile,
+      stagedFile,
+      archiveDirectory,
+      files,
+    };
+    writeManifest(manifest);
+    return manifest;
+  } catch (error) {
     try {
-      stat = fs.lstatSync(entry.livePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      fs.rmSync(archiveDirectory, { recursive: true, force: true });
+    } catch {
+      // Preserve the original archive failure; live database files have not moved.
     }
-    if (stat && (stat.isSymbolicLink() || !stat.isFile())) {
-      throw new Error('Current SQLite ' + entry.kind + ' path is not a regular file.');
-    }
-    if (!stat) {
-      files.push({ ...entry, existed: false });
-      continue;
-    }
-
-    const backupFile = path.join(originalsDirectory, entry.kind + '.backup');
-    const displacedFile = path.join(displacedDirectory, entry.kind + '.displaced');
-    fs.copyFileSync(entry.livePath, backupFile, fs.constants.COPYFILE_EXCL);
-    applyPrivateFilePermissions(backupFile);
-    syncFile(backupFile);
-    const [sourceHash, backupHash] = await Promise.all([
-      sha256File(entry.livePath),
-      sha256File(backupFile),
-    ]);
-    if (sourceHash !== backupHash) {
-      throw new Error('Archived SQLite ' + entry.kind + ' checksum does not match the source file.');
-    }
-    files.push({
-      ...entry,
-      existed: true,
-      sha256: sourceHash,
-      sizeBytes: stat.size,
-      backupFile,
-      displacedFile,
-    });
+    throw error;
   }
-
-  const manifest: SqliteRecoveryManifest = {
-    format: 'ALNAMARI_SQLITE_RECOVERY_V1',
-    operationId: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
-    state: 'prepared',
-    databaseFile,
-    stagedFile,
-    archiveDirectory,
-    files,
-  };
-  writeManifest(manifest);
-  return manifest;
 }
 
 /**
@@ -335,7 +344,7 @@ export async function cutoverSqliteDatabase(
 
   const databaseFile = assertRegularFile(options.databaseFile, 'Current SQLite database');
   const stagedFile = assertRegularFile(options.stagedFile, 'Staged SQLite restore');
-  const archiveParent = assertDirectory(path.dirname(path.resolve(options.archiveDirectory)), 'Archive parent directory');
+  assertDirectory(path.dirname(path.resolve(options.archiveDirectory)), 'Archive parent directory');
   const archiveDirectory = path.resolve(options.archiveDirectory);
   if (databaseFile === stagedFile || databaseFile === archiveDirectory || stagedFile === archiveDirectory) {
     throw new Error('Current database, staged restore, and archive paths must be different.');
