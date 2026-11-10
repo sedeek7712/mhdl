@@ -103,6 +103,21 @@ function assertNoSidecars(databaseFile: string, label: string): void {
   }
 }
 
+function checkpointSqliteWal(filePath: string): void {
+  const db = new DatabaseSync(filePath);
+  try {
+    db.exec('PRAGMA busy_timeout = 5000');
+    const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as
+      | { busy?: unknown; log?: unknown; checkpointed?: unknown }
+      | undefined;
+    if (Number(checkpoint?.busy ?? 1) !== 0) {
+      throw new Error('SQLite WAL checkpoint is busy. Confirm all application processes and database readers are stopped.');
+    }
+  } finally {
+    db.close();
+  }
+}
+
 function verifySqliteDatabase(filePath: string): void {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
@@ -288,15 +303,16 @@ async function archiveCurrentDatabase(
 
       const backupFile = path.join(originalsDirectory, entry.kind + '.backup');
       const displacedFile = path.join(displacedDirectory, entry.kind + '.displaced');
+      const sourceHashBeforeCopy = await sha256File(entry.livePath);
       fs.copyFileSync(entry.livePath, backupFile, fs.constants.COPYFILE_EXCL);
       applyPrivateFilePermissions(backupFile);
       syncFile(backupFile);
-      const [sourceHash, backupHash] = await Promise.all([
+      const [sourceHashAfterCopy, backupHash] = await Promise.all([
         sha256File(entry.livePath),
         sha256File(backupFile),
       ]);
-      if (sourceHash !== backupHash) {
-        throw new Error('Archived SQLite ' + entry.kind + ' checksum does not match the source file.');
+      if (sourceHashBeforeCopy !== sourceHashAfterCopy || sourceHashAfterCopy !== backupHash) {
+        throw new Error('SQLite ' + entry.kind + ' changed while it was being archived, or its archive checksum failed.');
       }
       files.push({
         ...entry,
@@ -358,6 +374,10 @@ export async function cutoverSqliteDatabase(
   try {
     manifest.state = 'cutover_started';
     writeManifest(manifest);
+
+    // Checkpoint/truncate WAL after its original bytes have been archived.
+    // A busy result aborts; automatic rollback restores the exact archived file set.
+    checkpointSqliteWal(databaseFile);
 
     // Move sidecars first, then the primary file. All files stay on the same volume.
     for (const entry of manifest.files.filter((item) => item.existed && item.kind !== 'database')) {
