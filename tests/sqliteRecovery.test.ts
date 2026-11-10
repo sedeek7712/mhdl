@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { openSqliteDatabase } from '../src/server/db/sqliteDatabase.js';
@@ -260,4 +262,32 @@ test('rollback validates manifest paths before touching database files', async (
   );
   assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'keep me');
   assert.equal(readDatabaseValue(liveFile), 'approved-snapshot');
+});
+
+test('recovery rehearsal CLI completes with synthetic data and cleans its temporary workspace', (t) => {
+  const scriptFile = fileURLToPath(new URL('../scripts/sqliteRecovery.ts', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', scriptFile, 'rehearse'],
+    {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: {
+        ...process.env,
+        ALNAMARI_SQLITE_BACKUP_KEY_HEX: TEST_BACKUP_KEY,
+      },
+    }
+  );
+
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout) as Record<string, unknown>;
+  assert.equal(report.status, 'PASS');
+  assert.equal(report.rehearsal, 'isolated-synthetic-database');
+  assert.equal(report.cutoverVerified, true);
+  assert.equal(report.rollbackVerified, true);
+  assert.equal(report.originalSyntheticDataPreserved, true);
+  assert.equal(report.allTemporaryFilesRemoved, true);
+  assert.equal(typeof report.encryptedBackupSha256, 'string');
+  assert.equal(typeof report.restoredDatabaseSha256, 'string');
 });
