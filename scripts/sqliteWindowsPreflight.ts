@@ -195,8 +195,9 @@ function runPreflight(options: Options): { status: string; readOnly: true; check
   }
 
   const blocked = checks.some((item) => item.status === 'BLOCK');
+  const needsReview = checks.some((item) => item.status === 'WARN');
   return {
-    status: blocked ? 'BLOCKED' : 'READY_FOR_SUPERVISED_REHEARSAL',
+    status: blocked ? 'BLOCKED' : needsReview ? 'REVIEW_REQUIRED' : 'READY_FOR_SUPERVISED_REHEARSAL',
     readOnly: true,
     checks,
     requiredOperatorChecks: [
