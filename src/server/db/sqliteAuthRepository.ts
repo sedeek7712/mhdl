@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 export type SqliteUserRole =
@@ -127,6 +128,22 @@ function validateSqliteUser(user: SqliteUserRecord): void {
   assertCredentialMaterial(user.pinSalt, user.pinHash, user.sessionVersion);
 }
 
+function withImmediateTransaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = operation();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Preserve the original error.
+    }
+    throw error;
+  }
+}
+
 function insertUserRow(db: DatabaseSync, user: SqliteUserRecord): SqliteUserRecord {
   const username = user.username.trim().toLowerCase();
   db.prepare(`
@@ -228,6 +245,51 @@ export function listSqlitePublicUsers(db: DatabaseSync): SqlitePublicUser[] {
     isActive: Number(row.is_active) === 1,
     createdAt: String(row.created_at),
   }));
+}
+
+/**
+ * Produces a complete legacy-JSON-compatible user snapshot for controlled rollback.
+ * All session versions are rotated in the same SQLite transaction before the
+ * snapshot is returned, invalidating tokens created by the SQLite auth runtime.
+ */
+export function exportSqliteUsersForJsonRollback(db: DatabaseSync): SqliteUserRecord[] {
+  return withImmediateTransaction(db, () => {
+    const rows = db.prepare(`
+      SELECT * FROM app_users
+      ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, name COLLATE NOCASE
+    `).all() as Array<Record<string, unknown>>;
+    const users = rows.map((row) => mapUser(row)).filter(
+      (user): user is SqliteUserRecord => Boolean(user)
+    );
+
+    if (users.length === 0) {
+      throw new Error('Rollback export refused: SQLite contains no user accounts.');
+    }
+    users.forEach(validateSqliteUser);
+    const ownerCount = users.filter((user) => user.role === 'owner').length;
+    const activeOwnerCount = users.filter((user) => user.role === 'owner' && user.isActive).length;
+    if (ownerCount !== 1 || activeOwnerCount !== 1) {
+      throw new Error('Rollback export refused: exactly one active owner is required.');
+    }
+
+    const updateVersion = db.prepare(
+      'UPDATE app_users SET session_version = ? WHERE id = ?'
+    );
+    for (const user of users) {
+      const nextVersion = crypto.randomBytes(16).toString('hex');
+      const result = updateVersion.run(nextVersion, user.id);
+      if (Number(result.changes) !== 1) {
+        throw new Error('Rollback export could not rotate every SQLite session version.');
+      }
+      user.sessionVersion = nextVersion;
+    }
+    return users;
+  });
+}
+
+function toPublicUser(user: SqliteUserRecord): SqlitePublicUser {
+  const { pinSalt: _pinSalt, pinHash: _pinHash, mustChangePin: _mustChangePin, sessionVersion: _sessionVersion, ...publicUser } = user;
+  return publicUser;
 }
 
 /** Status changes rotate the session version so previously issued JWTs become invalid. */
@@ -345,105 +407,4 @@ export function listSqliteSecurityEvents(
     ipAddress: String(row.ip_address),
     details: String(row.details),
   }));
-}
-
-function toPublicUser(user: SqliteUserRecord): SqlitePublicUser {
-  return {
-    id: user.id,
-    username: user.username,
-    name: user.name,
-    role: user.role,
-    branchId: user.branchId,
-    branchName: user.branchName,
-    isActive: user.isActive,
-    createdAt: user.createdAt,
-  };
-}
-
-
-export interface SqliteLoginAttempt {
-  attemptKey: string;
-  attempts: number;
-  lockUntilMs: number;
-  updatedAt: string;
-}
-
-function mapLoginAttempt(row: Record<string, unknown> | undefined): SqliteLoginAttempt | undefined {
-  if (!row) return undefined;
-  return {
-    attemptKey: String(row.attempt_key),
-    attempts: Number(row.attempts),
-    lockUntilMs: Number(row.lock_until_ms),
-    updatedAt: String(row.updated_at),
-  };
-}
-
-export function getSqliteLoginAttempt(
-  db: DatabaseSync,
-  attemptKey: string
-): SqliteLoginAttempt | undefined {
-  if (!/^[a-f0-9]{64}$/i.test(attemptKey)) throw new Error('Invalid authentication attempt key.');
-  const row = db.prepare(
-    'SELECT attempt_key, attempts, lock_until_ms, updated_at ' +
-    'FROM auth_login_attempts WHERE attempt_key = ?'
-  ).get(attemptKey.toLowerCase()) as Record<string, unknown> | undefined;
-  return mapLoginAttempt(row);
-}
-
-/**
- * Records a failed attempt atomically across concurrent requests/processes.
- * A lock that has expired starts a fresh failure window.
- */
-export function recordSqliteLoginFailure(
-  db: DatabaseSync,
-  attemptKey: string,
-  nowMs: number,
-  lockDurationMs: number,
-  maxAttempts: number,
-  updatedAt: string
-): SqliteLoginAttempt & { locked: boolean } {
-  if (!/^[a-f0-9]{64}$/i.test(attemptKey)) throw new Error('Invalid authentication attempt key.');
-  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error('Invalid authentication clock value.');
-  if (!Number.isSafeInteger(lockDurationMs) || lockDurationMs < 1000) throw new Error('Invalid authentication lock duration.');
-  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) throw new Error('Invalid authentication attempt limit.');
-  assertText(updatedAt, 'updatedAt');
-
-  return withImmediateTransaction(db, () => {
-    const row = db.prepare(
-      'SELECT attempt_key, attempts, lock_until_ms, updated_at ' +
-      'FROM auth_login_attempts WHERE attempt_key = ?'
-    ).get(attemptKey.toLowerCase()) as Record<string, unknown> | undefined;
-    const current = mapLoginAttempt(row);
-
-    if (current && current.lockUntilMs > nowMs) {
-      return { ...current, locked: true };
-    }
-
-    const previousAttempts = current && current.lockUntilMs === 0
-      ? current.attempts
-      : 0;
-    const attempts = previousAttempts + 1;
-    const locked = attempts >= maxAttempts;
-    const lockUntilMs = locked ? nowMs + lockDurationMs : 0;
-
-    db.prepare(
-      'INSERT INTO auth_login_attempts (attempt_key, attempts, lock_until_ms, updated_at) ' +
-      'VALUES (?, ?, ?, ?) ' +
-      'ON CONFLICT(attempt_key) DO UPDATE SET ' +
-      'attempts = excluded.attempts, lock_until_ms = excluded.lock_until_ms, updated_at = excluded.updated_at'
-    ).run(attemptKey.toLowerCase(), attempts, lockUntilMs, updatedAt);
-
-    return {
-      attemptKey: attemptKey.toLowerCase(),
-      attempts,
-      lockUntilMs,
-      updatedAt,
-      locked,
-    };
-  });
-}
-
-export function clearSqliteLoginAttempt(db: DatabaseSync, attemptKey: string): void {
-  if (!/^[a-f0-9]{64}$/i.test(attemptKey)) throw new Error('Invalid authentication attempt key.');
-  db.prepare('DELETE FROM auth_login_attempts WHERE attempt_key = ?').run(attemptKey.toLowerCase());
 }
