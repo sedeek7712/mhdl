@@ -51,6 +51,7 @@ export function applyPrivateFilePermissions(filePath: string): void {
   // Reset the newly-created empty file before removing inherited entries.
   runIcacls([resolved, '/reset']);
   runIcacls([resolved, '/inheritance:r']);
-  runIcacls([resolved, '/grant:r', '*' + sid + ':(F)', '*S-1-5-18:(F)']);
+  runIcacls([resolved, '/grant:r', '*' + sid + ':(F)']);
+  runIcacls([resolved, '/grant', '*S-1-5-18:(F)']);
   runIcacls([resolved, '/verify']);
 }
