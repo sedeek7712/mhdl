@@ -380,11 +380,6 @@ export async function cutoverSqliteDatabase(
   if (suppliedStagedSha256 !== options.expectedStagedSha256.toLowerCase()) {
     throw new Error('Staged SQLite restore SHA-256 does not match the supplied restore report. Cutover was refused.');
   }
-  verifySqliteDatabase(stagedFile);
-  // Checkpoint the stage before recording the manifest hash and moving any live files.
-  checkpointSqliteWal(stagedFile);
-  verifySqliteDatabase(stagedFile);
-  const stagedSha256 = await sha256File(stagedFile);
   assertDirectory(path.dirname(path.resolve(options.archiveDirectory)), 'Archive parent directory');
   const archiveDirectory = path.resolve(options.archiveDirectory);
   if (databaseFile === stagedFile || databaseFile === archiveDirectory || stagedFile === archiveDirectory) {
@@ -393,6 +388,17 @@ export async function cutoverSqliteDatabase(
   if (fs.existsSync(archiveDirectory)) {
     throw new Error('Recovery archive directory already exists. Refusing to overwrite it.');
   }
+  const currentDevice = fs.statSync(databaseFile).dev;
+  if (fs.statSync(stagedFile).dev !== currentDevice ||
+      fs.statSync(path.dirname(archiveDirectory)).dev !== currentDevice) {
+    throw new Error('Database, staged restore, and archive must be on the same filesystem for safe cutover.');
+  }
+
+  verifySqliteDatabase(stagedFile);
+  // Checkpoint the stage before recording the manifest hash and moving any live files.
+  checkpointSqliteWal(stagedFile);
+  verifySqliteDatabase(stagedFile);
+  const stagedSha256 = await sha256File(stagedFile);
 
   const manifest = await archiveCurrentDatabase(databaseFile, stagedFile, stagedSha256, archiveDirectory);
   const manifestFile = path.join(archiveDirectory, 'recovery-manifest.json');
