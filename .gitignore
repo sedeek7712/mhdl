@@ -21,3 +21,16 @@ data/exchange_rate_state.json
 data/exchange_rate_state.json.*.bak
 data/cash_box_shift_state.json
 data/cash_box_shift_state.json.*.bak
+
+# Runtime financial data and credentials: never commit (local-only app)
+data/accounts_ledger.json
+data/journal_entries.json
+data/remittance_audit_logs.json
+data/remittance_numbers_registry.json
+data/remittance_payouts_registry.json
+data/remittance_settings.json
+data/remittances_master.json
+data/system_users.json
+data/whatsapp_dispatch_registry.json
+data/*.sqlite*
+data/*.db*
