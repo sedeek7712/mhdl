@@ -72,10 +72,11 @@ function inspectWindowsProcesses(databaseFile: string): { status: 'PASS' | 'BLOC
   if (process.platform !== 'win32') {
     return { status: 'BLOCK', detail: 'This operational preflight is Windows-only; run it on the target Windows machine.' };
   }
+  const escapedTarget = databaseFile.replace(/'/g, "''");
   const command = [
-    '$target = [System.IO.Path]::GetFullPath(' + JSON.stringify(databaseFile) + ').ToLowerInvariant()',
+    '$target = [System.IO.Path]::GetFullPath(\'' + escapedTarget + '\').ToLowerInvariant()',
     '$items = @(Get-CimInstance Win32_Process | Where-Object {',
-    '  $_.Name -match \'^(node|electron)\\.exe$\' -and (',
+    '  $_.ProcessId -ne ${process.pid} -and $_.Name -match \'^(node|electron)\\.exe$\' -and (',
     '    $_.Name -match \'^electron\\.exe$\' -or',
     '    ($_.CommandLine -and ($_.CommandLine.ToLowerInvariant().Contains($target) -or $_.CommandLine -match \'server\\.(ts|js)|dist[\\\\/]server\'))',
     '  )',
