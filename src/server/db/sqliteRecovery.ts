@@ -35,6 +35,7 @@ export interface SqliteRecoveryManifest {
   state: SqliteRecoveryState;
   databaseFile: string;
   stagedFile: string;
+  stagedSha256: string;
   archiveDirectory: string;
   files: RecoveryFileRecord[];
 }
@@ -42,6 +43,7 @@ export interface SqliteRecoveryManifest {
 export interface SqliteCutoverOptions {
   databaseFile: string;
   stagedFile: string;
+  expectedStagedSha256: string;
   archiveDirectory: string;
   /** Explicit operator confirmation. This code does not detect or stop processes. */
   serverStopped: boolean;
@@ -53,6 +55,7 @@ export interface SqliteCutoverResult {
   manifestFile: string;
   archiveDirectory: string;
   databaseSha256: string;
+  stagedSha256: string;
 }
 
 export interface SqliteRollbackResult {
@@ -198,6 +201,7 @@ function validateManifest(manifestFile: string, value: unknown): SqliteRecoveryM
       typeof manifest.operationId !== 'string' ||
       typeof manifest.databaseFile !== 'string' ||
       typeof manifest.stagedFile !== 'string' ||
+      typeof manifest.stagedSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(manifest.stagedSha256) ||
       typeof manifest.archiveDirectory !== 'string' ||
       !Array.isArray(manifest.files) ||
       !['prepared', 'cutover_started', 'cutover_complete', 'rollback_started', 'rolled_back'].includes(String(manifest.state))) {
@@ -257,6 +261,7 @@ function readManifest(manifestFile: string): SqliteRecoveryManifest {
 async function archiveCurrentDatabase(
   databaseFile: string,
   stagedFile: string,
+  stagedSha256: string,
   archiveDirectory: string
 ): Promise<SqliteRecoveryManifest> {
   const databaseStat = fs.statSync(databaseFile);
@@ -331,6 +336,7 @@ async function archiveCurrentDatabase(
       state: 'prepared',
       databaseFile,
       stagedFile,
+      stagedSha256,
       archiveDirectory,
       files,
     };
@@ -360,6 +366,14 @@ export async function cutoverSqliteDatabase(
 
   const databaseFile = assertRegularFile(options.databaseFile, 'Current SQLite database');
   const stagedFile = assertRegularFile(options.stagedFile, 'Staged SQLite restore');
+  if (typeof options.expectedStagedSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/i.test(options.expectedStagedSha256)) {
+    throw new Error('Cutover requires the 64-character SHA-256 reported by the verified staged restore.');
+  }
+  const stagedSha256 = await sha256File(stagedFile);
+  if (stagedSha256 !== options.expectedStagedSha256.toLowerCase()) {
+    throw new Error('Staged SQLite restore SHA-256 does not match the supplied restore report. Cutover was refused.');
+  }
   assertDirectory(path.dirname(path.resolve(options.archiveDirectory)), 'Archive parent directory');
   const archiveDirectory = path.resolve(options.archiveDirectory);
   if (databaseFile === stagedFile || databaseFile === archiveDirectory || stagedFile === archiveDirectory) {
@@ -369,7 +383,7 @@ export async function cutoverSqliteDatabase(
     throw new Error('Recovery archive directory already exists. Refusing to overwrite it.');
   }
 
-  const manifest = await archiveCurrentDatabase(databaseFile, stagedFile, archiveDirectory);
+  const manifest = await archiveCurrentDatabase(databaseFile, stagedFile, stagedSha256, archiveDirectory);
   const manifestFile = path.join(archiveDirectory, 'recovery-manifest.json');
   try {
     manifest.state = 'cutover_started';
@@ -403,6 +417,7 @@ export async function cutoverSqliteDatabase(
       manifestFile,
       archiveDirectory,
       databaseSha256: await sha256File(databaseFile),
+      stagedSha256,
     };
   } catch (error) {
     try {
