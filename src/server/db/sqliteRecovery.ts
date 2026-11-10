@@ -317,7 +317,7 @@ async function archiveCurrentDatabase(
       files.push({
         ...entry,
         existed: true,
-        sha256: sourceHash,
+        sha256: sourceHashAfterCopy,
         sizeBytes: stat.size,
         backupFile,
         displacedFile,
