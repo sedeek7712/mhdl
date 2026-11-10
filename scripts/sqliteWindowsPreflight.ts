@@ -105,6 +105,28 @@ function inspectWindowsProcesses(databaseFile: string): { status: 'PASS' | 'BLOC
   return { status: 'PASS', detail: 'No matching Node server or Electron process was detected; this is not proof that workers, jobs, viewers, or other processes are stopped.' };
 }
 
+function inspectWindowsAcl(paths: string[]): { status: 'WARN' | 'BLOCK'; detail: string } {
+  if (process.platform !== 'win32') {
+    return { status: 'BLOCK', detail: 'NTFS ACL inspection is available only on the target Windows machine.' };
+  }
+  const outputs: string[] = [];
+  for (const target of paths) {
+    const result = spawnSync('icacls.exe', [target], {
+      encoding: 'utf8',
+      timeout: 15000,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) {
+      return { status: 'BLOCK', detail: 'Could not read ACL for ' + target + ': ' + (result.error?.message || result.stderr.trim() || 'icacls failed.') };
+    }
+    outputs.push(path.basename(target) + ': ' + result.stdout.trim().split(/\\r?\\n/).slice(1).join(' | '));
+  }
+  return {
+    status: 'WARN',
+    detail: outputs.join(' ; ') + ' — inspect grants manually; this read-only tool does not change or certify ACL policy.',
+  };
+}
+
 function runPreflight(options: Options): { status: string; readOnly: true; checks: Check[]; requiredOperatorChecks: string[] } {
   const checks: Check[] = [];
   const add = (name: string, status: Check['status'], detail: string) => checks.push({ name, status, detail });
@@ -165,6 +187,8 @@ function runPreflight(options: Options): { status: string; readOnly: true; check
     }
     const processCheck = inspectWindowsProcesses(databaseFile);
     add('windows_process_scan', processCheck.status, processCheck.detail);
+    const aclCheck = inspectWindowsAcl([databaseFile, stagedFile, path.dirname(archiveDirectory)]);
+    add('windows_acl_review', aclCheck.status, aclCheck.detail);
   } else {
     add('database_integrity', 'BLOCK', 'Skipped because one or both database files could not be opened safely.');
     add('windows_process_scan', 'BLOCK', 'Skipped because the current database path is not valid.');
