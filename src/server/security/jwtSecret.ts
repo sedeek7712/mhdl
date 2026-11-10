@@ -55,28 +55,40 @@ export function loadOrCreateJwtSecret(
   try {
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
 
-    if (fs.existsSync(resolvedPath)) {
+    try {
+      fs.lstatSync(resolvedPath);
       return readStoredSecret(resolvedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
 
     const generated = crypto.randomBytes(32).toString('hex');
+    const temporaryPath = resolvedPath + '.tmp-' + crypto.randomUUID();
     let descriptor: number | undefined;
     try {
-      descriptor = fs.openSync(resolvedPath, 'wx', 0o600);
-      fs.closeSync(descriptor);
-      descriptor = undefined;
-      applyPrivateFilePermissions(resolvedPath);
-      descriptor = fs.openSync(resolvedPath, 'r+');
+      descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+      applyPrivateFilePermissions(temporaryPath);
       fs.writeSync(descriptor, generated, 0, 'utf8');
       fs.fsyncSync(descriptor);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        return readStoredSecret(resolvedPath);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
+
+      try {
+        // Atomic create-if-absent publication: another process never sees a partial secret file.
+        fs.linkSync(temporaryPath, resolvedPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          return readStoredSecret(resolvedPath);
+        }
+        throw error;
       }
-      throw error;
     } finally {
       if (descriptor !== undefined) fs.closeSync(descriptor);
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
     }
 
     const persisted = readStoredSecret(resolvedPath);
