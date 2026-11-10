@@ -76,7 +76,7 @@ function inspectWindowsProcesses(databaseFile: string): { status: 'PASS' | 'BLOC
   const command = [
     '$target = [System.IO.Path]::GetFullPath(\'' + escapedTarget + '\').ToLowerInvariant()',
     '$items = @(Get-CimInstance Win32_Process | Where-Object {',
-    '  $_.ProcessId -ne ${process.pid} -and $_.Name -match \'^(node|electron)\\.exe$\' -and (',
+    '  $_.ProcessId -ne ' + process.pid + ' -and $_.Name -match \'^(node|electron)\\.exe$\' -and (',
     '    $_.Name -match \'^electron\\.exe$\' -or',
     '    ($_.CommandLine -and ($_.CommandLine.ToLowerInvariant().Contains($target) -or $_.CommandLine -match \'server\\.(ts|js)|dist[\\\\/]server\'))',
     '  )',
