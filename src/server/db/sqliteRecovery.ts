@@ -91,21 +91,6 @@ function assertDirectory(directory: string, label: string): string {
   return resolved;
 }
 
-function assertNoSidecars(databaseFile: string, label: string): void {
-  for (const sidecar of SIDECARS) {
-    const sidecarPath = databaseFile + sidecar.suffix;
-    try {
-      const stat = fs.lstatSync(sidecarPath);
-      if (stat.isSymbolicLink() || !stat.isFile()) {
-        throw new Error(label + ' has a non-regular SQLite ' + sidecar.kind + ' sidecar.');
-      }
-      throw new Error(label + ' has a SQLite ' + sidecar.kind + ' sidecar. Close it cleanly before cutover.');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-}
-
 function checkpointSqliteWal(filePath: string): void {
   const db = new DatabaseSync(filePath);
   try {
@@ -258,6 +243,28 @@ function readManifest(manifestFile: string): SqliteRecoveryManifest {
   return validateManifest(resolved, parsed);
 }
 
+function archiveStagedSidecars(stagedFile: string, archiveDirectory: string): void {
+  const sidecarDirectory = path.join(archiveDirectory, 'staged-sidecars');
+  fs.mkdirSync(sidecarDirectory, { mode: 0o700 });
+  for (const sidecar of SIDECARS) {
+    const source = stagedFile + sidecar.suffix;
+    let stat: fs.Stats | undefined;
+    try {
+      stat = fs.lstatSync(source);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (!stat) continue;
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error('Staged SQLite ' + sidecar.kind + ' sidecar is not a regular file.');
+    }
+    const archived = path.join(sidecarDirectory, sidecar.kind + '.sidecar');
+    fs.renameSync(source, archived);
+    applyPrivateFilePermissions(archived);
+    syncDirectory(path.dirname(source));
+  }
+}
+
 async function archiveCurrentDatabase(
   databaseFile: string,
   stagedFile: string,
@@ -274,7 +281,10 @@ async function archiveCurrentDatabase(
 
   verifySqliteDatabase(databaseFile);
   verifySqliteDatabase(stagedFile);
-  assertNoSidecars(stagedFile, 'Staged restore');
+  // The backup API can leave WAL/SHM files beside a verified staged copy.
+  // Checkpoint them before promotion; any remaining sidecars are archived below.
+  checkpointSqliteWal(stagedFile);
+  verifySqliteDatabase(stagedFile);
 
   fs.mkdirSync(archiveDirectory, { recursive: false, mode: 0o700 });
   try {
@@ -392,6 +402,10 @@ export async function cutoverSqliteDatabase(
     // Checkpoint/truncate WAL after its original bytes have been archived.
     // A busy result aborts; automatic rollback restores the exact archived file set.
     checkpointSqliteWal(databaseFile);
+
+    // Preserve any staged WAL/SHM sidecars after the checkpoint. The staged
+    // database file can then be promoted without mixing sidecars from two DBs.
+    archiveStagedSidecars(stagedFile, archiveDirectory);
 
     // Move every current sidecar out of the live path. WAL checkpointing may
     // remove or truncate a sidecar; the pre-checkpoint copy is already archived.
