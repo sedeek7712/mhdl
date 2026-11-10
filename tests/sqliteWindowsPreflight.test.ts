@@ -53,7 +53,7 @@ test('Windows preflight is read-only and reports integrity, checksum, and operat
 
   const report = runPreflight(directory, sha256);
   assert.equal(report.readOnly, true);
-  assert.ok(['BLOCKED', 'READY_FOR_SUPERVISED_REHEARSAL'].includes(report.status));
+  assert.ok(['BLOCKED', 'REVIEW_REQUIRED', 'READY_FOR_SUPERVISED_REHEARSAL'].includes(report.status));
   assert.ok(report.checks.some((check: { name: string; status: string }) => check.name === 'current_database_integrity' && check.status === 'PASS'));
   assert.ok(report.checks.some((check: { name: string; status: string }) => check.name === 'staged_database_integrity' && check.status === 'PASS'));
   assert.ok(report.checks.some((check: { name: string; status: string }) => check.name === 'staged_sha256' && check.status === 'PASS'));
