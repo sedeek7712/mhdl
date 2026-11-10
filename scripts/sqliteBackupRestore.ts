@@ -68,9 +68,9 @@ function parseArgs(args: string[]): CliOptions {
 
 const usage =
   'Encrypted SQLite backup:\n' +
-  '  npm run sqlite:backup -- backup --source-file "<exchange.sqlite>" --destination-file "<backup.alnbackup>"\n\n' +
+  '  npm run sqlite:backup-restore -- backup --source-file "<exchange.sqlite>" --destination-file "<backup.alnbackup>"\n\n' +
   'Restore into a NEW database path (application must be stopped):\n' +
-  '  npm run sqlite:restore -- restore --backup-file "<backup.alnbackup>" --destination-file "<restored.sqlite>" --expected-sha256 "<sha256>" --server-stopped\n\n' +
+  '  npm run sqlite:backup-restore -- restore --backup-file "<backup.alnbackup>" --destination-file "<restored.sqlite>" --expected-sha256 "<sha256>" --server-stopped\n\n' +
   'Both commands require ALNAMARI_SQLITE_BACKUP_KEY_HEX to contain exactly 64 hexadecimal characters.\n' +
   'The key is never stored in the backup or printed by this tool. Restore does not replace a live database.';
 
