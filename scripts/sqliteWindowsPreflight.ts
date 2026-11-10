@@ -119,7 +119,7 @@ function inspectWindowsAcl(paths: string[]): { status: 'WARN' | 'BLOCK'; detail:
     if (result.error || result.status !== 0) {
       return { status: 'BLOCK', detail: 'Could not read ACL for ' + target + ': ' + (result.error?.message || result.stderr.trim() || 'icacls failed.') };
     }
-    outputs.push(path.basename(target) + ': ' + result.stdout.trim().split(/\\r?\\n/).slice(1).join(' | '));
+    outputs.push(path.basename(target) + ': ' + result.stdout.trim().split(/\r?\n/).slice(1).join(' | '));
   }
   return {
     status: 'WARN',
