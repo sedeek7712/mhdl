@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts tests/sqliteDatabase.test.ts tests/sqliteFinancialRepository.test.ts tests/sqliteDryRunMigration.test.ts tests/sqliteAuthRepository.test.ts tests/sqliteAuthMigration.test.ts tests/sqliteAuthService.test.ts tests/sqliteAuthHttp.test.ts tests/jwtSecret.test.ts tests/sqliteAuthRuntime.test.ts tests/authBackendSelection.test.ts tests/sqliteAuthServerIntegration.test.ts tests/sqliteBackupRestore.test.ts tests/dispatchRegistry.test.ts tests/authoritativeVoucher.test.ts tests/sqliteAuthRollbackExport.test.ts tests/sqliteRecovery.test.ts",
+    "test:storage": "node --import tsx --test tests/storageIntegrity.test.ts tests/sqliteDatabase.test.ts tests/sqliteFinancialRepository.test.ts tests/sqliteDryRunMigration.test.ts tests/sqliteAuthRepository.test.ts tests/sqliteAuthMigration.test.ts tests/sqliteAuthService.test.ts tests/sqliteAuthHttp.test.ts tests/jwtSecret.test.ts tests/sqliteAuthRuntime.test.ts tests/authBackendSelection.test.ts tests/sqliteAuthServerIntegration.test.ts tests/sqliteBackupRestore.test.ts tests/dispatchRegistry.test.ts tests/authoritativeVoucher.test.ts tests/sqliteAuthRollbackExport.test.ts tests/sqliteRecovery.test.ts tests/sqliteWindowsPreflight.test.ts",
     "setup:owner": "node --import tsx scripts/bootstrapOwner.ts",
     "setup:financial-baseline": "node --import tsx scripts/approveFinancialBaseline.ts",
     "test:internal-transfers": "node --import tsx --test tests/internalTransfer.test.ts",
@@ -29,7 +29,8 @@
     "migrate:sqlite:auth": "node --import tsx scripts/sqliteAuthMigration.ts",
     "migrate:sqlite:auth:export": "node --import tsx scripts/sqliteAuthRollbackExport.ts",
     "sqlite:backup-restore": "node --import tsx scripts/sqliteBackupRestore.ts",
-    "sqlite:recovery": "node --import tsx scripts/sqliteRecovery.ts"
+    "sqlite:recovery": "node --import tsx scripts/sqliteRecovery.ts",
+    "sqlite:preflight": "node --import tsx scripts/sqliteWindowsPreflight.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
