@@ -47,6 +47,19 @@ npm run sqlite:backup-restore -- restore --backup-file "C:\ExchangeBackups\excha
 
 Record the `restoredSha256` value from the restore report. The restore command verifies the supplied SHA-256, AES-256-GCM authentication and key, SQLite integrity, foreign keys, and creation of a separate destination file. It does not overwrite the current database.
 
+
+## 3A. Run the read-only Windows preflight
+
+After the staged restore is complete, run the preflight on the target Windows machine before considering any cutover or rehearsal:
+
+```powershell
+npm run sqlite:preflight -- --database-file "C:\ExchangeData\exchange.sqlite" --staged-file "C:\ExchangeData\staging\exchange-restored.sqlite" --expected-staged-sha256 "<restoredSha256-from-restore-output>" --archive-directory "C:\ExchangeData\recovery-archive-preflight"
+```
+
+The preflight verifies file types, distinct paths, same-volume placement, the staged SHA-256, read-only SQLite integrity/FK checks, a limited Node/Electron process scan, and read-only ACL output via `icacls.exe`. It never creates the archive folder or modifies any database.
+
+Interpret `BLOCKED` as stop. Interpret `REVIEW_REQUIRED` as requiring the operator to review NTFS ACL output and complete every manual check before proceeding. Even `READY_FOR_SUPERVISED_REHEARSAL` does not prove every worker/viewer/job is stopped and does not authorize production cutover. See `docs/SQLITE_WINDOWS_PREFLIGHT_2026-11-10.md`.
+
 ## 4. Promote the staged database (offline cutover)
 
 Before proceeding, verify again that every process using the database is stopped. Use a new archive directory on the same volume:
