@@ -131,13 +131,25 @@ function reserveTemporaryFile(destinationFile: string): string {
       directory,
       '.' + path.basename(destinationFile) + '.tmp-' + crypto.randomUUID()
     );
+    let descriptor: number | undefined;
+    let created = false;
     try {
-      const descriptor = fs.openSync(temporary, 'wx', 0o600);
-      fs.closeSync(descriptor);
+      descriptor = fs.openSync(temporary, 'wx', 0o600);
+      created = true;
       // Lock down the empty file before SQLite or crypto writes sensitive bytes.
       applyPrivateFilePermissions(temporary);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
       return temporary;
     } catch (error) {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
+      if (created) {
+        try {
+          fs.unlinkSync(temporary);
+        } catch {
+          // Preserve the original permission or filesystem error.
+        }
+      }
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
   }
@@ -290,9 +302,10 @@ export async function createSqliteBackup(
   }
 
   const temporaryFile = reserveTemporaryFile(destinationFile);
-  const encryptedTemporaryFile = reserveTemporaryFile(destinationFile);
+  let encryptedTemporaryFile: string | undefined;
   let sourceDb: sqlite.DatabaseSync | undefined;
   try {
+    encryptedTemporaryFile = reserveTemporaryFile(destinationFile);
     sourceDb = new sqlite.DatabaseSync(sourceFile);
     sourceDb.exec('PRAGMA busy_timeout = ' + busyTimeoutMs);
     sourceDb.exec('PRAGMA foreign_keys = ON');
@@ -324,7 +337,7 @@ export async function createSqliteBackup(
     throw error;
   } finally {
     removeTemporaryFiles(temporaryFile);
-    removeTemporaryFiles(encryptedTemporaryFile);
+    if (encryptedTemporaryFile) removeTemporaryFiles(encryptedTemporaryFile);
   }
 }
 
@@ -355,9 +368,10 @@ export async function restoreSqliteBackup(
   }
 
   const decryptedBackupFile = reserveTemporaryFile(destinationFile);
-  const temporaryFile = reserveTemporaryFile(destinationFile);
+  let temporaryFile: string | undefined;
   let backupDb: sqlite.DatabaseSync | undefined;
   try {
+    temporaryFile = reserveTemporaryFile(destinationFile);
     await decryptSqliteFile(backupFile, decryptedBackupFile, encryptionKey);
     verifySqliteFile(decryptedBackupFile, busyTimeoutMs);
     backupDb = new sqlite.DatabaseSync(decryptedBackupFile);
@@ -396,6 +410,6 @@ export async function restoreSqliteBackup(
     throw error;
   } finally {
     removeTemporaryFiles(decryptedBackupFile);
-    removeTemporaryFiles(temporaryFile);
+    if (temporaryFile) removeTemporaryFiles(temporaryFile);
   }
 }
