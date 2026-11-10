@@ -366,12 +366,12 @@ export function exportSqliteUsersForJsonRollback(db: DatabaseSync): SqliteUserRe
     if (users.length === 0) {
       throw new Error('Rollback export refused: SQLite contains no user accounts.');
     }
-    users.forEach(validateSqliteUser);
     const ownerCount = users.filter((user) => user.role === 'owner').length;
     const activeOwnerCount = users.filter((user) => user.role === 'owner' && user.isActive).length;
     if (ownerCount !== 1 || activeOwnerCount !== 1) {
       throw new Error('Rollback export refused: exactly one active owner is required.');
     }
+    users.forEach(validateSqliteUser);
 
     const updateVersion = db.prepare(
       'UPDATE app_users SET session_version = ? WHERE id = ?'
