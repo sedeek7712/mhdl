@@ -93,9 +93,10 @@ It requires `ALNAMARI_SQLITE_BACKUP_KEY_HEX`. It does not accept database paths 
 
 The recovery module is included in `npm run test:storage`.
 
-- GitHub Actions run `42736616374` — Ubuntu Node 22.16.0: **96/96 tests passed**, TypeScript passed, production build passed.
-- The same run on Windows Node 24.22.2: all 96 storage tests passed, TypeScript passed, and production build passed.
-- GitHub Actions run `42736616291`: the full storage-safety workflow passed, including internal transfers, chart reconciliation, expenses, remittances, exchange accounting/rates, shifts, HTTP integration, TypeScript, and production build.
+- GitHub Actions run `42736899947` — Ubuntu Node 22.16.0: **97/97 tests passed**, TypeScript passed, production build passed.
+- The same run on Windows Node 24.22.2: **97/97 tests passed**, TypeScript passed, production build passed.
+- The 97-test suite includes the end-to-end `sqlite:recovery -- rehearse` CLI test using synthetic data, encrypted backup, staged restore, cutover, rollback, and temporary-workspace cleanup.
+- GitHub Actions run `42736899956`: the full storage-safety workflow passed, including internal transfers, chart reconciliation, expenses, remittances, exchange accounting/rates, shifts, HTTP integration, TypeScript, and production build.
 
 Hosted CI verifies code paths on GitHub runners. It is not a substitute for a rehearsal on the actual target Windows machine using the actual deployment account, folder ACL policy, and real service shutdown process.
 
