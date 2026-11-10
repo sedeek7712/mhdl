@@ -121,9 +121,11 @@ test('restores a checksum-verified backup into a new file and preserves relation
 test('backup and restore refuse to overwrite existing destinations', async (t) => {
   const directory = makeDirectory(t);
   const sourceFile = path.join(directory, 'source.sqlite');
+  const validBackupFile = path.join(directory, 'valid-backup.sqlite');
   const backupFile = path.join(directory, 'existing-backup.sqlite');
   const restoreFile = path.join(directory, 'existing-restore.sqlite');
   seedDatabase(sourceFile);
+  const validBackup = await createSqliteBackup({ sourceFile, destinationFile: validBackupFile });
   const backupBytes = Buffer.from('preserve-this-backup-target');
   const restoreBytes = Buffer.from('preserve-this-restore-target');
   fs.writeFileSync(backupFile, backupBytes);
@@ -135,16 +137,15 @@ test('backup and restore refuse to overwrite existing destinations', async (t) =
   );
   await assert.rejects(
     restoreSqliteBackup({
-      backupFile: path.join(directory, 'missing-backup.sqlite'),
+      backupFile: validBackupFile,
       destinationFile: restoreFile,
-      expectedSha256: 'a'.repeat(64),
+      expectedSha256: validBackup.sha256,
     }),
-    /does not exist/
+    /already exists/
   );
   assert.deepEqual(fs.readFileSync(backupFile), backupBytes);
   assert.deepEqual(fs.readFileSync(restoreFile), restoreBytes);
 });
-
 test('restore rejects a checksum mismatch and does not create the target', async (t) => {
   const directory = makeDirectory(t);
   const sourceFile = path.join(directory, 'source.sqlite');
