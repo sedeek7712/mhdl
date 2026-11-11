@@ -36,7 +36,7 @@ fs.rmSync(tmp, { recursive: true, force: true });
 
 const bat = (title, tool, extraNote = '') => [
   '@echo off', 'chcp 65001 >nul', 'setlocal',
-  'if not defined ALNAMARI_DATA_DIR set "ALNAMARI_DATA_DIR=%SystemDrive%\\AlNamari-Data"',
+  'if not defined ALNAMARI_DATA_DIR set "ALNAMARI_DATA_DIR=%LOCALAPPDATA%\\AlNamari-Data"',
   'if not exist "%ALNAMARI_DATA_DIR%" mkdir "%ALNAMARI_DATA_DIR%"',
   `echo ${title}`, 'echo Data folder: %ALNAMARI_DATA_DIR%', extraNote && `echo ${extraNote}`, 'echo.',
   `"%~dp0node\\node.exe" "%~dp0resources\\app\\tools\\${tool}.mjs" %*`,
@@ -45,7 +45,7 @@ const bat = (title, tool, extraNote = '') => [
 fs.cpSync(path.join(root, 'tests', 'fixtures', 'mock-data'), path.join(extra, 'demo-data'), { recursive: true, filter: (src) => path.basename(src) !== 'system_users.json' }); // owner-only first run: setup tools require exactly one user
 fs.writeFileSync(path.join(extra, '0-load-demo-data.bat'), [
   '@echo off', 'chcp 65001 >nul', 'setlocal',
-  'if not defined ALNAMARI_DATA_DIR set "ALNAMARI_DATA_DIR=%SystemDrive%\\AlNamari-Data"',
+  'if not defined ALNAMARI_DATA_DIR set "ALNAMARI_DATA_DIR=%LOCALAPPDATA%\\AlNamari-Data"',
   'if exist "%ALNAMARI_DATA_DIR%\\accounts_ledger.json" (',
   '  echo Data already exists in %ALNAMARI_DATA_DIR% - nothing was copied.', '  pause', '  exit /b 1', ')',
   'mkdir "%ALNAMARI_DATA_DIR%" 2>nul',
@@ -61,7 +61,7 @@ fs.writeFileSync(path.join(extra, 'README-FIRST.txt'),
 2) Double-click 2-setup-chart-of-accounts.bat.
 3) Only after reconciling real cash/network statements: 3-approve-opening-balances.bat.
 4) Start AlNamari.exe.
-Data lives in C:\\AlNamari-Data (not inside the program folder). Back it up regularly.
+Data lives in %LOCALAPPDATA%\\AlNamari-Data (open it with Win+R). It is private to your Windows user and NOT inside the program folder. Back it up regularly.
 Use TEST DATA ONLY until the backup/restore rehearsal is done.
 `);
 console.log('done');

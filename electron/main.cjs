@@ -8,8 +8,9 @@ const { pathToFileURL } = require('node:url');
 const crypto = require('node:crypto');
 
 const PORT = Number(process.env.ALNAMARI_PORT || 38417);
+// %LOCALAPPDATA% is private to the signed-in Windows user by default (unlike the C:\ root).
 const DATA_DIR = process.env.ALNAMARI_DATA_DIR ||
-  path.join(process.env.SystemDrive ? process.env.SystemDrive + '\\' : 'C:\\', 'AlNamari-Data');
+  path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'AlNamari-Data');
 
 const logLines = [];
 function log(level, args) {
