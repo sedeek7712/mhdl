@@ -34,3 +34,10 @@ data/system_users.json
 data/whatsapp_dispatch_registry.json
 data/*.sqlite*
 data/*.db*
+
+# desktop build artifacts
+server.mjs
+tools/
+desktop-extra/
+release/
+.nodewin-*/

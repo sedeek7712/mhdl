@@ -30,7 +30,9 @@
     "migrate:sqlite:auth:export": "node --import tsx scripts/sqliteAuthRollbackExport.ts",
     "sqlite:backup-restore": "node --import tsx scripts/sqliteBackupRestore.ts",
     "sqlite:recovery": "node --import tsx scripts/sqliteRecovery.ts",
-    "sqlite:preflight": "node --import tsx scripts/sqliteWindowsPreflight.ts"
+    "sqlite:preflight": "node --import tsx scripts/sqliteWindowsPreflight.ts",
+    "build:desktop": "node scripts/buildDesktop.mjs",
+    "package:win": "node scripts/buildDesktop.mjs && electron-builder --win zip --x64 --publish never"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -51,7 +53,9 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "electron": "^38.8.6",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.12",
     "sharp": "^0.35.5",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
@@ -60,5 +64,43 @@
   },
   "engines": {
     "node": ">=22.13.0"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.alnamari.exchange",
+    "productName": "AlNamari",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**",
+      "dist/**",
+      "server.mjs",
+      "tools/**",
+      "package.json",
+      "!**/node_modules/**"
+    ],
+    "extraFiles": [
+      {
+        "from": "desktop-extra",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "electronDownload": {}
   }
 }
