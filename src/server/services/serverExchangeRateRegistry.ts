@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
+import { resolveDataDirectory } from '../utils/dataDirectory.js';
 
 type CurrencyCode = 'YER_OLD' | 'YER_NEW' | 'SAR' | 'USD';
 
@@ -36,9 +37,7 @@ interface ExchangeRateState {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
-  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
-  : path.resolve(__dirname, '../../../data');
+const DATA_DIR = resolveDataDirectory(path.resolve(__dirname, '../../../data'));
 const RATE_STATE_FILE = path.resolve(DATA_DIR, 'exchange_rate_state.json');
 
 const createInitialState = (): ExchangeRateState => ({

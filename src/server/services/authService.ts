@@ -13,12 +13,11 @@ import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../ut
 import { loadOrCreateJwtSecret } from '../security/jwtSecret.js';
 import { createSqliteAuthRuntime } from './sqliteAuthRuntime.js';
 import type { SqliteAuthService } from './sqliteAuthService.js';
+import { resolveDataDirectory } from '../utils/dataDirectory.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
-  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
-  : path.resolve(__dirname, '../../../data');
+const DATA_DIR = resolveDataDirectory(path.resolve(__dirname, '../../../data'));
 const USERS_FILE = path.resolve(DATA_DIR, 'system_users.local.json');
 const JWT_SECRET_FILE = path.resolve(DATA_DIR, '.jwt_secret');
 

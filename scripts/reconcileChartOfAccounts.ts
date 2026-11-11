@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { INITIAL_ACCOUNTS } from '../src/data/initialData.js';
 import { buildChartReconciliationPlan, type ChartAccountDefinition } from '../src/server/services/chartOfAccountsMigration.js';
 import { safeAtomicWriteJson, safeReadJson } from '../src/server/utils/atomicFileStorage.js';
+import { resolveDataDirectory } from '../src/server/utils/dataDirectory.js';
 
 interface OwnerRecord {
   id: string;
@@ -18,7 +19,7 @@ interface OwnerRecord {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, '../data');
+const DATA_DIR = resolveDataDirectory(path.resolve(__dirname, '../data'));
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts_ledger.json');
 const USERS_FILE = path.join(DATA_DIR, 'system_users.local.json');
 const BASELINE_FILE = path.join(DATA_DIR, 'financial_baseline_approved.local.json');

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../utils/atomicFileStorage.js';
+import { resolveDataDirectory } from '../utils/dataDirectory.js';
 
 export type ShiftCurrency = 'YER_OLD' | 'YER_NEW' | 'SAR' | 'USD';
 export type ShiftBalances = Record<ShiftCurrency, number>;
@@ -37,9 +38,7 @@ const CURRENCIES: ShiftCurrency[] = ['YER_OLD', 'YER_NEW', 'SAR', 'USD'];
 const ZERO: ShiftBalances = { YER_OLD: 0, YER_NEW: 0, SAR: 0, USD: 0 };
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = process.env.NODE_ENV === 'test' && process.env.ALNAMARI_TEST_DATA_DIR
-  ? path.resolve(process.env.ALNAMARI_TEST_DATA_DIR)
-  : path.resolve(__dirname, '../../../data');
+const DATA_DIR = resolveDataDirectory(path.resolve(__dirname, '../../../data'));
 const STATE_FILE = path.resolve(DATA_DIR, 'cash_box_shift_state.json');
 
 function validKey(value: unknown): value is string {

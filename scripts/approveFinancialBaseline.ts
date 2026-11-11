@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { safeAtomicWriteJson, safeReadJson, getYemenDateTimeString } from '../src/server/utils/atomicFileStorage.js';
+import { resolveDataDirectory } from '../src/server/utils/dataDirectory.js';
 
 type CurrencyCode = 'YER_OLD' | 'YER_NEW' | 'SAR' | 'USD';
 type AccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
@@ -56,7 +57,7 @@ interface ApprovedFinancialBaseline {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, '../data');
+const DATA_DIR = resolveDataDirectory(path.resolve(__dirname, '../data'));
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts_ledger.json');
 const JOURNAL_FILE = path.join(DATA_DIR, 'journal_entries.json');
 const USERS_FILE = path.join(DATA_DIR, 'system_users.local.json');

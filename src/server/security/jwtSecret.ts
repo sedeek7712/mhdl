@@ -2,14 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { applyPrivateFilePermissions } from './privateFilePermissions.js';
+import { resolveDataDirectory } from '../utils/dataDirectory.js';
 
 export function resolveJwtSecretFilePath(
   moduleDirectory: string,
   env: NodeJS.ProcessEnv = process.env
 ): string {
-  const dataDirectory = env.NODE_ENV === 'test' && env.ALNAMARI_TEST_DATA_DIR
-    ? path.resolve(env.ALNAMARI_TEST_DATA_DIR)
-    : path.resolve(moduleDirectory, '../../../data');
+  const dataDirectory = resolveDataDirectory(path.resolve(moduleDirectory, '../../../data'), env);
   return path.resolve(dataDirectory, '.jwt_secret');
 }
 

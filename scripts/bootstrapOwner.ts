@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { getYemenDateTimeString, safeAtomicWriteJson } from '../src/server/utils/atomicFileStorage.js';
+import { resolveDataDirectory } from '../src/server/utils/dataDirectory.js';
 
 type UserRole = 'owner' | 'general_manager' | 'branch_manager' | 'teller' | 'auditor' | 'accountant' | 'compliance_officer';
 
@@ -38,7 +39,7 @@ interface OwnerRecord extends ExistingOwner {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, '../data');
+const DATA_DIR = resolveDataDirectory(path.resolve(__dirname, '../data'));
 const USERS_FILE = path.join(DATA_DIR, 'system_users.local.json');
 const LEGACY_USERS_FILE = path.join(DATA_DIR, 'system_users.json');
 
